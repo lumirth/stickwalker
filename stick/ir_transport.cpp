@@ -67,6 +67,16 @@ uint8_t diagnostic_bins[pw_stick::kMaxBurstGates];
 unsigned diagnostic_count = 0;
 unsigned diagnostic_first = 0;
 unsigned diagnostic_last = 0;
+#ifdef PW_STICK_BENCH_CONTROL
+// Retain only the opening three UART bytes of the most recently delivered
+// burst. Checksum rejection occurs in the foreground immediately afterward;
+// this small copy lets a failed opening byte be examined without changing the
+// sampler's instruction stream or buffering an entire session.
+uint8_t checksum_opening[96];
+unsigned checksum_opening_count = 0;
+unsigned checksum_opening_first = 0;
+unsigned checksum_opening_gates = 0;
+#endif
 struct BurstDiagnostic {
   unsigned gates;
   unsigned decoded;
@@ -316,6 +326,9 @@ extern "C" void StickIrStart(void) {
   final_samples = final_input_mask = 0;
   diagnostic_count = 0;
   burst_diagnostic_count = 0;
+#ifdef PW_STICK_BENCH_CONTROL
+  checksum_opening_count = 0;
+#endif
   __atomic_store_n(&event_write, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&event_read, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&stop_requested, false, __ATOMIC_RELEASE);
@@ -444,6 +457,12 @@ extern "C" void StickIrTraceChecksumFailure(const u8 *bytes, u8 length,
                 length, received, computed);
   for (unsigned i = 0; i < length; ++i) Serial.printf("%02x", bytes[i]);
   Serial.println();
+  Serial.printf("PW_STICK_CHECKSUM_OPENING gates=%u first=%u count=%u bins=",
+                checksum_opening_gates, checksum_opening_first,
+                checksum_opening_count);
+  for (unsigned i = 0; i < checksum_opening_count; ++i)
+    Serial.printf("%02x", checksum_opening[i]);
+  Serial.println();
 }
 
 extern "C" void StickIrTraceMalformedPage(const u8 *bytes, u8 length) {
@@ -489,6 +508,13 @@ extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
   for (uint32_t i = 0; i < count; ++i)
     packet_bins[i] = ring[(base + i) & kRingMask];
 #ifdef PW_STICK_BENCH_CONTROL
+  if (trace_enabled()) {
+    checksum_opening_count = count < sizeof(checksum_opening) ?
+        count : sizeof(checksum_opening);
+    memcpy(checksum_opening, packet_bins, checksum_opening_count);
+    checksum_opening_first = event.first - base;
+    checksum_opening_gates = count;
+  }
   if (!diagnostic_count &&
       (count >= 1000 || burst_diagnostic_count == 2) &&
       count <= sizeof(diagnostic_bins)) {

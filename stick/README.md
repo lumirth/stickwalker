@@ -122,6 +122,19 @@ instructions and requalify it with sealed traffic and complete exchanges.
   plausible starter and renders English labels because no trainer save or DS
   message renderer is running on this bench; `hgss_course_fixture.py` records
   these choices. The 3DS still executes the original PHC protocol engine.
+- A further same-boot diagnostic series completed ten `back`/`put` cycles:
+  20/20 original PHC operations reached DONE, with 90/90 valid packets in
+  each `back` and 133/133 in each `put`. The ledger and independent final
+  EEPROM verification are in `stick/.build/trials/opening-repeat-ledger.json`
+  and `opening-repeat-final-verification.json`. The first attempted repeat
+  before this series failed on `put` page 59: the source 3DS transmitted wire
+  `AA` in the page's first byte, the Stick decoded `AB`, the source checksum
+  rejected it, no ACK was sent, and both ends timed out. That trial is retained
+  as `journal-repeat-01-put`. The later 20/20 does not remove this failure.
+  A bench-only 96-gate opening snapshot now prints when a checksum fails so
+  the next occurrence can distinguish weak/missing optical observation from
+  phase assignment. The flashed diagnostic app SHA-256 is
+  `b8ec2c57cf16cf8834e9f1816adb95d2666ba6542ee4dad7ada4b724a9325dd9`.
 - The current serial `c` trigger and verbose burst output are enabled only
   with `PW_STICK_BENCH_CONTROL`; they are bringup instruments, not protocol
   decision makers. The 3DS runs the source-owned retail peer. The native
