@@ -67,6 +67,13 @@ instructions and requalify it with sealed traffic and complete exchanges.
 - A target RMT transmitter for logical bytes is compiled, but the continuous
   optical service, foreground scheduling, motion, RTC, and sound adapters are
   not connected yet.
+- The application now keeps its native `MainTick` order while sampling the
+  Stick's BMI270 at the native 62.5 ms cadence; the scaling follows the
+  BMA150 high-byte convention. The target RTC generates the same quarter,
+  minute, and hour event flags from a cooperative scheduler, and the scratch
+  allocator retains full ESP32 pointers instead of truncating them to the
+  H8's 16-bit address width. These target paths have syntax and focused
+  host checks, but the scheduler and physical axis calibration are pending.
 - No Stick firmware from this branch has been built or flashed. The optical
   receiver, protocol bridge, native runtime, display, motion, persistence, and
   complete transaction still require integration and hardware validation.

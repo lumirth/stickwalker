@@ -1,6 +1,9 @@
 #include "application/pw_builtin.h"
 #include "flags.h"
 #include "types.h"
+#ifdef PW_STICK_S3
+#include "stick/motion_sample.h"
+#endif
 #include "eeprom_address.h"
 #include "startup/hardware.h"
 #include "project.h"
@@ -500,9 +503,19 @@ void RenderStepCount(void)
  * adjacent-sample changes, including the preceding ring sample. */
 void CaptureSample(void)
 {
+#ifndef PW_STICK_S3
   u8 sample[6];
+#endif
   u8 previous;
 
+#ifdef PW_STICK_S3
+  s8 x, y, z;
+  x = y = z = 0;
+  StickMotionSample(&x, &y, &z);
+  g_work.motion.x[g_state.sampleIndex] = x;
+  g_work.motion.y[g_state.sampleIndex] = y;
+  g_work.motion.z[g_state.sampleIndex] = z;
+#else
   SSU.SSMR.BYTE = SSU_MODE3_SUB_DIV2;
   IO.PDR9.BIT.B0 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
@@ -534,6 +547,7 @@ void CaptureSample(void)
   g_work.motion.x[g_state.sampleIndex] = sample[1];
   g_work.motion.y[g_state.sampleIndex] = sample[3];
   g_work.motion.z[g_state.sampleIndex] = sample[5];
+#endif
   if (g_state.view == VIEW_THRESHOLD_TEST) {
     previous = ((g_state.sampleIndex + 0x3f) & 0x3f);
     if (g_state.sampleIndex == 0) {
@@ -557,12 +571,16 @@ void CaptureSample(void)
  * Otherwise step credit runs before any handoff to score playback. */
 void MainTick(void)
 {
+#ifndef PW_STICK_S3
   IENR2.BIT.IENTB1 = 1;
   ClockSleep(CLOCK_SLEEP_NORMAL);
   IENR2.BIT.IENTB1 = 0;
   IENR1.BIT.IENRTC = 0;
   CaptureSample();
   IENR1.BIT.IENRTC = 1;
+#else
+  CaptureSample();
+#endif
   InputScan();
   if ((g_state.flags.byte & SYSTEM_MODE_MASK) == SYSTEM_MODE_INACTIVE) {
     RtcDispatch();
@@ -605,9 +623,13 @@ void MainTick(void)
             g_state.centerHoldScans = 0;
           }
         } else {
+#ifndef PW_STICK_S3
           set_ccr(0x80);
+#endif
           BatteryUpdate();
+#ifndef PW_STICK_S3
           set_ccr(0);
+#endif
           MotionSessionIdleCheck();
         }
       }
@@ -615,7 +637,9 @@ void MainTick(void)
     StepPacingTick();
     if (BeepHasScore() != 0) {
       InstallTask(BeepTick);
+#ifndef PW_STICK_S3
       IENR2.BIT.IENTB1 = 0;
+#endif
       BeepEnableTimer();
     }
   }
@@ -627,12 +651,14 @@ tickTail:
  * the workspace to motion and start a fresh sample ring. */
 void BeepTick(void)
 {
+#ifndef PW_STICK_S3
   SYSCR1.BYTE = 0x27;
   SYSCR2.BYTE = 0xe0;
   g_state.events.bits.lowPowerClock = 1;
   if (TW.GRA != 0) {
     sleep();
   }
+#endif
   WatchdogService();
   InputScan();
   ViewUpdate();

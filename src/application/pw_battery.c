@@ -4,6 +4,9 @@
 #include "application/pw_battery.h"
 #include "application/pw_eeprom_m95512.h"
 #include "support/lib_common.h"
+#ifdef PW_STICK_S3
+#include "stick/battery_bridge.h"
+#endif
 
 /* The mirrored EEPROM word stores the battery threshold in bits 0..11.
  * Bits 12..15 hold the low nibble of the sum of its three payload nibbles. */
@@ -49,6 +52,9 @@ u8 BatteryVerify(u16 value)
  * selection determines the ADC conversion timing. */
 uint BatterySample(void)
 {
+#ifdef PW_STICK_S3
+  return StickBatteryMillivolts() / 4;
+#else
   int total;
   u16 samples;
   u16 adcAlignment;
@@ -84,10 +90,15 @@ uint BatterySample(void)
   IO.PDR8.BYTE = 0;
   IO.PCR8 &= 0xef;
   return (total / 8);
+#endif
 }
 
 u8 BatteryCheckLow(u16 scaleFactor)
 {
+#ifdef PW_STICK_S3
+  (void)scaleFactor;
+  return StickBatteryLow();
+#else
   volatile u16 record;
 
   EepromMirrorRead(EEPROM_BATTERY_PRIMARY, EEPROM_BATTERY_BACKUP, (u8 *)&record,
@@ -103,6 +114,7 @@ u8 BatteryCheckLow(u16 scaleFactor)
     return 1;
   }
   return 0;
+#endif
 }
 
 void BatteryUpdate(void)

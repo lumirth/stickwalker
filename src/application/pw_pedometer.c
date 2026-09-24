@@ -212,7 +212,7 @@ s32 MotionEstimateQ9(u16 *spectrum)
     walk.magnitude =
         bins[*(candidate = g_motionCandidateOrder + walk.candidateIndex)];
     if (walk.magnitude >= MOTION_MIN_MAGNITUDE) {
-      if ((candidateMagnitude * 3) < (walk.magnitude * 2)) {
+      if ((u16)(candidateMagnitude * 3) < (u16)(walk.magnitude * 2)) {
         walk.classIndex = *candidate;
         candidateMagnitude = walk.magnitude;
       }
@@ -222,12 +222,12 @@ s32 MotionEstimateQ9(u16 *spectrum)
 
   if (g_work.motion.batch.lastRejected != 0) {
     restartDivisor = 3;
-    candidateMagnitude = ((candidateMagnitude << 2) / restartDivisor);
+    candidateMagnitude = ((u16)(candidateMagnitude << 2) / restartDivisor);
     if (spectrumMaximum > candidateMagnitude) {
       walk.classIndex = MOTION_NO_CLASS;
     }
   } else {
-    if (spectrumMaximum > (candidateMagnitude << 1)) {
+    if (spectrumMaximum > (u16)(candidateMagnitude << 1)) {
       walk.classIndex = MOTION_NO_CLASS;
     }
   }

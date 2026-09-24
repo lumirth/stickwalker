@@ -9,10 +9,14 @@
  * The one-second RTC interrupt maintains the motion timeout. */
 void MotionSessionWake(void)
 {
+#ifndef PW_STICK_S3
   CKSTPR1.BYTE |= 4;
+#endif
   g_state.flags.byte =
       ((g_state.flags.byte & SYSTEM_MODE_CLEAR) | SYSTEM_MODE_MOTION);
+#ifndef PW_STICK_S3
   RTC.RTCCR2.BYTE |= 1;
+#endif
   g_state.idleSeconds[IDLE_MOTION] = ACTIVITY_MOTION_SECONDS;
   g_state.events.byte &= EVENT_CLEAR(EVENT_MOTION);
 }
@@ -53,7 +57,9 @@ void MotionSessionStart(void)
     }
     g_state.flags.byte =
         ((g_state.flags.byte & SYSTEM_MODE_CLEAR) | SYSTEM_MODE_INTERACTIVE);
+#ifndef PW_STICK_S3
     RTC.RTCCR2.BYTE |= 1;
+#endif
     DisplayExitPowerSave();
   }
 }
@@ -64,8 +70,10 @@ void MotionSessionStart(void)
 void MotionSessionEnd(void)
 {
   BeepDisableTimer();
+#ifndef PW_STICK_S3
   CKSTPR1.BYTE &= 0xfb;
   RTC.RTCCR2.BYTE &= 0xfe;
+#endif
   g_state.flags.byte &= SYSTEM_MODE_CLEAR;
 }
 
@@ -76,6 +84,7 @@ void MotionSessionIdleCheck(void)
   }
 }
 
+#ifndef PW_STICK_S3
 #pragma interrupt(IRQ0Interrupt(vect = 16))
 void IRQ0Interrupt(void)
 {
@@ -102,6 +111,7 @@ void ADCInterrupt(void)
 {
   IRR2.BYTE &= 0xbf;
 }
+#endif
 
 /* Store a lifetime total capped at seven display digits. */
 void StoreTotalSteps(u32 value)

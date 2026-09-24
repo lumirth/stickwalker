@@ -583,27 +583,47 @@ void RasterMasked(u8 *destination, u8 destinationWidth, u8 destinationHeight,
 /* WDT unlock sequence, then stop the counter. */
 void WatchdogDisable(void)
 {
+#ifndef PW_STICK_S3
   WDT.TCSRWD1.BYTE = 0x9e;
   WDT.TCSRWD1.BYTE = 0xa2;
   WDT.TCSRWD1.BYTE = 0x8e;
+#endif
 }
 
 /* WDT unlock, enable, and load the reload value. */
 void WatchdogStart(void)
 {
+#ifndef PW_STICK_S3
   WDT.TCSRWD1.BYTE = 0x9e;
   WDT.TCSRWD1.BYTE = 0xa6;
   WDT.TCSRWD1.BYTE = 0x8e;
   WDT.TMWD.BYTE = 0xf5;
+#endif
 }
+
+#ifdef PW_STICK_S3
+static u8 *portScratchCursor;
+#endif
 
 void ScratchReset(void)
 {
+#ifdef PW_STICK_S3
+  portScratchCursor = g_work.motion.scratch.layout.scratch;
+#else
   g_state.scratchCursor = (u16)g_work.motion.scratch.layout.scratch;
+#endif
 }
 
 void *ScratchAlloc(u16 byteCount)
 {
+#ifdef PW_STICK_S3
+  u8 *base = g_work.motion.scratch.layout.scratch;
+  u8 *old = portScratchCursor;
+  if (old == 0) old = base;
+  if ((size_t)(old - base) + byteCount > 0x400u) __builtin_trap();
+  portScratchCursor = old + byteCount;
+  return old;
+#else
   u16 *cursor;
   u16 next;
   u8 *old;
@@ -617,6 +637,7 @@ void *ScratchAlloc(u16 byteCount)
     sleep();
   }
   return old;
+#endif
 }
 
 /* Spread a batch across foreground ticks, crediting at most one step per tick.
@@ -659,6 +680,12 @@ void StepPacingTick(void)
  * timing helpers. Values other than the two defined modes do nothing. */
 void ClockSleep(uint mode)
 {
+#ifdef PW_STICK_S3
+  if (mode == CLOCK_SLEEP_LOW_POWER)
+    g_state.events.bits.lowPowerClock = 1;
+  else if (mode == CLOCK_SLEEP_NORMAL)
+    g_state.events.bits.lowPowerClock = 0;
+#else
   if (mode == CLOCK_SLEEP_LOW_POWER) {
     SYSCR1.BYTE = 0xa7;
     SYSCR2.BYTE = 0xe0;
@@ -670,19 +697,23 @@ void ClockSleep(uint mode)
     g_state.events.bits.lowPowerClock = 0;
     sleep();
   }
+#endif
 }
 
 /* Kick the watchdog: clear the counter under the write-enable key. */
 void WatchdogService(void)
 {
+#ifndef PW_STICK_S3
   WDT.TCSRWD1.BYTE = 0x5e;
   WDT.TCWD = 0;
   WDT.TCSRWD1.BYTE = 0x9e;
+#endif
 }
 
 /* Add settling time only while the CPU uses the slower clock. */
 void LowClockDelay(void)
 {
+#ifndef PW_STICK_S3
   u16 remaining;
 
   if (g_state.events.bits.lowPowerClock != 0) {
@@ -696,6 +727,7 @@ void LowClockDelay(void)
       remaining--;
     } while (remaining != 0);
   }
+#endif
 }
 
 void RandomSeed(u32 seed)

@@ -36,6 +36,7 @@
 #include <stddef.h>
 
 /* Timer B1 wakes the foreground task from sleep. */
+#ifndef PW_STICK_S3
 void TimerB1Init(void)
 {
   CKSTPR1.BYTE |= 4; /* enable Timer B1's clock */
@@ -45,6 +46,7 @@ void TimerB1Init(void)
   IENR2.BYTE |= 4;       /* enable the wake interrupt */
   TB1.TMB1.BYTE |= 0x40; /* start Timer B1 */
 }
+#endif
 
 void WalkStartCommit(void);
 void WalkEndClear(void);
@@ -193,6 +195,7 @@ resumeForeground:
  * battery to exceed its startup threshold. Count watchdog resets in EEPROM.
  * Start Timer B1 and repeatedly call the installed foreground task. */
 #pragma entry PowerOnReset(vect = 0)
+#ifndef PW_STICK_S3
 void PowerOnReset(void)
 {
   u32 seed;
@@ -251,6 +254,7 @@ void PowerOnReset(void)
   for (;;)
     g_task();
 }
+#endif
 
 /* Apply the received DeviceStatus time settings. Convert rollover hours below
  * 24 to BCD; a nonzero rtcSeconds value sets the save counter and RTC. */
@@ -286,8 +290,13 @@ void CommitStagedWalk(void)
   union {
     u32 word32;
     struct {
+#ifdef PW_STICK_S3
+      u16 destination;
+      u16 pages;
+#else
       u16 pages;
       u16 destination;
+#endif
     } w;
   } cursor;
   u16 remaining;
@@ -453,7 +462,9 @@ void ClearWattsInventory(void)
 
 /* Acknowledge the Timer B1 wake request. */
 #pragma interrupt(TimerB1Interrupt(vect = 33))
+#ifndef PW_STICK_S3
 void TimerB1Interrupt(void)
 {
   IRR2.BIT.IRRTB1 = 0;
 }
+#endif

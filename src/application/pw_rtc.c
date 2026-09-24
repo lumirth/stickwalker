@@ -6,10 +6,15 @@
 #include "application/pw_eeprom_m95512.h"
 #include "application/pw_rtc.h"
 #include "support/scratch.h"
+#ifdef PW_STICK_S3
+#include "stick_wire_endian.h"
+#endif
 
 void PokemonMinuteTick(void);
 void RtcHourUpdate(void);
 void RtcDayRollover(void);
+void RtcMinuteInterrupt(void);
+void RtcHourInterrupt(void);
 
 #define ELAPSED_DAYS_MAX 9999
 #define SECONDS_PER_MINUTE 60
@@ -114,7 +119,11 @@ void RtcDayRollover(void)
     source--;
     destination--;
   } while (shifted < (STEP_HISTORY_DAYS - 1));
+#ifdef PW_STICK_S3
+  StickWriteBe32((u8 *)history, g_state.dailySteps);
+#else
   *history = g_state.dailySteps;
+#endif
 
   EepromWrite((u16)&data->dailySteps, history, historyBytes);
   g_state.dailySteps = 0;
@@ -161,6 +170,7 @@ void RtcSetTime(u32 seconds)
   g_state.time.minuteBcd = minuteBcd;
   g_state.time.secondBcd = secondBcd;
 
+#ifndef PW_STICK_S3
   CKSTPR1.BIT.RTCCKSTP = 1;
   RTC.RTCCR1.BIT.RUN = 0;
   RTC.RTCCR1.BIT.RST = 1;
@@ -173,12 +183,18 @@ void RtcSetTime(u32 seconds)
   RTC.RTCCR2.BYTE = 0x1c;
   RTC.RTCCR2.BIT._025SEIE = 1;
   RTC.RTCCR1.BIT.RUN = 1;
+#endif
 }
 
 /* Wait for each register's BSY bit to clear. Repeat pairs of S:M:H snapshots
  * until they agree, yielding a consistent time across register updates. */
 void RtcReadStable(u8 *secondOut, u8 *minuteOut, u8 *hourOut)
 {
+#ifdef PW_STICK_S3
+  *secondOut = g_state.time.secondBcd;
+  *minuteOut = g_state.time.minuteBcd;
+  *hourOut = g_state.time.hourBcd24h;
+#else
   u8 snapshot[6];
   u8 sample;
 
@@ -202,6 +218,7 @@ void RtcReadStable(u8 *secondOut, u8 *minuteOut, u8 *hourOut)
   *secondOut = snapshot[0];
   *minuteOut = snapshot[1];
   *hourOut = snapshot[2];
+#endif
 }
 
 /* A pending refresh bit can merge several quarter-second interrupts. */
@@ -209,27 +226,42 @@ void RtcReadStable(u8 *secondOut, u8 *minuteOut, u8 *hourOut)
 void RtcQuarterSecondInterrupt(void)
 {
   g_state.events.byte |= EVENT_UI_REFRESH;
+#ifndef PW_STICK_S3
   RTC.RTCFLG.BYTE &= 0xfe;
+#endif
 }
 
 #pragma interrupt(RtcHalfSecondInterrupt(vect = 24))
 void RtcHalfSecondInterrupt(void)
 {
+#ifndef PW_STICK_S3
   RTC.RTCFLG.BYTE &= 0xfd;
+#endif
 }
 
 /* The one-second interrupt maintains these counters independently of frames. */
 #pragma interrupt(RtcSecondInterrupt(vect = 25))
 void RtcSecondInterrupt(void)
 {
-  u8 second;
   u16 socialSeconds;
+#ifdef PW_STICK_S3
+  u32 next = g_state.save.rtcSeconds + 1;
+  g_state.save.rtcSeconds = next;
+  RtcSetTime(next);
+  if (next % SECONDS_PER_MINUTE == 0) {
+    RtcMinuteInterrupt();
+    if (next % RTC_ONE_HOUR_SECONDS == 0)
+      RtcHourInterrupt();
+  }
+#else
+  u8 second;
 
   second = RTC.RSECDR.BYTE;
   if ((second & 0x80) == 0) {
     g_state.time.secondBcd = second;
   }
   g_state.save.rtcSeconds++;
+#endif
   socialSeconds = (g_state.socialElapsedSeconds + 1);
   if (socialSeconds > RTC_ONE_HOUR_SECONDS) {
     socialSeconds = RTC_ONE_HOUR_SECONDS;
@@ -241,31 +273,41 @@ void RtcSecondInterrupt(void)
   if (g_state.idleSeconds[IDLE_MOTION] != 0) {
     g_state.idleSeconds[IDLE_MOTION]--;
   }
+#ifndef PW_STICK_S3
   RTC.RTCFLG.BYTE &= 0xfb;
+#endif
 }
 
 #pragma interrupt(RtcMinuteInterrupt(vect = 26))
 void RtcMinuteInterrupt(void)
 {
+#ifndef PW_STICK_S3
   u8 minute;
 
   minute = RTC.RMINDR.BYTE;
   if ((minute & 0x80) == 0) {
     g_state.time.minuteBcd = minute;
   }
+#endif
   g_state.time.pendingUpdates |= RTC_PENDING_MINUTE;
+#ifndef PW_STICK_S3
   RTC.RTCFLG.BYTE &= 0xf7;
+#endif
 }
 
 #pragma interrupt(RtcHourInterrupt(vect = 27))
 void RtcHourInterrupt(void)
 {
+#ifndef PW_STICK_S3
   u8 hour;
 
   hour = RTC.RHRDR.BYTE;
   if ((hour & 0x80) == 0) {
     g_state.time.hourBcd24h = RTC.RHRDR.BYTE;
   }
+#endif
   g_state.time.pendingUpdates |= RTC_PENDING_HOUR;
+#ifndef PW_STICK_S3
   RTC.RTCFLG.BYTE &= 0xef;
+#endif
 }
