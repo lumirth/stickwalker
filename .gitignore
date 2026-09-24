@@ -8,5 +8,6 @@ __pycache__/
 /.ninja_log
 /.ninja_deps
 /.venv/
+/stick/.build/
 /assets/local/
 /.ruff_cache/

@@ -53,4 +53,12 @@ typedef int Bool;
 #define FALSE 0
 #endif
 
+/* Only the decompiled C translation units inherit H8's two-byte aggregate
+ * alignment. Applying -fpack-struct to Arduino/M5/ESP-IDF code changes their
+ * library ABI and corrupts heap-owned C++ objects. The C++ driver ABI uses
+ * explicitly sized scalars and never shares packed records by value. */
+#if defined(PW_STICK_S3) && !defined(__cplusplus)
+#pragma pack(push, 2)
+#endif
+
 #endif

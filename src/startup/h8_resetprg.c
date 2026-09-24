@@ -34,6 +34,9 @@
 #pragma stacksize 0x8C
 #include <machine.h>
 #include <stddef.h>
+#ifdef PW_STICK_S3
+#include <string.h>
+#endif
 
 /* Timer B1 wakes the foreground task from sleep. */
 #ifndef PW_STICK_S3
@@ -62,6 +65,38 @@ void _INITSCT(void);
 #define PW_PRNG_SEED_CROSS_RECORD 0x153
 #define PW_PRNG_SEED_BYTES 4
 #define PW_BATTERY_BOOT_SCALE 0x13
+
+#ifdef PW_STICK_S3
+/* Preserve the reset sequence in PowerOnReset, replacing only H8 startup,
+ * fixture self-test, ADC wait and interrupt setup with Stick ownership. */
+void StickPortBoot(void)
+{
+  u8 seedBytes[PW_PRNG_SEED_BYTES];
+
+  memset((void *)&g_state.save, 0, PW_STARTUP_RAM_CLEAR_BYTES);
+  g_state.rolloverHourBcd = 0;
+  g_state.events.byte |= EVENT_LOW_POWER_CLOCK;
+  g_state.flags.byte =
+      ((g_state.flags.byte & SYSTEM_MODE_CLEAR) | SYSTEM_MODE_INTERACTIVE);
+  g_state.idleSeconds[IDLE_DISPLAY] = INTERACTIVE_DISPLAY_SECONDS;
+  g_state.idleSeconds[IDLE_MOTION] = INTERACTIVE_MOTION_SECONDS;
+  g_state.socialElapsedSeconds = PW_RTC_ONE_HOUR_SECONDS;
+  MotionReset();
+  BootRestore();
+
+  BeepInit();
+  BeepSetOutputMode(g_state.save.volume);
+  DisplayInit();
+  RtcRestore();
+  EepromRead(PW_PRNG_SEED_CROSS_RECORD, seedBytes, sizeof(seedBytes));
+  RandomSeed(StickReadBe32(seedBytes));
+  IrInit();
+  InputInit();
+  InstallTask(MainTick);
+  HomeInit();
+  g_state.view = VIEW_HOME;
+}
+#endif
 
 /* Dispatch a queued packet action, including after a communication error.
  * Otherwise select home or the result view from the communication result.

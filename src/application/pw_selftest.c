@@ -2,6 +2,9 @@
 #include "project.h"
 #include "types.h"
 #include "startup/hardware.h"
+#ifdef PW_STICK_S3
+#include "startup/iodefine.h"
+#endif
 #include "application/pw_buzzer.h"
 #include "application/pw_accel_bma150.h"
 #include "application/pw_battery.h"

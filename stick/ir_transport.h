@@ -21,6 +21,7 @@ extern "C" {
 void StickIrInitPins(void);
 void StickIrConfigure(void);
 void StickIrStart(void);
+void StickIrPassiveDiagnostic(int enabled);
 void StickIrStop(void);
 u16 StickIrTicks(void);
 void StickIrDelayTicks(u16 ticks);

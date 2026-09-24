@@ -21,7 +21,7 @@ struct WireBurst {
   // checks CONNECT value, checksum, command, length, and session state.
   bool credible_uart() const {
     return length && stops == length &&
-           (starts == length || (length >= 40 && starts + 1 == length));
+           (starts == length || (length >= 8 && starts + 1 == length));
   }
 };
 
@@ -30,7 +30,8 @@ struct WireBurst {
 // Acquisition and phase fitting consult UART geometry only, never expected
 // payload bytes, checksums, or protocol commands. The caller owns the ring,
 // optical-gap detection, and timestamps.
-bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out);
+bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
+                       uint8_t pulse_cutoff = 124);
 
 }  // namespace pw_stick
 

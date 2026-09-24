@@ -75,20 +75,25 @@ instructions and requalify it with sealed traffic and complete exchanges.
   calculates a gift or builds a diary entry. Diary counters and saved daily
   history retain H8 byte order; the trainer history view decodes that stored
   value. A sanitizer-backed diary record test covers these boundaries.
-- A target RMT transmitter for logical bytes is compiled, but the continuous
-  optical service, foreground scheduling, motion, RTC, and sound adapters are
-  not connected yet.
+- The target RMT transmitter, continuous optical task, native foreground
+  scheduler, motion sampler, RTC events, display, storage, and sound adapters
+  now compile together and boot on the Stick S3. The full image was flashed
+  as an app-only update after preserving and hashing the prior 8 MiB flash.
 - The application now keeps its native `MainTick` order while sampling the
   Stick's BMI270 at the native 62.5 ms cadence; the scaling follows the
   BMA150 high-byte convention. The target RTC generates the same quarter,
   minute, and hour event flags from a cooperative scheduler, and the scratch
   allocator retains full ESP32 pointers instead of truncating them to the
   H8's 16-bit address width. These target paths have syntax and focused
-  host checks, but the scheduler and physical axis calibration are pending.
-- No Stick firmware from this branch has been built or flashed. The optical
-  receiver, protocol bridge, native runtime, display, motion, persistence, and
-  complete transaction still require integration and hardware validation.
-
-The existing `.137` receiver qualification campaign uses a separate firmware
-under `../bench/`. Do not flash this port over that bench image while the
-qualification campaign is running.
+  host checks. The board boots and continues native `MainTick`; physical axis
+  calibration and sound behavior still need direct validation.
+- Source-faithful 3DS trials have reached CONNECT, RESPONSE, ACK, and the
+  original peer-status request. The first 112-byte HGSS status reply remains
+  unreliable in this port. Its raw GPIO5 observation is retained in the
+  ignored `stick/.build/trials/port-wire-diagnostic/` run. A frozen `.137`
+  app image remains at `../bench/experiments/g5-terminal-start-137/app.bin`;
+  its full pre-port flash backup is also retained under `stick/.build/`.
+- The current serial `c` trigger and verbose burst output are enabled only
+  with `PW_STICK_BENCH_CONTROL`; they are bringup instruments, not protocol
+  decision makers. The 3DS runs the source-owned retail peer. No complete
+  transaction on this port has passed yet, so this is not qualified firmware.

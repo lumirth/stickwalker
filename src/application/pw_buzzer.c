@@ -5,6 +5,9 @@
 #include "application/pw_buzzer.h"
 #include "application/pw_builtin.h"
 #include "application/pw_eeprom_m95512.h"
+#ifdef PW_STICK_S3
+#include "stick/sound_bridge.h"
+#endif
 
 /* Four-byte EEPROM directory entry. The offset is stored little-endian and
  * names a score relative to EEPROM_SOUND_DATA. */
@@ -50,6 +53,9 @@ void BeepInit(void)
 {
   g_ui.durationDivisor = 0x78;
   g_ui.outputMode = 0;
+#ifdef PW_STICK_S3
+  StickSoundInit();
+#else
   IO.PCR8 |= 0x0c;
   IO.PDR8.BIT.B2 = 0;
   IO.PDR8.BIT.B3 = 0;
@@ -61,6 +67,7 @@ void BeepInit(void)
   TW.GRB = 0;
   TW.GRC = 0;
   CKSTPR2.BYTE &= 0xbf;
+#endif
   g_note = 0;
 }
 
@@ -85,7 +92,9 @@ void BeepLoadScore(u8 sequenceId)
   if (g_ui.outputMode == 0) {
     return;
   }
+#ifndef PW_STICK_S3
   TW.TIERW.BIT.IMIEA = 0;
+#endif
   id = sequenceId;
   /* Calculate the selected descriptor's serial EEPROM address. */
   directoryEntry = (SoundEntry *)EEPROM_SOUND_DIRECTORY;
@@ -93,7 +102,9 @@ void BeepLoadScore(u8 sequenceId)
   EepromRead((u16)directoryEntry, &descriptor, sizeof(SoundEntry));
   /* Decode the stored little-endian offset, then rebase it into EEPROM. */
   location = descriptor.offsetLe;
+#ifndef PW_STICK_S3
   location = ((location >> 8) | (location << 8));
+#endif
   location =
       (location + (u16) & ((SoundArchive *)EEPROM_SOUND_DIRECTORY)->scores[0]);
   if (descriptor.byteLength <= BEEPER_SEQUENCE_MAX_BYTES) {
@@ -115,7 +126,9 @@ void BeepLoadScore(u8 sequenceId)
       g_ui.separatorPeriodsRemaining = 0;
     }
   }
+#ifndef PW_STICK_S3
   TW.TIERW.BIT.IMIEA = 1;
+#endif
 }
 
 void BeepSelectScore(const Note *score)
@@ -129,6 +142,9 @@ void BeepSelectScore(const Note *score)
  * the remaining duration counters are independent of the timer enable. */
 void BeepEnableTimer(void)
 {
+#ifdef PW_STICK_S3
+  StickSoundEnable();
+#else
   CKSTPR2.BYTE |= 0x40;
   TW.TIERW.BIT.IMIEA = 0;
   TW.TCRW.BYTE = TIMER_W_WATCH_CLEAR_A;
@@ -138,16 +154,21 @@ void BeepEnableTimer(void)
   TW.TIERW.BIT.IMIEA = 1;
   TW.TCNT = 0;
   TW.TMRW.BYTE = TIMER_W_COMPARE_ONLY;
+#endif
 }
 
 /* Stop interrupts and the module clock, preserving the selected score. */
 void BeepDisableTimer(void)
 {
+#ifdef PW_STICK_S3
+  StickSoundDisable();
+#else
   TW.TIERW.BIT.IMIEA = 0;
   TW.TMRW.BYTE = 0;
   TW.TCRW.BYTE = TIMER_W_WATCH_CLEAR_A;
   TW.TSRW.BIT.IMFA = 0;
   CKSTPR2.BYTE &= 0xbf;
+#endif
 }
 
 void BeepSetOutputMode(u8 mode)
@@ -168,6 +189,9 @@ void BeepSetOutputMode(u8 mode)
  * modes preserve the compares. Every call resets the timer count. */
 void BeepSetPeriod(u8 compareValue)
 {
+#ifdef PW_STICK_S3
+  StickSoundPeriod(compareValue, g_ui.outputMode);
+#else
   switch (g_ui.outputMode) {
   case BEEPER_OUTPUT_ALL_EQUAL:
     TW.GRA = compareValue;
@@ -186,6 +210,7 @@ void BeepSetPeriod(u8 compareValue)
     break;
   }
   TW.TCNT = 0;
+#endif
 }
 
 /* Called per compare-A interrupt. g_note points to the next record while the
@@ -202,9 +227,13 @@ void BeepAdvance(void)
     g_ui.periodsRemaining--;
     if ((g_ui.periodsRemaining == 1) &&
         ((g_note->pitch & NOTE_PITCH_MASK) == NOTE_END)) {
+#ifdef PW_STICK_S3
+      StickSoundMute();
+#else
       TW.TMRW.BYTE = TIMER_W_COMPARE_ONLY;
       TW.TIOR0.BYTE = TIMER_W_COMPARE_B_LOW;
       TW.TIOR1.BYTE = TIMER_W_COMPARE_C_LOW;
+#endif
     }
     if (g_ui.periodsRemaining != 0) {
       return;
@@ -215,10 +244,14 @@ void BeepAdvance(void)
   } else if (g_ui.separatorPeriodsRemaining == 0) {
     goto playNote;
   } else {
+#ifdef PW_STICK_S3
+    StickSoundSilencePeriod(BEEPER_SEPARATOR_COMPARE);
+#else
     TW.GRA = BEEPER_SEPARATOR_COMPARE;
     TW.GRB = BEEPER_SEPARATOR_COMPARE;
     TW.GRC = BEEPER_SEPARATOR_COMPARE;
     TW.TCNT = 0;
+#endif
 
     if (g_ui.separatorPeriodsRemaining != 0) {
       g_ui.separatorPeriodsRemaining--;
@@ -228,6 +261,9 @@ void BeepAdvance(void)
 playNote:
   if ((g_note->pitch & NOTE_PITCH_MASK) == NOTE_END) {
     g_note = 0;
+#ifdef PW_STICK_S3
+    StickSoundMute();
+#endif
     return;
   }
   /* Consume at most one tempo command. A repeat selects the shared RAM score
@@ -268,8 +304,10 @@ playNote:
     /* The preceding record's legato flag controls whether pitch is changed. */
     if ((g_note != BEEPER_SEQUENCE_RAM) &&
         ((g_note[-1].pitch & NOTE_LEGATO) != NOTE_LEGATO)) {
+#ifndef PW_STICK_S3
       TW.TMRW.BYTE = TIMER_W_PWM_BC;
       TW.TCRW.BYTE = TIMER_W_WATCH_CLEAR_A_B_HIGH;
+#endif
 
       BeepSetPeriod(g_residentResources.bytes[g_note->pitch & NOTE_PITCH_MASK]);
     }
@@ -281,5 +319,7 @@ playNote:
 void TimerWInterrupt(void)
 {
   BeepAdvance();
+#ifndef PW_STICK_S3
   TW.TSRW.BYTE &= 0xfe;
+#endif
 }

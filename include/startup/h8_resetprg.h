@@ -15,4 +15,9 @@ void StatusApplyTime(void);
  */
 void CommitStagedWalk(void);
 
+#ifdef PW_STICK_S3
+/* Enter the original foreground state machine after Stick peripherals mount. */
+void StickPortBoot(void);
+#endif
+
 #endif

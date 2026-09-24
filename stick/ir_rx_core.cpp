@@ -115,7 +115,7 @@ void remove_recovery_tails(const uint8_t *bins, const uint16_t *strong,
 }
 
 bool weak_pair_in_cell(const uint8_t *bins, size_t gates, unsigned cell,
-                       const Geometry &geometry) {
+                       const Geometry &geometry, uint8_t weak_cutoff) {
   const int center = (geometry.origin_twice * 10000 +
                       int(cell) * geometry.step_10000 * 2 + 10000) /
                      20000;
@@ -123,7 +123,7 @@ bool weak_pair_in_cell(const uint8_t *bins, size_t gates, unsigned cell,
     if (gate < 0 || size_t(gate + 1) >= gates) continue;
     if (nearest_cell(unsigned(gate), geometry) == int(cell) &&
         nearest_cell(unsigned(gate + 1), geometry) == int(cell) &&
-        bins[gate] < 126 && bins[gate + 1] < 126)
+        bins[gate] < weak_cutoff && bins[gate + 1] < weak_cutoff)
       return true;
   }
   return false;
@@ -131,13 +131,14 @@ bool weak_pair_in_cell(const uint8_t *bins, size_t gates, unsigned cell,
 
 }  // namespace
 
-bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out) {
+bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
+                       uint8_t pulse_cutoff) {
   out = WireBurst{};
   if (!bins || !gate_count || gate_count > kMaxBurstGates) return false;
   uint16_t strong[kMaxStrongGates];
   unsigned strong_count = 0;
   for (size_t gate = 0; gate < gate_count; ++gate) {
-    if (bins[gate] >= 124) continue;
+    if (bins[gate] >= pulse_cutoff) continue;
     if (strong_count == kMaxStrongGates) return false;
     strong[strong_count++] = uint16_t(gate);
   }
@@ -153,7 +154,8 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out) {
     for (unsigned bit = 0; bit < 8; ++bit) {
       const unsigned cell = base + bit + 1;
       bool pulse = geometry.occupied[cell];
-      if (!pulse && weak_pair_in_cell(bins, gate_count, cell, geometry)) {
+      if (!pulse && weak_pair_in_cell(bins, gate_count, cell, geometry,
+                                     uint8_t(pulse_cutoff + 2))) {
         pulse = true;
         ++out.weak_pairs;
       }

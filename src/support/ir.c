@@ -38,9 +38,11 @@ uint PacketChecksum(u8 *bytes, u32 length)
 #include "stick/eeprom_backend.h"
 #include "stick/ir_transport.h"
 #define IR_TIMER_NOW() StickIrTicks()
+#define IR_TIMER_ELAPSED(reference) ((u16)(IR_TIMER_NOW() - (reference)))
 #else
 #include "startup/iodefine.h"
 #define IR_TIMER_NOW() TW.TCNT
+#define IR_TIMER_ELAPSED(reference) (IR_TIMER_NOW() - (reference))
 #endif
 #include "project.h"
 
@@ -400,7 +402,7 @@ void IrProtocolTick(void)
   }
 #endif
 
-  elapsedTicks = (IR_TIMER_NOW() - g_state.irTimerReference);
+  elapsedTicks = IR_TIMER_ELAPSED(g_state.irTimerReference);
   if (elapsedTicks <= PW_IR_FRAME_GAP_TICKS) {
     return;
   }
@@ -419,7 +421,7 @@ void IrProtocolTick(void)
     retryDelayTicks = (((RandomNext() >> 5) & PW_IR_RETRY_JITTER_MASK) *
                        PW_IR_RETRY_JITTER_TICKS);
     g_state.irTimerReference = IR_TIMER_NOW();
-    while ((IR_TIMER_NOW() - g_state.irTimerReference) < retryDelayTicks) {
+    while (IR_TIMER_ELAPSED(g_state.irTimerReference) < retryDelayTicks) {
     }
     g_work.irc.work.handshakePhase = IR_PHASE_PROBING;
     IrTransmitByte(IR_CONNECT);
@@ -510,7 +512,7 @@ void IrProtocolTick(void)
         retryDelayTicks = (((RandomNext() >> 5) & PW_IR_RETRY_JITTER_MASK) *
                            PW_IR_RETRY_JITTER_TICKS);
         g_state.irTimerReference = IR_TIMER_NOW();
-        while ((IR_TIMER_NOW() - g_state.irTimerReference) < retryDelayTicks) {
+        while (IR_TIMER_ELAPSED(g_state.irTimerReference) < retryDelayTicks) {
         }
         g_work.irc.work.handshakePhase = IR_PHASE_PROBING;
         IrTransmitByte(IR_CONNECT);
