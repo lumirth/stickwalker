@@ -33,7 +33,13 @@ uint PacketChecksum(u8 *bytes, u32 length)
   return checksum;
 }
 
+#ifdef PW_STICK_S3
+#include "stick/ir_transport.h"
+#define IR_TIMER_NOW() StickIrTicks()
+#else
 #include "startup/iodefine.h"
+#define IR_TIMER_NOW() TW.TCNT
+#endif
 #include "project.h"
 
 /* Initialize both EEPROM cursors and reset transfer progress at the start of
@@ -64,9 +70,13 @@ u8 *IrPayload(void)
 
 void IrInitPins(void)
 {
+#ifdef PW_STICK_S3
+  StickIrInitPins();
+#else
   IO.TARGET_F088 = 3;
   IO.PDR3.BYTE = 1;
   IO.PCR3 = 5;
+#endif
 }
 
 void IrTransmitByte(u8 value);
@@ -88,8 +98,10 @@ void SendPacket(u8 payloadLength, u8 command, u8 argument)
 {
   IrcHeader *header;
   u16 checksum;
+#ifndef PW_STICK_S3
   u16 i;
   u16 transmitEndTicks;
+#endif
 
   header = (IrcHeader *)g_work.irc.packet;
   header->command = command;
@@ -104,6 +116,10 @@ void SendPacket(u8 payloadLength, u8 command, u8 argument)
   header->checksumHi = (checksum >> 8);
 
   payloadLength += IR_HEADER_BYTES;
+#ifdef PW_STICK_S3
+  StickIrSendFrame(g_work.irc.packet, payloadLength);
+  StickIrDelayTicks(2);
+#else
   i = 0;
   while (i < payloadLength) {
     IrTransmitByte(g_work.irc.packet[i]);
@@ -118,12 +134,16 @@ void SendPacket(u8 payloadLength, u8 command, u8 argument)
   if (SCI3.SSR3.BIT.RDRF != 0) {
     g_work.irc.work.sci3RxDrainByte = SCI3.RDR3;
   }
+#endif
 }
 
 /* Enable SCI3's clock, initialize the UART, allow settling time, and enable
  * the IrDA transmit path. */
 void IrConfigure(void)
 {
+#ifdef PW_STICK_S3
+  StickIrConfigure();
+#else
   s8 settle;
 
   CKSTPR1.BYTE |= 0x40; /* SCI3 clock-stop bit 6 */
@@ -140,14 +160,19 @@ void IrConfigure(void)
   SCI3.IrCR.BYTE = 0x80;
   SCI3.SPCR.BYTE = 0x11;
   SCI3.SCR3.BYTE = 0x30;
+#endif
 }
 
 /* Wait for SCI3 TDRE, XOR the byte with the transport mask, and write TDR3. */
 void IrTransmitByte(u8 value)
 {
+#ifdef PW_STICK_S3
+  StickIrSendByte(value);
+#else
   while (SCI3.SSR3.BIT.TDRE == 0) {
   }
   SCI3.TDR3 = (value ^ PW_IR_TRANSPORT_XOR);
+#endif
 }
 
 void IrInit(void)
@@ -159,6 +184,10 @@ void IrInit(void)
  * Timer W continuously as the protocol clock and drain pending SCI3 input. */
 void IrHardwareStart(void)
 {
+#ifdef PW_STICK_S3
+  IrConfigure();
+  StickIrStart();
+#else
   u8 ssr3;
 
   IrConfigure();
@@ -177,6 +206,7 @@ void IrHardwareStart(void)
   if (SCI3.SSR3.BIT.RDRF != 0) {
     g_work.irc.work.sci3RxDrainByte = SCI3.RDR3;
   }
+#endif
 }
 
 #define IR_ACK 0xF8u
@@ -218,7 +248,7 @@ void IrBegin(void)
   g_work.irc.work.sessionFlags.bits.receivedBurst = 0;
   g_state.irReceivedBytes = 0;
   g_work.irc.work.writeOnlyZeroByte = 0;
-  g_state.irTimerReference = TW.TCNT;
+  g_state.irTimerReference = IR_TIMER_NOW();
   g_work.irc.work.bulkPhase = PEER_BULK_IDLE;
   IrTransmitByte(IR_CONNECT);
 }
@@ -322,6 +352,26 @@ void IrProtocolTick(void)
   u8 argument;
 
   WatchdogService();
+#ifdef PW_STICK_S3
+  if (StickIrFailed()) {
+    g_state.irResult = IR_RESULT_CONNECTION_ERROR;
+    IrFinish();
+    return;
+  }
+  {
+    u8 length;
+    u16 lastObservationTick;
+    if (StickIrTakeBurst(g_work.irc.packet, PW_IR_RX_WINDOW_CAPACITY,
+                         &length, &lastObservationTick)) {
+      u16 index;
+      g_state.irReceivedBytes = length;
+      for (index = 0; index < length; index++)
+        g_work.irc.packet[index] ^= PW_IR_TRANSPORT_XOR;
+      g_state.irTimerReference = lastObservationTick;
+    }
+  }
+  receivedBytes = g_state.irReceivedBytes;
+#else
   SCI3.SSR3.BYTE &= 0xc4;
   receivedBytes = g_state.irReceivedBytes;
   if (SCI3.SSR3.BIT.RDRF != 0) {
@@ -336,8 +386,9 @@ void IrProtocolTick(void)
     g_state.irTimerReference = TW.TCNT;
     return;
   }
+#endif
 
-  elapsedTicks = (TW.TCNT - g_state.irTimerReference);
+  elapsedTicks = (IR_TIMER_NOW() - g_state.irTimerReference);
   if (elapsedTicks <= PW_IR_FRAME_GAP_TICKS) {
     return;
   }
@@ -355,16 +406,16 @@ void IrProtocolTick(void)
     }
     retryDelayTicks = (((RandomNext() >> 5) & PW_IR_RETRY_JITTER_MASK) *
                        PW_IR_RETRY_JITTER_TICKS);
-    g_state.irTimerReference = TW.TCNT;
-    while ((TW.TCNT - g_state.irTimerReference) < retryDelayTicks) {
+    g_state.irTimerReference = IR_TIMER_NOW();
+    while ((IR_TIMER_NOW() - g_state.irTimerReference) < retryDelayTicks) {
     }
     g_work.irc.work.handshakePhase = IR_PHASE_PROBING;
     IrTransmitByte(IR_CONNECT);
-    timerSample = TW.TCNT;
+    timerSample = IR_TIMER_NOW();
     /* Timer W bit 14 selects the raster bank. */
     displayBank = ((timerSample >> 14) & 1);
     DisplaySelectBank(displayBank);
-    g_state.irTimerReference = TW.TCNT;
+    g_state.irTimerReference = IR_TIMER_NOW();
     return;
   }
 
@@ -442,12 +493,12 @@ void IrProtocolTick(void)
       case IR_PHASE_REPLY_SENT:
         retryDelayTicks = (((RandomNext() >> 5) & PW_IR_RETRY_JITTER_MASK) *
                            PW_IR_RETRY_JITTER_TICKS);
-        g_state.irTimerReference = TW.TCNT;
-        while ((TW.TCNT - g_state.irTimerReference) < retryDelayTicks) {
+        g_state.irTimerReference = IR_TIMER_NOW();
+        while ((IR_TIMER_NOW() - g_state.irTimerReference) < retryDelayTicks) {
         }
         g_work.irc.work.handshakePhase = IR_PHASE_PROBING;
         IrTransmitByte(IR_CONNECT);
-        g_state.irTimerReference = TW.TCNT;
+        g_state.irTimerReference = IR_TIMER_NOW();
         break;
       }
     } else {
@@ -1137,18 +1188,21 @@ void IrProtocolTick(void)
   }
 
 packetDone:
-  timerSample = TW.TCNT;
+  timerSample = IR_TIMER_NOW();
   /* Timer W bit 14 animates the two prepared connection frames. */
   displayBank = ((timerSample >> 14) & 1);
   DisplaySelectBank(displayBank);
   g_state.irReceivedBytes = 0;
-  g_state.irTimerReference = TW.TCNT;
+  g_state.irTimerReference = IR_TIMER_NOW();
 }
 
 /* Stop the IR peripherals, then dispatch the session's completion action or
  * result. */
 void IrFinish(void)
 {
+#ifdef PW_STICK_S3
+  StickIrStop();
+#else
   IRR1.BIT.IRRI1 = 0;
   IO.PDR3.BYTE = 1;
   SCI3.SPCR.BYTE = 1;
@@ -1157,5 +1211,6 @@ void IrFinish(void)
   TW.TCRW.BIT.CCLR = 1;
   TW.TMRW.BIT.CTS = 0;
   CKSTPR2.BIT.TWCKSTP = 0;
+#endif
   IrComplete();
 }
