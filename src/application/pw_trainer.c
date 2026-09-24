@@ -10,6 +10,9 @@
 #include "support/lib_common.h"
 #include "support/scratch.h"
 #include "application/pw_trainer.h"
+#ifdef PW_STICK_S3
+#include "stick_wire_endian.h"
+#endif
 
 void TrainerTime(void);
 void TrainerHistory(void);
@@ -199,6 +202,9 @@ void TrainerHistory(void)
   data = (WalkData *)EEPROM_WALK;
   EepromRead((u16)&data->dailySteps[g_ui.view.trainer.historyDaysAgo - 1],
              &historySteps, sizeof(historySteps));
+#ifdef PW_STICK_S3
+  historySteps = StickReadBe32((const u8 *)&historySteps);
+#endif
   RenderDecimal(0x30, 0x10, historySteps, NUMBER_NO_RULE);
   RenderDecimal(0x58, 0x20, g_state.save.days, NUMBER_NO_RULE);
   RenderDecimal(0x30, 0x30, g_state.save.totalSteps, NUMBER_NO_RULE);

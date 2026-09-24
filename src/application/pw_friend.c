@@ -10,6 +10,9 @@
 #include "application/pw_home.h"
 #include "support/lib_common.h"
 #include "support/scratch.h"
+#ifdef PW_STICK_S3
+#include "stick_wire_endian.h"
+#endif
 
 extern const u8 g_peerNoteShifts[6];
 
@@ -93,6 +96,8 @@ void PeerAwardGift(void)
   PeerInfo *peer;
   Item *items;
   u32 giftScore;
+  u32 peerDailySteps;
+  u16 peerHourSteps;
   u8 freeSlot;
 
   ScratchReset();
@@ -103,11 +108,24 @@ void PeerAwardGift(void)
   ScratchAlloc(sizeof(Course));
   peer = ScratchAlloc(sizeof(PeerInfo));
   EepromRead(EEPROM_PEER_INFO, peer, sizeof(PeerInfo));
+#ifdef PW_STICK_S3
+  peerDailySteps = StickReadBe32((const u8 *)&peer->dailySteps);
+  peerHourSteps = StickReadBe16((const u8 *)&peer->hourSteps);
+#else
+  peerDailySteps = peer->dailySteps;
+  peerHourSteps = peer->hourSteps;
+#endif
   items = ScratchAlloc(sizeof(Item) * 10);
   EepromRead(PW_EEPROM_MEMBER_ADDRESS(EEPROM_WALK, WalkData, friendItems),
              items, sizeof(Item) * 10);
-  giftScore = g_state.dailySteps + peer->dailySteps +
-              ((g_state.hourSteps + peer->hourSteps) * 10);
+#ifdef PW_STICK_S3
+  /* The H8's 16-bit int wraps the hourly term before the 32-bit addition. */
+  giftScore = g_state.dailySteps + peerDailySteps +
+              (u16)((g_state.hourSteps + peerHourSteps) * 10u);
+#else
+  giftScore = g_state.dailySteps + peerDailySteps +
+              ((g_state.hourSteps + peerHourSteps) * 10);
+#endif
   if (giftScore > 20000ul) {
     giftScore = 20000ul;
   }
@@ -133,7 +151,7 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
-    if (g_state.dailySteps > peer->dailySteps) {
+    if (g_state.dailySteps > peerDailySteps) {
       g_ui.view.peer.itemIndex = 0;
     } else {
       g_ui.view.peer.itemIndex = 1;
@@ -146,7 +164,7 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
-    if (g_state.dailySteps > peer->dailySteps) {
+    if (g_state.dailySteps > peerDailySteps) {
       g_ui.view.peer.itemIndex = 2;
     } else {
       g_ui.view.peer.itemIndex = 3;
@@ -159,7 +177,7 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
-    if (g_state.dailySteps > peer->dailySteps) {
+    if (g_state.dailySteps > peerDailySteps) {
       g_ui.view.peer.itemIndex = 4;
     } else {
       g_ui.view.peer.itemIndex = 5;
@@ -172,7 +190,7 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
-    if (g_state.dailySteps > peer->dailySteps) {
+    if (g_state.dailySteps > peerDailySteps) {
       g_ui.view.peer.itemIndex = 6;
     } else {
       g_ui.view.peer.itemIndex = 7;
@@ -185,7 +203,7 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
-    if (g_state.dailySteps > peer->dailySteps) {
+    if (g_state.dailySteps > peerDailySteps) {
       g_ui.view.peer.itemIndex = 8;
     } else {
       g_ui.view.peer.itemIndex = 9;
@@ -413,8 +431,13 @@ void PeerAppendDiary(void)
   diary->peerForm = peer->form;
   diary->peerSex = peer->sex;
   diary->peerShiny = peer->shiny;
+#ifdef PW_STICK_S3
+  diary->peerHourSteps = StickReadBe16((const u8 *)&peer->hourSteps);
+  diary->peerDaySteps = StickReadBe32((const u8 *)&peer->dailySteps);
+#else
   diary->peerHourSteps = peer->hourSteps;
   diary->peerDaySteps = peer->dailySteps;
+#endif
   i = 0;
   do {
     diary->peerNickname[i] = peer->nickname[i];

@@ -21,6 +21,13 @@ explicit hardware adapters. The H8's 16-bit `int` and pointers, packed record
 layouts, endian behavior, and shared storage overlays need validation on the
 ESP32-S3 before this can be called a firmware port.
 
+Protocol behavior comes from the matching `pw` source, including its command
+table, checksum, session transitions, and timeout decisions. Target-only
+conversions reproduce H8 in-memory byte and bit layout at the wire or EEPROM
+boundary. Bench traces are validation evidence, not rules for changing that
+behavior. In particular, H8-native counters and the session token are
+big-endian, while fields suffixed `Le` are forwarded in their existing bytes.
+
 The receiver belongs in this target's hardware layer. Implement acquisition,
 sampling, decoding, bounded byte delivery, half-duplex ownership, and error
 reporting here against the native IR protocol code. The bench `.137` image is
@@ -64,6 +71,10 @@ instructions and requalify it with sealed traffic and complete exchanges.
   ESP32, and the native IR token and step counters are emitted in H8 byte
   order. These are focused compatibility changes, not a complete endian
   audit of every EEPROM and protocol record.
+- Peer step counters are decoded from H8 byte order only when the application
+  calculates a gift or builds a diary entry. Diary counters and saved daily
+  history retain H8 byte order; the trainer history view decodes that stored
+  value. A sanitizer-backed diary record test covers these boundaries.
 - A target RMT transmitter for logical bytes is compiled, but the continuous
   optical service, foreground scheduling, motion, RTC, and sound adapters are
   not connected yet.

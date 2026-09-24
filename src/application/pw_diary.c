@@ -4,6 +4,9 @@
 #include "project.h"
 #include "application/pw_diary.h"
 #include "application/pw_eeprom_m95512.h"
+#ifdef PW_STICK_S3
+#include "stick_wire_endian.h"
+#endif
 
 #define PW_DIARY_RING_SLOTS 23
 
@@ -110,6 +113,15 @@ void DiaryAppend(Course *course, DiaryEntry *diary, u8 actionId,
   default:
     break;
   }
+#ifdef PW_STICK_S3
+  /* These counters are native H8 values in the stored record. The fields
+   * suffixed Le above are forwarded bytes and must not be swapped. */
+  StickWriteBe32((u8 *)&diary->rtcSeconds, diary->rtcSeconds);
+  StickWriteBe16((u8 *)&diary->ownHourSteps, diary->ownHourSteps);
+  StickWriteBe16((u8 *)&diary->peerHourSteps, diary->peerHourSteps);
+  StickWriteBe32((u8 *)&diary->ownDaySteps, diary->ownDaySteps);
+  StickWriteBe32((u8 *)&diary->peerDaySteps, diary->peerDaySteps);
+#endif
   EepromWrite((u16)entryAddress, diary, sizeof(DiaryEntry));
   g_state.save.diaryIndex =
       ((g_state.save.diaryIndex + 1) % PW_DIARY_RING_SLOTS);
