@@ -39,8 +39,11 @@ instructions and requalify it with sealed traffic and complete exchanges.
 
 - The source base is the current `pw` decompilation.
 - `controls.cpp` is a target-only input adapter for the two-button comfort
-  profile and three-button profile. Its host test covers chord ordering, short
-  taps across native scans, and both landscape orientations.
+  profile and three-button profile. The physical M, R, and L switches were
+  counted on the Stick; an M+R chord delivered native Center and opened the
+  original menu. Its host test covers chord ordering, late second presses,
+  short taps across native scans, and both landscape orientations. The chord
+  window is selectable as 80, 120, or 160 ms.
 - `src/support/ir.c` now has a guarded target seam for the physical transport;
   its packet and session logic remains the original source. That source passes
   a native syntax check with 2-byte struct packing and 16-bit `uint`.
@@ -58,15 +61,20 @@ instructions and requalify it with sealed traffic and complete exchanges.
   relocations; there are no calls in the gate. The surrounding sampler and
   firmware still need a separate waveform and live receive check.
 - The input seam feeds native `InputScan` through debounced Stick button
-  levels. The NT7508 drawing code writes into a two-bank virtual panel whose
-  96×64 view is scaled onto the Stick display. The virtual bus and panel
-  adapter compile with the Stick toolchain; page, bitplane, bank, and sleep
-  behavior have a host test.
+  levels and now supplies the original Center IRQ wake latch. A forced
+  power-save to ten-scan Center hold trial on-device returned to interactive
+  mode. The NT7508 drawing code writes into a two-bank virtual panel whose
+  96×64 view is scaled onto the Stick display; NT7508 power-save now also
+  switches the physical backlight off. The virtual bus has a host test.
 - The storage seam retains the native mirror/repair algorithm. It maps the
-  64 KiB EEPROM image to two checked LittleFS slots and defers flash commits
-  during IR. Only a completely erased data partition may be formatted.
-  The mirror and SaveData wire-order tests run under sanitizers; persistence
-  and power-loss behavior still need board tests.
+  64 KiB EEPROM image to two checked LittleFS slots. Small changes use a
+  checked append journal; a mirrored source write is one journal transaction.
+  Boot replays the journal into a new checked image slot, and IR defers flash
+  commits until the session ends. Only a completely erased data partition may
+  be formatted. The source mirror and SaveData wire-order tests run under
+  sanitizers. A changed setting survived a hardware reset with both save
+  mirrors and checksums valid; interrupted-write recovery still needs a board
+  fault-injection test.
 - Explicit target bitfield ordering keeps the original byte masks on the
   ESP32, and the native IR token and step counters are emitted in H8 byte
   order. These are focused compatibility changes, not a complete endian
@@ -86,14 +94,61 @@ instructions and requalify it with sealed traffic and complete exchanges.
   allocator retains full ESP32 pointers instead of truncating them to the
   H8's 16-bit address width. These target paths have syntax and focused
   host checks. The board boots and continues native `MainTick`; physical axis
-  calibration and sound behavior still need direct validation.
-- Source-faithful 3DS trials have reached CONNECT, RESPONSE, ACK, and the
-  original peer-status request. The first 112-byte HGSS status reply remains
-  unreliable in this port. Its raw GPIO5 observation is retained in the
-  ignored `stick/.build/trials/port-wire-diagnostic/` run. A frozen `.137`
+  calibration remains open. The speaker produces game audio, and the user
+  confirmed the shorter cues are now audible.
+- A source-faithful 3DS entry completed all 368 pages with 374 valid Stick
+  receives and no invalid packets in
+  `stick/.build/trials/port-hgss-real-image-atomic-complete/`. Independent
+  EEPROM readback matched the HGSS source-built image and the transmitted
+  course byte for byte. The course and record in that trial were sealed random
+  payloads, so it proves transport and storage rather than a coherent game
+  screen. Full repeated transaction qualification remains open. A frozen `.137`
   app image remains at `../bench/experiments/g5-terminal-start-137/app.bin`;
   its full pre-port flash backup is also retained under `stick/.build/`.
+- A source-faithful registered-walker `back` transaction on the integrated
+  firmware received 90 valid bursts, ended with the original HGSS DONE result,
+  and cleared the saved Pokémon flag while retaining registration. An `entry`
+  request on that already registered walker was correctly rejected by HGSS.
+  The bench artifacts are under `stick/.build/trials/journal-hgss-005-back/`.
+- Two subsequent source-faithful `put` transactions and an intervening `back`
+  completed on the same Stick boot (`journal-hgss-006-put` through
+  `journal-hgss-008-put`). The two `put` runs each received 133 valid bursts
+  without an invalid packet, and the intervening `back` received 90 valid
+  bursts without an invalid packet. Each operation reached the original PHC
+  DONE state. Independent 64 KiB EEPROM readback after both `put` runs matched
+  every byte of the 10,430-byte course fixture, with both status copies and
+  checksums valid and the Pokémon flag set. The fixture comes from HGSS's
+  first-course table, compressed artwork, and course background. It chooses a
+  plausible starter and renders English labels because no trainer save or DS
+  message renderer is running on this bench; `hgss_course_fixture.py` records
+  these choices. The 3DS still executes the original PHC protocol engine.
 - The current serial `c` trigger and verbose burst output are enabled only
   with `PW_STICK_BENCH_CONTROL`; they are bringup instruments, not protocol
-  decision makers. The 3DS runs the source-owned retail peer. No complete
-  transaction on this port has passed yet, so this is not qualified firmware.
+  decision makers. The 3DS runs the source-owned retail peer. The native
+  foreground holds 16 ticks/s, 4 UI frames/s, and one RTC second per wall
+  second. The sound score reaches the Stick's I2S speaker and codec with no
+  reported start or tone failure; the user confirmed short sounds improved.
+  The user also confirmed responsive controls and the 20 ms M+R hold. A
+  Settings save's measured main-loop gap fell from 3.48 seconds to 12 ms.
+
+## Stick controls
+
+The default Comfort layout in left-side-down orientation maps M to native
+Left, R to native Right, M+R held together to native Center, and L to the
+Stick settings screen. The direction mapping follows the observed movement
+of the original menu's selected icon on this panel. The first press is held
+for the selected 80/120/160 ms chord window; Center requires both buttons
+to remain pressed together for 20 ms after the second debounced press. A
+fleeting overlap while alternating directions produces direction taps.
+Once a single
+direction has been emitted, a late second press cannot become Center until
+both buttons are released. Short taps are queued for the next native input
+scan. A held Center wakes the original game after eight 62.5 ms scans.
+
+In Stick settings, M moves to the next row, R changes that row, and L closes
+the menu. Settings include Comfort or Three Button input, either landscape
+orientation, an 80/120/160 ms chord window, and a one-second speaker test.
+They persist separately from the Pokéwalker's 64 KiB EEPROM. In Three Button
+mode, M is native Center, R and L are the directional keys; hold L for 1.2
+seconds to open Stick settings. Device settings pause game input while keeping
+the original clock and foreground code running.

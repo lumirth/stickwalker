@@ -13,7 +13,19 @@ void StickSoundDisable(void);
 void StickSoundPeriod(u16 compare, u8 outputMode);
 void StickSoundSilencePeriod(u16 compare);
 void StickSoundMute(void);
+void StickSoundQuiesceForIr(void);
 void StickSoundService(void);
+int StickSoundTestTone(void);
+#ifdef PW_STICK_BENCH_CONTROL
+void StickSoundDiagnostic(unsigned *enabled, unsigned *ready,
+                          unsigned *codec, unsigned *mode,
+                          unsigned *compare, unsigned *begins,
+                          unsigned *begin_failures, unsigned *power_failures,
+                          unsigned *tones, unsigned *tone_failures,
+                          unsigned *playing);
+void StickSoundTimingDiagnostic(unsigned *measured, unsigned *under_20ms,
+                               unsigned *under_50ms, unsigned *shortest_us);
+#endif
 
 #ifdef __cplusplus
 }

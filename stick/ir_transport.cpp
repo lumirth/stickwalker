@@ -3,6 +3,7 @@
 #include "ir_gate.h"
 #include "ir_rx_core.h"
 #include "ir_tx.h"
+#include "sound_bridge.h"
 
 #include <Arduino.h>
 #include <driver/dedic_gpio.h>
@@ -21,9 +22,11 @@ constexpr uint32_t kRingSize = 32768;
 constexpr uint32_t kRingMask = kRingSize - 1;
 constexpr unsigned kEventSlots = 8;
 constexpr unsigned kGateHz = 345600;
-constexpr unsigned kLowCutoff = 116;
+constexpr unsigned kLowCutoff = 124;
 constexpr unsigned kPacketGapGates = 120;
-constexpr unsigned kSegmentGates = kGateHz / 8;
+// An entry exchange is shorter than 30 seconds. Do not insert a one-tick
+// blind spot every 125 ms: measured failures lost 5-9 opening UART bytes.
+constexpr unsigned kSegmentGates = kGateHz * 30;
 
 struct OpticalEvent {
   uint32_t first;
@@ -45,6 +48,12 @@ volatile bool worker_done = false;
 volatile bool tx_busy = false;
 volatile bool failed = false;
 volatile bool passive_diagnostic = false;
+#ifdef PW_STICK_BENCH_CONTROL
+volatile bool bench_trace = false;
+bool trace_enabled() {
+  return __atomic_load_n(&bench_trace, __ATOMIC_ACQUIRE);
+}
+#endif
 uint32_t overlong_bursts = 0;
 uint32_t raw_events = 0;
 uint32_t valid_bursts = 0;
@@ -94,13 +103,15 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
     bool detect_events, bool wake_events, bool session_idle_abort,
     uint16_t align_us, TaskHandle_t caller) {
   uint32_t next = aligned_next(align_us), fraction = 0;
-  uint32_t first_low = 0, last_low = 0, last_event_gate = first;
+  uint32_t first_low = 0, last_low = 0, last_service_gate = first;
   bool in_packet = false, self_echo = false;
   gpio_ll_output_enable(&GPIO, 5);
   uint32_t gate = first;
-  for (; gate < limit && !__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE);
+  for (; (gate < limit || in_packet) && gate < limit + pw_stick::kMaxBurstGates &&
+         !__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE);
        ++gate) {
-    if (session_idle_abort && gate - last_event_gate >= 69120) break;
+    if (session_idle_abort && !in_packet &&
+        gate - last_service_gate >= kGateHz / 10) break;
     const uint32_t t0 = next;
     fraction += 4;
     next += 694;
@@ -115,6 +126,10 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
           first_low = gate;
           in_packet = true;
           self_echo = __atomic_load_n(&tx_busy, __ATOMIC_ACQUIRE);
+          // Quiet the other core only for the optical burst. A whole-session
+          // tick mask trips its interrupt watchdog, while a live OS tick can
+          // disturb the GPIO5 charge measurement within a UART data cell.
+          core1_tick(false);
         }
         last_low = gate;
       } else if (in_packet && gate - last_low >= kPacketGapGates) {
@@ -133,22 +148,30 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
           }
         }
         in_packet = false;
-        last_event_gate = gate;
+        core1_tick(true);
         if (wake_events && !self_echo) {
           __atomic_store_n(&produced, gate + 1, __ATOMIC_RELEASE);
-          core1_tick(true);
           portENABLE_INTERRUPTS();
           if (caller) xTaskNotifyGive(caller);
+          // This is a causal peer packet boundary: the peer waits for the
+          // Stick's answer, so service the idle task and watchdog here.
           vTaskDelay(1);
-          core1_tick(false);
           portDISABLE_INTERRUPTS();
           next = aligned_next(align_us);
+          last_service_gate = gate;
         }
       }
     }
     while (int32_t(esp_cpu_get_cycle_count() - next) < 0) {}
   }
-  if (in_packet) ++overlong_bursts;
+  if (in_packet) {
+    core1_tick(true);
+    ++overlong_bursts;
+    // A packet that reaches the bounded extension has no valid optical gap.
+    // The protocol must see an error, never a truncated but plausible frame.
+    if (gate >= limit + pw_stick::kMaxBurstGates)
+      __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+  }
   __atomic_store_n(&produced, gate, __ATOMIC_RELEASE);
   gpio_ll_output_disable(&GPIO, 5);
   return gate;
@@ -175,14 +198,16 @@ void sampler(void *) {
   if (__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE)) goto finish;
 
   {
-    uint32_t next = esp_cpu_get_cycle_count() + 800;
+    uint32_t next;
     uint32_t fraction = 0;
     uint32_t gate = 0;
     pw_stick::GateHealth health;
 #ifdef PW_STICK_BENCH_CONTROL
-    if (!__atomic_load_n(&passive_diagnostic, __ATOMIC_ACQUIRE))
+    if (trace_enabled() &&
+        !__atomic_load_n(&passive_diagnostic, __ATOMIC_ACQUIRE))
       Serial.println("PW_STICK_SEGMENT_BEGIN");
 #endif
+    next = esp_cpu_get_cycle_count() + 800;
     portDISABLE_INTERRUPTS();
     if (__atomic_load_n(&passive_diagnostic, __ATOMIC_ACQUIRE)) {
       gpio_ll_output_enable(&GPIO, 5);
@@ -202,15 +227,14 @@ void sampler(void *) {
         gate = run_gate_segment(ring, gate, gate + kSegmentGates, health,
                                 input_mask, true, true, true, 250,
                                 protocol_handle);
-        core1_tick(true);
         portENABLE_INTERRUPTS();
 #ifdef PW_STICK_BENCH_CONTROL
-        if (gate <= kSegmentGates) Serial.printf("PW_STICK_SEGMENT_END gate=%lu\n",
-                                                  (unsigned long)gate);
+        if (trace_enabled() && gate <= kSegmentGates)
+          Serial.printf("PW_STICK_SEGMENT_END gate=%lu\n",
+                        (unsigned long)gate);
 #endif
         if (protocol_handle) xTaskNotifyGive(protocol_handle);
         vTaskDelay(1);
-        core1_tick(false);
         portDISABLE_INTERRUPTS();
       }
     }
@@ -223,9 +247,11 @@ void sampler(void *) {
 finish:
   core1_tick(true);
   if (bundle) dedic_gpio_del_bundle(bundle);
-  __atomic_store_n(&worker_done, true, __ATOMIC_RELEASE);
   if (protocol_handle) xTaskNotifyGive(protocol_handle);
-  vTaskDelete(nullptr);
+  __atomic_store_n(&worker_done, true, __ATOMIC_RELEASE);
+  // Deleting the current worker queues its TCB for the small IDLE0 stack to
+  // free. Defer that cleanup to the protocol task, which has more stack.
+  vTaskSuspend(nullptr);
 }
 
 uint16_t ticks_from_us(int64_t us) {
@@ -233,6 +259,15 @@ uint16_t ticks_from_us(int64_t us) {
 }
 
 }  // namespace
+
+#ifdef PW_STICK_BENCH_CONTROL
+extern "C" void StickIrBenchTrace(int enabled) {
+  __atomic_store_n(&bench_trace, enabled != 0, __ATOMIC_RELEASE);
+}
+extern "C" int StickIrBenchTraceEnabled(void) {
+  return trace_enabled();
+}
+#endif
 
 extern "C" void StickIrInitPins(void) {
   gpio_reset_pin(GPIO_NUM_5);
@@ -251,6 +286,7 @@ extern "C" void StickIrPassiveDiagnostic(int enabled) {
 
 extern "C" void StickIrStart(void) {
   if (__atomic_load_n(&failed, __ATOMIC_ACQUIRE)) return;
+  StickSoundQuiesceForIr();
   if (!ring) ring = static_cast<uint8_t *>(heap_caps_malloc(
       kRingSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   if (!packet_bins) packet_bins = static_cast<uint8_t *>(heap_caps_malloc(
@@ -291,6 +327,11 @@ extern "C" void StickIrStart(void) {
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
     return;
   }
+#ifdef PW_STICK_BENCH_CONTROL
+  if (trace_enabled())
+    Serial.printf("PW_STICK_WORKER_START handle=%p heap_ok=%u\n",
+                  worker_handle, unsigned(heap_caps_check_integrity_all(false)));
+#endif
   const int64_t deadline = esp_timer_get_time() + 100000;
   while (!__atomic_load_n(&worker_ready, __ATOMIC_ACQUIRE) &&
          !__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE) &&
@@ -301,7 +342,7 @@ extern "C" void StickIrStart(void) {
     __atomic_store_n(&stop_requested, true, __ATOMIC_RELEASE);
     return;
   }
-  core1_tick(false);
+  core1_tick(true);
   __atomic_store_n(&running, true, __ATOMIC_RELEASE);
 }
 
@@ -313,6 +354,15 @@ extern "C" void StickIrStop(void) {
     delay(1);
   if (worker_handle && !__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE))
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+#ifdef PW_STICK_BENCH_CONTROL
+  if (trace_enabled())
+    Serial.printf("PW_STICK_WORKER_STOP handle=%p done=%u heap_ok=%u\n",
+                  worker_handle,
+                  unsigned(__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE)),
+                  unsigned(heap_caps_check_integrity_all(false)));
+#endif
+  if (worker_handle && __atomic_load_n(&worker_done, __ATOMIC_ACQUIRE))
+    vTaskDelete(worker_handle);
   worker_handle = nullptr;
   __atomic_store_n(&running, false, __ATOMIC_RELEASE);
   gpio_reset_pin(GPIO_NUM_5);
@@ -320,6 +370,7 @@ extern "C" void StickIrStop(void) {
   gpio_pullup_dis(GPIO_NUM_5);
   gpio_pulldown_dis(GPIO_NUM_5);
 #ifdef PW_STICK_BENCH_CONTROL
+  if (trace_enabled()) {
   unsigned histogram[8] = {};
   unsigned frequencies[256] = {};
   const unsigned retained = final_samples < kRingSize ? final_samples : kRingSize;
@@ -376,12 +427,32 @@ extern "C" void StickIrStop(void) {
       Serial.printf("%02x", entry.wire[byte]);
     Serial.println();
   }
+  Serial.println("PW_STICK_STOP_COMPLETE");
+  }
 #endif
 }
 
 extern "C" u16 StickIrTicks(void) {
   return ticks_from_us(esp_timer_get_time());
 }
+
+#ifdef PW_STICK_BENCH_CONTROL
+extern "C" void StickIrTraceChecksumFailure(const u8 *bytes, u8 length,
+                                              u16 received, u16 computed) {
+  if (!trace_enabled()) return;
+  Serial.printf("PW_STICK_CHECKSUM_FAILURE length=%u received=%04x computed=%04x logical=",
+                length, received, computed);
+  for (unsigned i = 0; i < length; ++i) Serial.printf("%02x", bytes[i]);
+  Serial.println();
+}
+
+extern "C" void StickIrTraceMalformedPage(const u8 *bytes, u8 length) {
+  if (!trace_enabled()) return;
+  Serial.printf("PW_STICK_MALFORMED_PAGE length=%u payload=", length);
+  for (unsigned i = 0; i < length; ++i) Serial.printf("%02x", bytes[i]);
+  Serial.println();
+}
+#endif
 
 extern "C" void StickIrDelayTicks(u16 ticks) {
   const u16 start = StickIrTicks();
@@ -432,8 +503,16 @@ extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
                                                    kLowCutoff);
   const bool credible = decoded && burst.credible_uart();
 #ifdef PW_STICK_BENCH_CONTROL
-  if (burst_diagnostic_count < 32) {
-    auto &entry = burst_diagnostics[burst_diagnostic_count++];
+  if (!credible && count <= sizeof(diagnostic_bins)) {
+    memcpy(diagnostic_bins, packet_bins, count);
+    diagnostic_count = count;
+    diagnostic_first = event.first - base;
+    diagnostic_last = event.last - base;
+  }
+  {
+    const unsigned slot = burst_diagnostic_count < 32 ?
+        burst_diagnostic_count++ : 31;
+    auto &entry = burst_diagnostics[slot];
     entry.gates = count;
     entry.decoded = unsigned(decoded);
     entry.credible = unsigned(credible);

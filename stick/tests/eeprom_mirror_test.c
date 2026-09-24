@@ -7,9 +7,27 @@
 
 RuntimeState g_state;
 static u8 image[65536];
+static unsigned batch_depth;
+static unsigned writes_in_batch;
+static unsigned complete_batches;
+
+void StickEepromBatchBegin(void)
+{
+  assert(batch_depth++ == 0);
+  writes_in_batch = 0;
+}
+
+int StickEepromBatchEnd(void)
+{
+  assert(batch_depth-- == 1);
+  assert(writes_in_batch == 4);
+  ++complete_batches;
+  return 1;
+}
 
 void EepromWrite(u16 address, void *source, u16 length)
 {
+  if (batch_depth) ++writes_in_batch;
   memcpy(image + address, source, length);
 }
 
@@ -22,6 +40,7 @@ u8 EepromReadByte(u16 address) { return image[address]; }
 
 u8 EepromWriteByte(u16 address, u8 value)
 {
+  if (batch_depth) ++writes_in_batch;
   image[address] = value;
   return g_state.events.byte;
 }
@@ -43,6 +62,7 @@ int main(void)
 
   EepromMirrorWrite(EEPROM_SAVE_PRIMARY, EEPROM_SAVE_BACKUP,
                     (u8 *)&source, sizeof(source));
+  assert(complete_batches == 1);
   assert(image[EEPROM_SAVE_PRIMARY] == 0x12);
   assert(image[EEPROM_SAVE_PRIMARY + 1] == 0x34);
   assert(image[EEPROM_SAVE_PRIMARY + 2] == 0x56);

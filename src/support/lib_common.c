@@ -776,9 +776,18 @@ void BulkDecode(u8 *packed, u8 *out)
         packed++;
         back = (*packed++ + 1);
         remaining = (remaining - length);
+#ifndef PW_STICK_S3
         back = -back;
+#endif
         do {
+#ifdef PW_STICK_S3
+          /* H8's 16-bit pointer wraps the unsigned negative offset back into
+           * the preceding output. ESP32 pointers are wider, so express that
+           * same backward reference directly. */
+          *out = out[-(ptrdiff_t)back];
+#else
           *out = *(out + back);
+#endif
           out++;
         } while (--length != 0);
       }

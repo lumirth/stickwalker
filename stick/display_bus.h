@@ -23,6 +23,7 @@ extern StickDisplayIo IO;
 extern StickDisplaySsu SSU;
 void StickDisplayWrite(u8 value);
 void StickDisplayBusInit(void);
+int StickDisplayIsPowered(void);
 /* Read the panel's selected 96x64 view as four-shade palette indexes. */
 void StickDisplayFrame(u8 *pixels, u16 byteCount);
 

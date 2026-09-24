@@ -69,6 +69,8 @@ extern "C" void StickDisplayBusInit(void) {
   screen_enabled = true;
 }
 
+extern "C" int StickDisplayIsPowered(void) { return screen_enabled; }
+
 extern "C" void StickDisplayWrite(u8 value) {
   if (IO.PDR1.BIT.B1) data(value);
   else command(value);

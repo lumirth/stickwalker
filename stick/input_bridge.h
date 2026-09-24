@@ -13,6 +13,30 @@ void StickInputPoll(unsigned long milliseconds);
 /* Consume one native Pokewalker input scan, returning BUTTON_* bits. */
 u8 StickInputLevels(void);
 int StickMenuRequested(void);
+/* Device overlay consumes physical M/R/L without sending game input. */
+void StickInputMenuMode(int enabled);
+u8 StickInputTakeMenuButtons(void);
+u8 StickInputProfile(void);
+u8 StickInputOrientation(void);
+u8 StickInputChordWindowIndex(void);
+int StickInputConfigure(u8 profile, u8 orientation, u8 chord_window_index);
+#ifdef PW_STICK_BENCH_CONTROL
+void StickInputBenchInject(u8 button);
+void StickInputBenchMainHold(unsigned milliseconds);
+void StickInputBenchPowerEvent(void);
+void StickInputBenchHold(u8 button, unsigned scans);
+void StickInputDiagnostic(unsigned *main_edges, unsigned *side_edges,
+                          unsigned *power_edges, unsigned *power_event_count,
+                          unsigned *pmic_errors,
+                          unsigned *last_raw, unsigned *last_logical,
+                          unsigned *power_ready);
+void StickInputPathDiagnostic(unsigned *stable, unsigned *gesture,
+                             unsigned *desired, unsigned *delivered,
+                             unsigned *queued, unsigned *wait_release,
+                             unsigned *emitted, unsigned *consumed,
+                             unsigned *overflow, unsigned *left_edges,
+                             unsigned *right_edges, unsigned *center_edges);
+#endif
 
 #ifdef __cplusplus
 }

@@ -34,6 +34,13 @@ void StickIrSendFrame(const u8 *logical, u8 length);
 int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
                      u16 *lastObservationTick);
 int StickIrFailed(void);
+#ifdef PW_STICK_BENCH_CONTROL
+void StickIrBenchTrace(int enabled);
+int StickIrBenchTraceEnabled(void);
+void StickIrTraceChecksumFailure(const u8 *bytes, u8 length,
+                                u16 received, u16 computed);
+void StickIrTraceMalformedPage(const u8 *bytes, u8 length);
+#endif
 
 #ifdef __cplusplus
 }

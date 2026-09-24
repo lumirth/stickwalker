@@ -38,6 +38,9 @@ uint PacketChecksum(u8 *bytes, u32 length)
 #include "stick/eeprom_backend.h"
 #include "stick/ir_transport.h"
 #define IR_TIMER_NOW() StickIrTicks()
+#ifdef PW_STICK_BENCH_CONTROL
+void StickPortTrace(const char *text);
+#endif
 #define IR_TIMER_ELAPSED(reference) ((u16)(IR_TIMER_NOW() - (reference)))
 #else
 #include "startup/iodefine.h"
@@ -232,6 +235,46 @@ void IrHardwareStart(void)
 #define PW_IR_RETRY_JITTER_TICKS 0x60u
 
 #define PW_IR_BULK_MAXIMUM_CHUNK_LENGTH EEPROM_PAGE_BYTES
+#ifdef PW_STICK_S3
+/* The H8 decoder below trusts a checksum-valid compressed page. On the Stick,
+ * reject an impossible phrase before calling it so a damaged optical burst
+ * cannot underflow its 8-bit remaining count or read past the packet. Valid
+ * pages still use the original BulkDecode implementation unchanged. */
+static u8 StickCompressedPageWellFormed(const u8 *packed, u8 length)
+{
+  u16 input;
+  u16 output;
+  u8 flags;
+  u8 bit;
+
+  if (length < 5 || packed[1] != EEPROM_PAGE_BYTES) return 0;
+  input = 4;
+  output = 0;
+  while (output < EEPROM_PAGE_BYTES) {
+    if (input >= length) return 0;
+    flags = packed[input++];
+    for (bit = 0; bit < 8 && output < EEPROM_PAGE_BYTES; bit++) {
+      if (flags & 0x80) {
+        u16 count;
+        u16 behind;
+        if (input + 1 >= length) return 0;
+        count = (packed[input] >> 4) + 3;
+        behind = packed[input + 1] + 1;
+        input += 2;
+        if (behind > output || output + count > EEPROM_PAGE_BYTES)
+          return 0;
+        output += count;
+      } else {
+        if (input >= length) return 0;
+        input++;
+        output++;
+      }
+      flags <<= 1;
+    }
+  }
+  return 1;
+}
+#endif
 
 typedef char IrcReceiveStorageHoldsMaximumFrame
     [sizeof(g_work.irc.packet) >= PW_IR_RX_WINDOW_CAPACITY ? 1 : -1];
@@ -464,6 +507,10 @@ void IrProtocolTick(void)
   header->checksumHi = 0;
   computedChecksum = PacketChecksum(g_work.irc.packet, g_state.irReceivedBytes);
   if (receivedChecksum != computedChecksum) {
+#ifdef PW_STICK_BENCH_CONTROL
+    StickIrTraceChecksumFailure(g_work.irc.packet, g_state.irReceivedBytes,
+                               receivedChecksum, computedChecksum);
+#endif
     g_state.irReceivedBytes = 0;
     g_work.irc.work.checksumFailureCount++;
     if (g_work.irc.work.checksumFailureCount < PW_IR_CHECKSUM_FAIL_LIMIT) {
@@ -895,6 +942,14 @@ void IrProtocolTick(void)
     if (payloadLength == PW_IR_BULK_MAXIMUM_CHUNK_LENGTH) {
       EepromWritePage(address, payload);
     } else {
+#ifdef PW_STICK_S3
+      if (!StickCompressedPageWellFormed(payload, payloadLength)) {
+#ifdef PW_STICK_BENCH_CONTROL
+        StickIrTraceMalformedPage(payload, payloadLength);
+#endif
+        goto packetDone;
+      }
+#endif
       BulkDecode(payload, g_work.irc.eepromScratch);
       EepromWritePage(address, g_work.irc.eepromScratch);
     }
@@ -1224,7 +1279,9 @@ void IrFinish(void)
 {
 #ifdef PW_STICK_S3
   StickIrStop();
-  StickEepromDefer(0);
+#ifdef PW_STICK_BENCH_CONTROL
+  StickPortTrace("PW_STICK_AFTER_IR_STOP");
+#endif
 #else
   IRR1.BIT.IRRI1 = 0;
   IO.PDR3.BYTE = 1;
@@ -1236,4 +1293,12 @@ void IrFinish(void)
   CKSTPR2.BIT.TWCKSTP = 0;
 #endif
   IrComplete();
+#ifdef PW_STICK_S3
+  /* WalkStartCommit copies the staged course and updates many records.
+   * Persist its complete result as one atomic EEPROM-image generation. */
+  StickEepromDefer(0);
+#ifdef PW_STICK_BENCH_CONTROL
+  StickPortTrace("PW_STICK_AFTER_EEPROM_COMMIT");
+#endif
+#endif
 }

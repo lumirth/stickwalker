@@ -4,6 +4,7 @@
 #include "startup/hardware.h"
 #ifdef PW_STICK_S3
 #include "stick/display_bus.h"
+#include "stick/display_panel.h"
 #define LCD_TX(value) StickDisplayWrite((u8)(value))
 #else
 #define LCD_TX(value) (SSU.SSTDR = (value))
@@ -140,6 +141,9 @@ void DisplayInit(void)
  * panel, narrowed to one byte. */
 void DisplaySetContrast(u8 contrastDelta)
 {
+#ifdef PW_STICK_S3
+  StickDisplayPanelSetContrastDelta(contrastDelta);
+#endif
   SSU.SSER.BYTE = SSU_TX_ENABLE;
   IO.PDR1.BIT.B0 = 0;
   IO.PDR1.BIT.B1 = 0;

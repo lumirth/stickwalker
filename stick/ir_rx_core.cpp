@@ -57,17 +57,20 @@ bool fit_geometry(const uint16_t *strong, unsigned count, Geometry &best) {
     unsigned best_bad = UINT_MAX;
     uint64_t best_phase = UINT64_MAX;
     for (int step = 30000; step <= 30080; step += 5) {
-      for (int half = -4; half <= 8; ++half) {
-        Geometry candidate;
+      for (int half = -10; half <= 8; ++half) {
+        // This decoder is called only from the foreground IR transport. Keep
+        // the large geometry workspace out of Arduino's 8 KiB loop stack.
+        static Geometry candidate;
         candidate.bytes = bytes;
         candidate.origin_twice = int(strong[0]) * 2 + half;
         candidate.step_10000 = step;
         candidate.inverse_q15 =
             int(((1u << 15) * 10000u + unsigned(step / 2)) / unsigned(step));
-        // The first strong observation opens the burst and must belong to its
-        // first UART start cell. Otherwise a data pulse can be mislabeled as
-        // the start of a shifted byte while the real opening pulse is dropped.
-        if (nearest_cell(strong[0], candidate) != 0) continue;
+        // A missing first optical pulse can leave the first data-zero pulse
+        // as the first strong observation. Let UART framing across the whole
+        // burst decide between cell 0 and cell 1, without using payload bytes.
+        const int opening_cell = nearest_cell(strong[0], candidate);
+        if (opening_cell < 0 || opening_cell > 1) continue;
         uint64_t phase = 0;
         map_cells(strong, count, candidate, phase);
         const unsigned bad = framing_errors(candidate);
@@ -92,7 +95,8 @@ bool fit_geometry(const uint16_t *strong, unsigned count, Geometry &best) {
 void remove_recovery_tails(const uint8_t *bins, const uint16_t *strong,
                            unsigned count, Geometry &geometry,
                            WireBurst &out) {
-  uint8_t observations[kCells] = {};
+  static uint8_t observations[kCells];
+  memset(observations, 0, sizeof(observations));
   for (unsigned i = 0; i < count; ++i) {
     const int cell = nearest_cell(strong[i], geometry);
     if (cell >= 0 && cell < int(geometry.bytes * 10) &&
@@ -135,7 +139,9 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
                        uint8_t pulse_cutoff) {
   out = WireBurst{};
   if (!bins || !gate_count || gate_count > kMaxBurstGates) return false;
-  uint16_t strong[kMaxStrongGates];
+  // The previous automatic buffers made this function's machine stack frame
+  // 11,088 bytes, overflowing the 8,192-byte Arduino loop task.
+  static uint16_t strong[kMaxStrongGates];
   unsigned strong_count = 0;
   for (size_t gate = 0; gate < gate_count; ++gate) {
     if (bins[gate] >= pulse_cutoff) continue;
@@ -144,7 +150,7 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
   }
   if (!strong_count) return false;
 
-  Geometry geometry;
+  static Geometry geometry;
   if (!fit_geometry(strong, strong_count, geometry)) return false;
   remove_recovery_tails(bins, strong, strong_count, geometry, out);
 

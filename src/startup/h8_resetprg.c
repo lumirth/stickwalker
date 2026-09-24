@@ -103,6 +103,10 @@ void StickPortBoot(void)
  * After consuming the IR workspace, reset motion and resume the main task. */
 void IrComplete(void)
 {
+#ifdef PW_STICK_BENCH_CONTROL
+  extern void StickPortTrace(const char *text);
+  StickPortTrace("PW_STICK_IR_COMPLETE_ENTER");
+#endif
   switch (g_work.irc.work.completionAction) {
   case IR_CMD_FACTORY_SETUP:
     DisplayInit();
@@ -215,15 +219,24 @@ clearPrimary:
   goto resumeForeground;
 
 returnHome:
+#ifdef PW_STICK_BENCH_CONTROL
+  StickPortTrace("PW_STICK_IR_COMPLETE_HOME");
+#endif
   HomeInit();
   SetView(VIEW_HOME);
 resumeForeground:
+#ifdef PW_STICK_BENCH_CONTROL
+  StickPortTrace("PW_STICK_IR_COMPLETE_RESUME");
+#endif
   g_state.sampleIndex = 0;
   MotionReset();
   InstallTask(MainTick);
   set_ccr(0);
   RtcReadStable(&g_state.time.secondBcd, &g_state.time.minuteBcd,
                 &g_state.time.hourBcd24h);
+#ifdef PW_STICK_BENCH_CONTROL
+  StickPortTrace("PW_STICK_IR_COMPLETE_END");
+#endif
 }
 
 /* Initialize RAM and peripherals, restore persistent state, and wait for the

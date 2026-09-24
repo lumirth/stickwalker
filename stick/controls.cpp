@@ -2,6 +2,12 @@
 
 namespace pw_stick {
 
+namespace {
+// Reject a switch bounce or fleeting overlap without delaying a deliberate
+// Center press enough to spoil the original timed games.
+constexpr uint32_t kChordHoldMs = 20;
+}
+
 void Controls::Debouncer::update(uint32_t now_ms, bool value) {
   if (value != candidate) {
     candidate = value;
@@ -16,18 +22,26 @@ void Controls::emit(uint8_t value) {
   if (count_ < sizeof(queue_)) {
     queue_[(head_ + count_) % sizeof(queue_)] = value;
     ++count_;
+    ++emitted_;
+  } else {
+    ++overflow_;
   }
 }
 
 uint8_t Controls::direction(bool main_button) const {
   if (orientation_ == Orientation::LeftSideDown)
-    return main_button ? kRight : kLeft;
-  return main_button ? kLeft : kRight;
+    return main_button ? kLeft : kRight;
+  return main_button ? kRight : kLeft;
 }
 
 void Controls::configure(Profile profile, Orientation orientation) {
   profile_ = profile;
   orientation_ = orientation;
+  require_release();
+}
+
+void Controls::set_chord_window(uint16_t milliseconds) {
+  chord_window_ms_ = milliseconds;
   require_release();
 }
 
@@ -70,26 +84,64 @@ void Controls::sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
     case Gesture::Idle:
       if (m && !r) { gesture_ = Gesture::PendingMain; first_down_ms_ = now_ms; }
       else if (r && !m) { gesture_ = Gesture::PendingSide; first_down_ms_ = now_ms; }
-      else if (m && r) { gesture_ = Gesture::Chord; emit(kCenter); }
+      else if (m && r) {
+        gesture_ = Gesture::PendingChord;
+        chord_first_ = 0;
+        chord_started_ms_ = now_ms;
+      }
       break;
     case Gesture::PendingMain:
     case Gesture::PendingSide: {
       const bool first_main = gesture_ == Gesture::PendingMain;
       const bool first = first_main ? m : r;
       const bool second = first_main ? r : m;
-      if (first && second && uint32_t(now_ms - first_down_ms_) <= 80) {
-        gesture_ = Gesture::Chord;
-        emit(kCenter);
+      if (first && second &&
+          uint32_t(now_ms - first_down_ms_) <= chord_window_ms_) {
+        gesture_ = Gesture::PendingChord;
+        chord_first_ = first_main ? 1 : 2;
+        chord_started_ms_ = now_ms;
       } else if (!first) {
         emit(direction(first_main));
         emit(0);
         gesture_ = second ? Gesture::Suppressed : Gesture::Idle;
-      } else if (uint32_t(now_ms - first_down_ms_) >= 80) {
+      } else if (uint32_t(now_ms - first_down_ms_) >= chord_window_ms_) {
         gesture_ = first_main ? Gesture::Main : Gesture::Side;
         emit(direction(first_main));
       }
       break;
     }
+    case Gesture::PendingChord:
+      if (m && r) {
+        if (uint32_t(now_ms - chord_started_ms_) >= kChordHoldMs) {
+          gesture_ = Gesture::Chord;
+          emit(kCenter);
+        }
+      } else if (chord_first_ == 1) {
+        if (!m) {
+          emit(direction(true));
+          emit(0);
+          gesture_ = r ? Gesture::PendingSide : Gesture::Idle;
+          first_down_ms_ = now_ms;
+        } else {
+          gesture_ = Gesture::Main;
+          emit(direction(true));
+        }
+      } else if (chord_first_ == 2) {
+        if (!r) {
+          emit(direction(false));
+          emit(0);
+          gesture_ = m ? Gesture::PendingMain : Gesture::Idle;
+          first_down_ms_ = now_ms;
+        } else {
+          gesture_ = Gesture::Side;
+          emit(direction(false));
+        }
+      } else {
+        gesture_ = m ? Gesture::PendingMain :
+                   r ? Gesture::PendingSide : Gesture::Idle;
+        first_down_ms_ = now_ms;
+      }
+      break;
     case Gesture::Main:
       if (!m) { emit(0); gesture_ = r ? Gesture::Suppressed : Gesture::Idle; }
       break;
@@ -110,6 +162,7 @@ uint8_t Controls::next_scan() {
     delivered_ = queue_[head_];
     head_ = (head_ + 1) % sizeof(queue_);
     --count_;
+    ++consumed_;
   } else {
     delivered_ = desired_;
   }
@@ -117,6 +170,14 @@ uint8_t Controls::next_scan() {
 }
 
 bool Controls::idle() const { return !main_.stable && !side_.stable && !power_.stable && !count_; }
+
+Controls::Diagnostic Controls::diagnostic() const {
+  return {uint8_t(gesture_),
+          uint8_t((main_.stable ? 1u : 0u) | (side_.stable ? 2u : 0u) |
+                  (power_.stable ? 4u : 0u)),
+          desired_, delivered_, count_, uint8_t(wait_release_),
+          emitted_, consumed_, overflow_};
+}
 
 bool Controls::menu_requested() {
   bool requested = menu_;

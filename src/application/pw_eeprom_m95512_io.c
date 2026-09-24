@@ -5,6 +5,7 @@
 #include "support/lib_common.h"
 #ifdef PW_STICK_S3
 #include "stick_wire_endian.h"
+#include "../../stick/eeprom_backend.h"
 #include <string.h>
 #endif
 
@@ -65,6 +66,9 @@ u8 EepromMirrorWrite(u16 primary, u16 backup, u8 *buffer, u16 length)
 #endif
 
   checksum = 1;
+#ifdef PW_STICK_S3
+  StickEepromBatchBegin();
+#endif
   EepromWrite(primary, buffer, length);
   i = 0;
   while (i < length) {
@@ -73,7 +77,13 @@ u8 EepromMirrorWrite(u16 primary, u16 backup, u8 *buffer, u16 length)
   }
   EepromWriteByte((primary + length), checksum);
   EepromWrite(backup, buffer, length);
+#ifdef PW_STICK_S3
+  EepromWriteByte((backup + length), checksum);
+  StickEepromBatchEnd();
+  return StickEepromEventByte();
+#else
   return EepromWriteByte((backup + length), checksum);
+#endif
 }
 
 /* Load a valid payload and repair a bad mirror. Read backup before primary;
