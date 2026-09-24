@@ -1,4 +1,7 @@
 #include "types.h"
+#ifdef PW_STICK_S3
+#include "stick_wire_endian.h"
+#endif
 #include "startup/iodefine.h"
 #include "project.h"
 #include "application/pw_diary.h"
@@ -262,10 +265,14 @@ void StatusApplyTime(void)
     hour = g_work.irc.statusA.status.rolloverHour;
     g_state.rolloverHourBcd = ((hour / 10) * (u16)16 | (hour % 10));
   }
+#ifdef PW_STICK_S3
+  seconds = StickReadBe32((const u8 *)&g_work.irc.statusA.status.rtcSeconds);
+#else
   seconds = g_work.irc.statusA.status.rtcSeconds;
+#endif
   if (seconds != 0) {
     g_state.save.rtcSeconds = seconds;
-    RtcSetTime(g_work.irc.statusA.status.rtcSeconds);
+    RtcSetTime(seconds);
   }
 }
 

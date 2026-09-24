@@ -27,6 +27,16 @@
 typedef union {
   u8 byte;
   struct {
+#ifdef PW_STICK_S3
+    u8 socialOfferPending : 1;
+    u8 registered : 1;
+    u8 hasPokemon : 1;
+    u8 motionMode : 1;
+    u8 interactiveMode : 1;
+    u8 reserved5 : 1;
+    u8 reserved6 : 1;
+    u8 reserved7 : 1;
+#else
     u8 reserved7 : 1;
     u8 reserved6 : 1;
     u8 reserved5 : 1;
@@ -35,6 +45,7 @@ typedef union {
     u8 hasPokemon : 1;
     u8 registered : 1;
     u8 socialOfferPending : 1;
+#endif
   } bits;
 } SystemFlags;
 
@@ -43,6 +54,16 @@ typedef char SystemFlagsMustBeOneByte[sizeof(SystemFlags) == 1 ? 1 : -1];
 typedef union {
   u8 byte;
   struct {
+#ifdef PW_STICK_S3
+    u8 uiRefreshPending : 1;
+    u8 batteryLow : 1;
+    u8 batteryCheckPending : 1;
+    u8 centerPressed : 1;
+    u8 lowPowerClock : 1;
+    u8 irRequested : 1;
+    u8 eepromError : 1;
+    u8 motionDetected : 1;
+#else
     u8 motionDetected : 1;
     u8 eepromError : 1;
     u8 irRequested : 1;
@@ -51,6 +72,7 @@ typedef union {
     u8 batteryCheckPending : 1;
     u8 batteryLow : 1;
     u8 uiRefreshPending : 1;
+#endif
   } bits;
 } SystemEvents;
 
@@ -59,6 +81,16 @@ typedef char SystemEventsMustBeOneByte[sizeof(SystemEvents) == 1 ? 1 : -1];
 typedef union {
   u8 byte;
   struct {
+#ifdef PW_STICK_S3
+    u8 entered : 1;
+    u8 smallFrame : 1;
+    u8 movingRight : 1;
+    u8 reserved3 : 1;
+    u8 reserved4 : 1;
+    u8 reserved5 : 1;
+    u8 reserved6 : 1;
+    u8 reserved7 : 1;
+#else
     u8 reserved7 : 1;
     u8 reserved6 : 1;
     u8 reserved5 : 1;
@@ -68,6 +100,7 @@ typedef union {
     u8 smallFrame : 1;
     u8 entered
         : 1; /* Home entry writes this bit; its animation never reads it. */
+#endif
   } bits;
 } HomeMotionFlags;
 
@@ -77,6 +110,16 @@ typedef char
 typedef union {
   u8 byte;
   struct {
+#ifdef PW_STICK_S3
+    u8 receivedBurst : 1;
+    u8 reserved1 : 1;
+    u8 reserved2 : 1;
+    u8 reserved3 : 1;
+    u8 reserved4 : 1;
+    u8 reserved5 : 1;
+    u8 reserved6 : 1;
+    u8 reserved7 : 1;
+#else
     u8 reserved7 : 1;
     u8 reserved6 : 1;
     u8 reserved5 : 1;
@@ -85,6 +128,7 @@ typedef union {
     u8 reserved2 : 1;
     u8 reserved1 : 1;
     u8 receivedBurst : 1; /* Any nonempty burst, before checksum validation. */
+#endif
   } bits;
 } IrSessionFlags;
 
@@ -93,6 +137,16 @@ typedef char IrSessionFlagsMustBeOneByte[sizeof(IrSessionFlags) == 1 ? 1 : -1];
 typedef union {
   u8 byte;
   struct {
+#ifdef PW_STICK_S3
+    u8 peerStatusResponder : 1;
+    u8 reserved1 : 1;
+    u8 reserved2 : 1;
+    u8 reserved3 : 1;
+    u8 reserved4 : 1;
+    u8 reserved5 : 1;
+    u8 reserved6 : 1;
+    u8 reserved7 : 1;
+#else
     u8 reserved7 : 1;
     u8 reserved6 : 1;
     u8 reserved5 : 1;
@@ -102,6 +156,7 @@ typedef union {
     u8 reserved1 : 1;
     /* Both peers transfer data; this peer answers the status request. */
     u8 peerStatusResponder : 1;
+#endif
   } bits;
 } IrRoleFlags;
 
@@ -110,6 +165,16 @@ typedef char IrRoleFlagsMustBeOneByte[sizeof(IrRoleFlags) == 1 ? 1 : -1];
 typedef union {
   u8 byte;
   struct {
+#ifdef PW_STICK_S3
+    u8 reserved0 : 1;
+    u8 fixedFacing : 1;
+    u8 reserved2 : 1;
+    u8 reserved3 : 1;
+    u8 reserved4 : 1;
+    u8 reserved5 : 1;
+    u8 reserved6 : 1;
+    u8 reserved7 : 1;
+#else
     u8 reserved7 : 1;
     u8 reserved6 : 1;
     u8 reserved5 : 1;
@@ -118,6 +183,7 @@ typedef union {
     u8 reserved2 : 1;
     u8 fixedFacing : 1;
     u8 reserved0 : 1;
+#endif
   } bits;
 } PeerFlags;
 

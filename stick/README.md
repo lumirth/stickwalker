@@ -50,6 +50,23 @@ instructions and requalify it with sealed traffic and complete exchanges.
   match the frozen `.137` gate instruction bytes after accounting for link
   relocations; there are no calls in the gate. The surrounding sampler and
   firmware still need a separate waveform and live receive check.
+- The input seam feeds native `InputScan` through debounced Stick button
+  levels. The NT7508 drawing code writes into a two-bank virtual panel whose
+  96×64 view is scaled onto the Stick display. The virtual bus and panel
+  adapter compile with the Stick toolchain; page, bitplane, bank, and sleep
+  behavior have a host test.
+- The storage seam retains the native mirror/repair algorithm. It maps the
+  64 KiB EEPROM image to two checked LittleFS slots and defers flash commits
+  during IR. Only a completely erased data partition may be formatted.
+  The mirror and SaveData wire-order tests run under sanitizers; persistence
+  and power-loss behavior still need board tests.
+- Explicit target bitfield ordering keeps the original byte masks on the
+  ESP32, and the native IR token and step counters are emitted in H8 byte
+  order. These are focused compatibility changes, not a complete endian
+  audit of every EEPROM and protocol record.
+- A target RMT transmitter for logical bytes is compiled, but the continuous
+  optical service, foreground scheduling, motion, RTC, and sound adapters are
+  not connected yet.
 - No Stick firmware from this branch has been built or flashed. The optical
   receiver, protocol bridge, native runtime, display, motion, persistence, and
   complete transaction still require integration and hardware validation.

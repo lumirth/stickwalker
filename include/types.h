@@ -25,10 +25,11 @@ typedef volatile u8 vu8;
 typedef volatile u16 vu16;
 typedef volatile u32 vu32;
 
-/* Native H8 unsigned int is 16 bits. The Stick port keeps this typedef at
- * that width for records and explicit uint arithmetic; expressions involving
- * plain int still need target-specific review because ESP32 int is 32 bits. */
-#if defined(PW_STICK_S3)
+/* Native H8 unsigned int is 16 bits. Keep that width in the decompiled C
+ * translation units. C++ hardware adapters use the ESP32 system's 32-bit
+ * uint alias and must exchange only explicitly sized types across the C ABI.
+ * Plain C int expressions still need target-specific review. */
+#if defined(PW_STICK_S3) && !defined(__cplusplus)
 typedef u16 uint;
 #else
 typedef unsigned int uint;

@@ -34,6 +34,8 @@ uint PacketChecksum(u8 *bytes, u32 length)
 }
 
 #ifdef PW_STICK_S3
+#include "stick_wire_endian.h"
+#include "stick/eeprom_backend.h"
 #include "stick/ir_transport.h"
 #define IR_TIMER_NOW() StickIrTicks()
 #else
@@ -106,7 +108,11 @@ void SendPacket(u8 payloadLength, u8 command, u8 argument)
   header = (IrcHeader *)g_work.irc.packet;
   header->command = command;
   header->argument = argument;
+#ifdef PW_STICK_S3
+  StickWriteBe32(g_work.irc.packet + 4, g_work.irc.work.sessionToken);
+#else
   header->sessionToken = g_work.irc.work.sessionToken;
+#endif
   header->checksumLo = 0;
   header->checksumHi = 0;
 
@@ -186,6 +192,7 @@ void IrHardwareStart(void)
 {
 #ifdef PW_STICK_S3
   IrConfigure();
+  StickEepromDefer(1);
   StickIrStart();
 #else
   u8 ssr3;
@@ -283,8 +290,13 @@ static void BuildPeerInfo(void)
 
   pokemon = CoursePokemonBuffer();
   peerInfo = (PeerInfo *)IrPayload();
+#ifdef PW_STICK_S3
+  StickWriteBe32((u8 *)&peerInfo->dailySteps, g_state.dailySteps);
+  StickWriteBe16((u8 *)&peerInfo->hourSteps, g_state.hourSteps);
+#else
   peerInfo->dailySteps = g_state.dailySteps;
   peerInfo->hourSteps = g_state.hourSteps;
+#endif
   EepromRead(
       PW_EEPROM_MEMBER_ADDRESS(EEPROM_COURSE, CourseResources, values.pokemon),
       pokemon, sizeof(Pokemon));
@@ -461,7 +473,11 @@ void IrProtocolTick(void)
   }
 
   /* Keep the received token before constructing a reply in the same buffer. */
+#ifdef PW_STICK_S3
+  receivedToken = StickReadBe32(g_work.irc.packet + 4);
+#else
   receivedToken = header->sessionToken;
+#endif
 
   argument = header->argument;
   command = header->command;
@@ -682,7 +698,11 @@ void IrProtocolTick(void)
     payloadStatus = (DeviceStatus *)IrPayload();
     EepromMirrorRead(EEPROM_STATUS_PRIMARY, EEPROM_STATUS_BACKUP,
                      (u8 *)IrPayload(), sizeof(DeviceStatus));
+#ifdef PW_STICK_S3
+    StickWriteBe32((u8 *)&payloadStatus->totalSteps, g_state.save.totalSteps);
+#else
     payloadStatus->totalSteps = g_state.save.totalSteps;
+#endif
     EepromMirrorWrite(EEPROM_SAVE_PRIMARY, EEPROM_SAVE_BACKUP,
                       (u8 *)&g_state.save, sizeof(SaveData));
     EepromWrite(PW_EEPROM_MEMBER_ADDRESS(EEPROM_WALK, WalkData, watts),
@@ -1202,6 +1222,7 @@ void IrFinish(void)
 {
 #ifdef PW_STICK_S3
   StickIrStop();
+  StickEepromDefer(0);
 #else
   IRR1.BIT.IRRI1 = 0;
   IO.PDR3.BYTE = 1;

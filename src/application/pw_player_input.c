@@ -1,6 +1,10 @@
 #include "flags.h"
 #include "types.h"
+#ifdef PW_STICK_S3
+#include "stick/input_bridge.h"
+#else
 #include "startup/iodefine.h"
+#endif
 #include "project.h"
 #include <machine.h>
 #include "application/pw_player_input.h"
@@ -16,6 +20,9 @@ void InputInit(void)
   g_state.pressedButtons = 0;
   g_state.centerHoldScans = 0;
 
+#ifdef PW_STICK_S3
+  StickInputInit();
+#else
   set_ccr(0x80);
 
   PFCR.BYTE &= 0xfc;
@@ -33,6 +40,7 @@ void InputInit(void)
   IO.PCR8 &= 0xef;
 
   set_ccr(0);
+#endif
 }
 
 /* Merge the latched center press with sampled button levels, then replace this
@@ -41,10 +49,17 @@ void InputInit(void)
 void InputScan(void)
 {
   SystemEvents flags;
+#ifdef PW_STICK_S3
+  u8 sampledButtons = StickInputLevels();
+#endif
 
   g_state.buttons = 0;
 
+#ifdef PW_STICK_S3
+  if (sampledButtons & BUTTON_CENTER) {
+#else
   if (IO.PDRB.BIT.B0 != 0) {
+#endif
     g_state.buttons |= BUTTON_CENTER;
     if (g_state.buttonWake[0] != 0) {
       ++g_state.centerHoldScans;
@@ -59,10 +74,18 @@ void InputScan(void)
     g_state.events.byte &= EVENT_CLEAR(EVENT_CENTER_PRESS);
   }
 
+#ifdef PW_STICK_S3
+  if (sampledButtons & BUTTON_LEFT) {
+#else
   if (IO.PDRB.BIT.B2) {
+#endif
     g_state.buttons |= BUTTON_LEFT;
   }
+#ifdef PW_STICK_S3
+  if (sampledButtons & BUTTON_RIGHT) {
+#else
   if (IO.PDRB.BIT.B4) {
+#endif
     g_state.buttons |= BUTTON_RIGHT;
   }
 

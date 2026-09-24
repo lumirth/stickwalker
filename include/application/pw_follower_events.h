@@ -30,11 +30,19 @@
 typedef union {
   u8 byte;
   struct {
+#ifdef PW_STICK_S3
+    u8 terminal : 1;
+    u8 showPokemon : 1;
+    u8 showTreasure : 1;
+    u8 lowerMessageMode : 2;
+    u8 bubbleIndex : 3;
+#else
     u8 bubbleIndex : 3;
     u8 lowerMessageMode : 2;
     u8 showTreasure : 1;
     u8 showPokemon : 1;
     u8 terminal : 1;
+#endif
   } bits;
 } SocialFlags;
 

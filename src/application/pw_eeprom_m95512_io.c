@@ -3,13 +3,33 @@
 #include "project.h"
 #include "application/pw_eeprom_m95512.h"
 #include "support/lib_common.h"
+#ifdef PW_STICK_S3
+#include "stick_wire_endian.h"
+#include <string.h>
+#endif
 
+#ifdef PW_STICK_S3
+/* Keep the C++ storage driver independent of H8-sized C records and the
+ * ESP32 C++ library's incompatible uint typedef. */
+void StickEepromSetError(u8 value)
+{
+  g_state.events.bits.eepromError = value;
+}
+
+u8 StickEepromEventByte(void)
+{
+  return g_state.events.byte;
+}
+#endif
+
+#ifndef PW_STICK_S3
 #pragma inline(EepromWaitReady)
 static void EepromWaitReady(void)
 {
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
 }
+#endif
 
 #define MIRROR_NONE_VALID 0
 #define MIRROR_PRIMARY_VALID 1
@@ -21,6 +41,28 @@ u8 EepromMirrorWrite(u16 primary, u16 backup, u8 *buffer, u16 length)
 {
   u8 checksum;
   u8 i;
+#ifdef PW_STICK_S3
+  u8 saveBytes[sizeof(SaveData)];
+  u8 *serialized = buffer;
+
+  if (primary == EEPROM_SAVE_PRIMARY && backup == EEPROM_SAVE_BACKUP &&
+      length == sizeof(SaveData)) {
+    const SaveData *save = (const SaveData *)buffer;
+    memcpy(saveBytes, buffer, length);
+    StickWriteBe32(saveBytes + offsetof(SaveData, totalSteps),
+                   save->totalSteps);
+    StickWriteBe32(saveBytes + offsetof(SaveData, elapsedHours),
+                   save->elapsedHours);
+    StickWriteBe32(saveBytes + offsetof(SaveData, rtcSeconds),
+                   save->rtcSeconds);
+    StickWriteBe16(saveBytes + offsetof(SaveData, days), save->days);
+    StickWriteBe16(saveBytes + offsetof(SaveData, watts), save->watts);
+    StickWriteBe16(saveBytes + offsetof(SaveData, pokemonMinutes),
+                   save->pokemonMinutes);
+    serialized = saveBytes;
+  }
+  buffer = serialized;
+#endif
 
   checksum = 1;
   EepromWrite(primary, buffer, length);
@@ -100,10 +142,30 @@ void EepromMirrorRead(u16 primary, u16 backup, u8 *buffer, u16 length)
     }
     break;
   }
+#ifdef PW_STICK_S3
+  if (primary == EEPROM_SAVE_PRIMARY && backup == EEPROM_SAVE_BACKUP &&
+      length == sizeof(SaveData)) {
+    SaveData *save = (SaveData *)buffer;
+    u8 *raw = buffer;
+    u32 total = StickReadBe32(raw + offsetof(SaveData, totalSteps));
+    u32 hours = StickReadBe32(raw + offsetof(SaveData, elapsedHours));
+    u32 seconds = StickReadBe32(raw + offsetof(SaveData, rtcSeconds));
+    u16 days = StickReadBe16(raw + offsetof(SaveData, days));
+    u16 watts = StickReadBe16(raw + offsetof(SaveData, watts));
+    u16 minutes = StickReadBe16(raw + offsetof(SaveData, pokemonMinutes));
+    save->totalSteps = total;
+    save->elapsedHours = hours;
+    save->rtcSeconds = seconds;
+    save->days = days;
+    save->watts = watts;
+    save->pokemonMinutes = minutes;
+  }
+#endif
 }
 
 /* Page writes wrap inside the EEPROM page, so split an arbitrary span at each
  * boundary. An overrun stays latched across retries of this whole operation. */
+#ifndef PW_STICK_S3
 void EepromWrite(u16 address, void *source, u16 length)
 {
   u8 attempts;
@@ -573,3 +635,4 @@ void EepromWritePage(uint address, u8 *source)
     attempts--;
   }
 }
+#endif

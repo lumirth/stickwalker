@@ -119,10 +119,17 @@ typedef struct {
 typedef union {
   u8 byte;
   struct {
+#ifdef PW_STICK_S3
+    u8 opponentHpVisible : 1;
+    u8 playerAction : 2;
+    u8 responseCode : 2;
+    u8 responseRow : 3;
+#else
     u8 responseRow : 3;  /* Probability row chosen by the previous exchange. */
     u8 responseCode : 2; /* Interpreted together with playerAction. */
     u8 playerAction : 2;
     u8 opponentHpVisible : 1;
+#endif
   } bits;
 } BattleFlags;
 

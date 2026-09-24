@@ -2,6 +2,12 @@
 #include "types.h"
 #include "raster_column.h"
 #include "startup/hardware.h"
+#ifdef PW_STICK_S3
+#include "stick/display_bus.h"
+#define LCD_TX(value) StickDisplayWrite((u8)(value))
+#else
+#define LCD_TX(value) (SSU.SSTDR = (value))
+#endif
 #include "project.h"
 #include "application/pw_nt7508.h"
 #include <machine.h>
@@ -57,7 +63,7 @@ void DisplaySend(u8 txByte)
   IO.PDR1.BIT.B0 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = txByte;
+  LCD_TX(txByte);
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B0 = 1;
@@ -173,18 +179,18 @@ void DisplayAddress(u8 x, u8 page)
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (((x / DISPLAY_COL_MSB_DIVISOR) & DISPLAY_COL_MSB_MASK) +
-               DISPLAY_COL_MSB_COMMAND);
+  LCD_TX((((x / DISPLAY_COL_MSB_DIVISOR) & DISPLAY_COL_MSB_MASK) +
+               DISPLAY_COL_MSB_COMMAND));
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (x & DISPLAY_COL_LSB_MASK);
+  LCD_TX((x & DISPLAY_COL_LSB_MASK));
   if (page > (DISPLAY_BANK_PAGES - 1)) {
     sleep();
   }
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (g_displayBank.bytes.index * DISPLAY_BANK_PAGES + page +
-               DISPLAY_PAGE_COMMAND_BASE);
+  LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + page +
+               DISPLAY_PAGE_COMMAND_BASE));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
 }
@@ -200,10 +206,10 @@ void DisplayToggleBank(void)
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_START_LINE_COMMAND;
+  LCD_TX(DISPLAY_START_LINE_COMMAND);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (*bank * DISPLAY_BANK_HEIGHT);
+  LCD_TX((*bank * DISPLAY_BANK_HEIGHT));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   while (SSU.SSSR.BIT.TEND == 0) {
@@ -224,10 +230,10 @@ void DisplaySelectBank(u8 bank)
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_START_LINE_COMMAND;
+  LCD_TX(DISPLAY_START_LINE_COMMAND);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (bank * DISPLAY_BANK_HEIGHT);
+  LCD_TX((bank * DISPLAY_BANK_HEIGHT));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   while (SSU.SSSR.BIT.TEND == 0) {
@@ -254,17 +260,17 @@ void DisplayFill(u8 pixelValue)
     IO.PDR1.BIT.B1 = 0;
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = DISPLAY_COL_MSB_COMMAND;
+    LCD_TX(DISPLAY_COL_MSB_COMMAND);
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = 0;
+    LCD_TX(0);
     if (y > (DISPLAY_BANK_PAGES - 1)) {
       sleep();
     }
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = (g_displayBank.bytes.index * DISPLAY_BANK_PAGES + y +
-                 DISPLAY_PAGE_COMMAND_BASE);
+    LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + y +
+                 DISPLAY_PAGE_COMMAND_BASE));
     while (SSU.SSSR.BIT.TEND == 0) {
     }
     IO.PDR1.BIT.B1 = 1;
@@ -274,34 +280,34 @@ void DisplayFill(u8 pixelValue)
       case PIXEL_WHITE:
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0;
+        LCD_TX(0);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0;
+        LCD_TX(0);
         break;
       case PIXEL_LIGHT_GRAY:
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0;
+        LCD_TX(0);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0xff;
+        LCD_TX(0xff);
         break;
       case PIXEL_DARK_GRAY:
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0xff;
+        LCD_TX(0xff);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0;
+        LCD_TX(0);
         break;
       case PIXEL_BLACK:
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0xff;
+        LCD_TX(0xff);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0xff;
+        LCD_TX(0xff);
         break;
       }
       remaining--;
@@ -320,7 +326,7 @@ void DisplayFill(u8 pixelValue)
   do {                                                                         \
     while (SSU.SSSR.BIT.TDRE == 0) {                                           \
     }                                                                          \
-    SSU.SSTDR = (value);                                                       \
+    LCD_TX((value));                                                       \
   } while (0)
 #define LCD_END()                                                              \
   do {                                                                         \
@@ -364,34 +370,34 @@ void DisplayFillRect(u8 x, u8 y, u8 width, u8 height, u8 fillPattern)
       case PIXEL_WHITE:
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0;
+        LCD_TX(0);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0;
+        LCD_TX(0);
         break;
       case PIXEL_LIGHT_GRAY:
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0;
+        LCD_TX(0);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0xff;
+        LCD_TX(0xff);
         break;
       case PIXEL_DARK_GRAY:
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0xff;
+        LCD_TX(0xff);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0;
+        LCD_TX(0);
         break;
       case PIXEL_BLACK:
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0xff;
+        LCD_TX(0xff);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = 0xff;
+        LCD_TX(0xff);
         break;
       }
       col++;
@@ -447,17 +453,17 @@ void DisplayClear(u8 height)
     IO.PDR1.BIT.B1 = 0;
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = DISPLAY_COL_MSB_COMMAND;
+    LCD_TX(DISPLAY_COL_MSB_COMMAND);
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = 0;
+    LCD_TX(0);
     if (y > (DISPLAY_BANK_PAGES - 1)) {
       sleep();
     }
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = (g_displayBank.bytes.index * DISPLAY_BANK_PAGES + y +
-                 DISPLAY_PAGE_COMMAND_BASE);
+    LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + y +
+                 DISPLAY_PAGE_COMMAND_BASE));
     while (SSU.SSSR.BIT.TEND == 0) {
     }
     IO.PDR1.BIT.B1 = 1;
@@ -465,10 +471,10 @@ void DisplayClear(u8 height)
     while (remaining != 0) {
       while (SSU.SSSR.BIT.TDRE == 0) {
       }
-      SSU.SSTDR = 0;
+      LCD_TX(0);
       while (SSU.SSSR.BIT.TDRE == 0) {
       }
-      SSU.SSTDR = 0;
+      LCD_TX(0);
       remaining--;
     }
     while (SSU.SSSR.BIT.TEND == 0) {
@@ -513,18 +519,18 @@ void DisplayBlit(u8 x, u8 y, u8 width, u8 height, const u8 *raster)
     IO.PDR1.BIT.B1 = 0;
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = (((left / DISPLAY_COL_MSB_DIVISOR) & DISPLAY_COL_MSB_MASK) +
-                 DISPLAY_COL_MSB_COMMAND);
+    LCD_TX((((left / DISPLAY_COL_MSB_DIVISOR) & DISPLAY_COL_MSB_MASK) +
+                 DISPLAY_COL_MSB_COMMAND));
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = (left & DISPLAY_COL_LSB_MASK);
+    LCD_TX((left & DISPLAY_COL_LSB_MASK));
     if (row > (DISPLAY_BANK_PAGES - 1)) {
       sleep();
     }
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = (g_displayBank.bytes.index * DISPLAY_BANK_PAGES + row +
-                 DISPLAY_PAGE_COMMAND_BASE);
+    LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + row +
+                 DISPLAY_PAGE_COMMAND_BASE));
     while (SSU.SSSR.BIT.TEND == 0) {
     }
     IO.PDR1.BIT.B1 = 1;
@@ -536,40 +542,40 @@ void DisplayBlit(u8 x, u8 y, u8 width, u8 height, const u8 *raster)
         bits = columns[0][0] << yBit;
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = bits;
+        LCD_TX(bits);
         bits = *secondPlane << yBit;
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = bits;
+        LCD_TX(bits);
       } else if (page == lastPage) {
         bits = (columns - width)[0][0] >> (RASTER_PAGE_HEIGHT - yBit);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = bits;
+        LCD_TX(bits);
         bits = (columns - width)[0][1] >> (RASTER_PAGE_HEIGHT - yBit);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = bits;
+        LCD_TX(bits);
       } else if (page != startPage) {
         bits = ((columns - width)[0][0] >> (RASTER_PAGE_HEIGHT - yBit)) |
                (columns[0][0] << yBit);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = bits;
+        LCD_TX(bits);
         bits = ((columns - width)[0][1] >> (RASTER_PAGE_HEIGHT - yBit)) |
                (*secondPlane << yBit);
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = bits;
+        LCD_TX(bits);
       } else {
         bits = columns[0][0] << yBit;
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = bits;
+        LCD_TX(bits);
         bits = *secondPlane << yBit;
         while (SSU.SSSR.BIT.TDRE == 0) {
         }
-        SSU.SSTDR = bits;
+        LCD_TX(bits);
       }
     }
     while (SSU.SSSR.BIT.TEND == 0) {
@@ -638,22 +644,22 @@ void DisplayWriteSpan(s8 x, s8 y, uint columnCount, uint rowCount,
             bits = (columns[0][0] << yBit);
             while (SSU.SSSR.BIT.TDRE == 0) {
             }
-            SSU.SSTDR = bits;
+            LCD_TX(bits);
             bits = (*secondPlane << yBit);
             while (SSU.SSSR.BIT.TDRE == 0) {
             }
-            SSU.SSTDR = bits;
+            LCD_TX(bits);
           } else if (page == lastPage) {
             bits =
                 ((columns - columnCount)[0][0] >> (RASTER_PAGE_HEIGHT - yBit));
             while (SSU.SSSR.BIT.TDRE == 0) {
             }
-            SSU.SSTDR = bits;
+            LCD_TX(bits);
             bits =
                 ((columns - columnCount)[0][1] >> (RASTER_PAGE_HEIGHT - yBit));
             while (SSU.SSSR.BIT.TDRE == 0) {
             }
-            SSU.SSTDR = bits;
+            LCD_TX(bits);
           } else if (page != startPage) {
             /* Middle pages carry the previous low plane into high and the
              * previous high plane into low. */
@@ -662,22 +668,22 @@ void DisplayWriteSpan(s8 x, s8 y, uint columnCount, uint rowCount,
                     (columns[0][0] << yBit));
             while (SSU.SSSR.BIT.TDRE == 0) {
             }
-            SSU.SSTDR = bits;
+            LCD_TX(bits);
             bits = ((*((u8 *)columns - columnCount * 2) >>
                      (RASTER_PAGE_HEIGHT - yBit)) |
                     (*secondPlane << yBit));
             while (SSU.SSSR.BIT.TDRE == 0) {
             }
-            SSU.SSTDR = bits;
+            LCD_TX(bits);
           } else {
             bits = (columns[0][0] << yBit);
             while (SSU.SSSR.BIT.TDRE == 0) {
             }
-            SSU.SSTDR = bits;
+            LCD_TX(bits);
             bits = (*secondPlane << yBit);
             while (SSU.SSSR.BIT.TDRE == 0) {
             }
-            SSU.SSTDR = bits;
+            LCD_TX(bits);
           }
         }
       }
@@ -768,77 +774,77 @@ void DisplayNameFrame(void)
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_COL_MSB_COMMAND;
+  LCD_TX(DISPLAY_COL_MSB_COMMAND);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0;
+  LCD_TX(0);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (*bank * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_4);
+  LCD_TX((*bank * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_4));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 1;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   remaining = DISPLAY_EDGE_INTERIOR_COUNT;
   while (remaining != 0) {
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = DISPLAY_EDGE_FILL_BIT0;
+    LCD_TX(DISPLAY_EDGE_FILL_BIT0);
     remaining--;
   }
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_COL_MSB_COMMAND;
+  LCD_TX(DISPLAY_COL_MSB_COMMAND);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0;
+  LCD_TX(0);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (*bank * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_5);
+  LCD_TX((*bank * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_5));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 1;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_LAST_COL_MSB;
+  LCD_TX(DISPLAY_LAST_COL_MSB);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_LAST_COL_LSB;
+  LCD_TX(DISPLAY_LAST_COL_LSB);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (*bank * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_5);
+  LCD_TX((*bank * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_5));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 1;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   while (SSU.SSSR.BIT.TEND == 0) {
@@ -856,73 +862,71 @@ void DisplayBottomNameFrame(void)
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_COL_MSB_COMMAND;
+  LCD_TX(DISPLAY_COL_MSB_COMMAND);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0;
+  LCD_TX(0);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR =
-      (g_displayBank.bytes.index * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_6);
+  LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_6));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 1;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   remaining = DISPLAY_EDGE_INTERIOR_COUNT;
   while (remaining != 0) {
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = DISPLAY_EDGE_FILL_BIT0;
+    LCD_TX(DISPLAY_EDGE_FILL_BIT0);
     remaining--;
   }
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_COL_MSB_COMMAND;
+  LCD_TX(DISPLAY_COL_MSB_COMMAND);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0;
+  LCD_TX(0);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR =
-      (g_displayBank.bytes.index * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_7);
+  LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + DISPLAY_PAGE_CMD_7));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 1;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   remaining = DISPLAY_EDGE_INTERIOR_COUNT;
   while (remaining != 0) {
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = DISPLAY_EDGE_FILL_BIT7;
+    LCD_TX(DISPLAY_EDGE_FILL_BIT7);
     remaining--;
   }
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0xff;
+  LCD_TX(0xff);
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   while (SSU.SSSR.BIT.TEND == 0) {
@@ -940,14 +944,14 @@ void DisplayMessageRule(void)
   IO.PDR1.BIT.B1 = 0;
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = DISPLAY_COL_MSB_COMMAND;
+  LCD_TX(DISPLAY_COL_MSB_COMMAND);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = 0;
+  LCD_TX(0);
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
-  SSU.SSTDR = (g_displayBank.bytes.index * DISPLAY_BANK_PAGES +
-               DISPLAY_PAGE_COMMAND_BASE + DISPLAY_RULE_PAGE_OFFSET);
+  LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES +
+               DISPLAY_PAGE_COMMAND_BASE + DISPLAY_RULE_PAGE_OFFSET));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 1;
@@ -955,7 +959,7 @@ void DisplayMessageRule(void)
   while (remaining != 0) {
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
-    SSU.SSTDR = 1;
+    LCD_TX(1);
     remaining--;
   }
   while (SSU.SSSR.BIT.TEND == 0) {
