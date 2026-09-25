@@ -223,7 +223,8 @@ extern "C" u8 StickInputLevels(void) {
 }
 
 extern "C" int StickInputWakeScanActive(void) {
-  if (sampled_raw || !controls.idle()) return 1;
+  if (sampled_raw || !controls.idle() ||
+      (power_button_ready && !power_action_armed)) return 1;
 #ifdef PW_STICK_BENCH_CONTROL
   if (held_scans || injected_button) return 1;
 #endif

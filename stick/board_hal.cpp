@@ -10,6 +10,9 @@ namespace {
 m5::M5PM1_Class pm1;
 m5::BMI270_Class imu;
 bool imu_ready = false;
+#ifdef PW_STICK_BENCH_CONTROL
+unsigned accel_reads = 0, accel_successes = 0, accel_failures = 0;
+#endif
 lgfx::LGFX_Device screen;
 lgfx::Bus_SPI bus;
 lgfx::Panel_ST7789 panel;
@@ -94,10 +97,25 @@ lgfx::LGFX_Device *StickBoardScreen(void) {
 m5::M5PM1_Class &StickBoardPower(void) { return pm1; }
 
 bool StickBoardAccel(float *x, float *y, float *z) {
-  if (!imu_ready) return false;
-  m5::IMU_Base::imu_raw_data_t raw;
-  if (!(imu.getImuRawData(&raw) & m5::IMU_Base::imu_spec_accel))
+#ifdef PW_STICK_BENCH_CONTROL
+  ++accel_reads;
+#endif
+  if (!imu_ready) {
+#ifdef PW_STICK_BENCH_CONTROL
+    ++accel_failures;
+#endif
     return false;
+  }
+  m5::IMU_Base::imu_raw_data_t raw;
+  if (!(imu.getImuRawData(&raw) & m5::IMU_Base::imu_spec_accel)) {
+#ifdef PW_STICK_BENCH_CONTROL
+    ++accel_failures;
+#endif
+    return false;
+  }
+#ifdef PW_STICK_BENCH_CONTROL
+  ++accel_successes;
+#endif
   m5::IMU_Base::imu_convert_param_t scale;
   imu.getConvertParam(&scale);
   *x = raw.accel.x * scale.accel_res;
@@ -105,3 +123,12 @@ bool StickBoardAccel(float *x, float *y, float *z) {
   *z = raw.accel.z * scale.accel_res;
   return true;
 }
+
+#ifdef PW_STICK_BENCH_CONTROL
+void StickBoardAccelDiagnostic(unsigned *reads, unsigned *successes,
+                               unsigned *failures) {
+  *reads = accel_reads;
+  *successes = accel_successes;
+  *failures = accel_failures;
+}
+#endif

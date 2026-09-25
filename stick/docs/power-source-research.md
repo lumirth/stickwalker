@@ -79,14 +79,63 @@ matched the course and both status checksums. Evidence is retained under
 `stick/.build/trials/power-001-repeat/` and
 `stick/.build/trials/power-004-repeat/`.
 
-This patch reduces needless sensor and rail activity but does **not** make
-the ESP32 sleep. The current firmware still has a foreground loop, 5 ms
-button polling, and a 16 Hz motion path while walking. A full low-power
-implementation needs measured state current, retained clock and source state,
-prompt button wake, and motion samples with the timing and scale expected by
-the original step algorithm. The BMI270 FIFO plus ESP32 Light-sleep is the
-most direct candidate to test before attempting an L1 PMIC shutdown that
-reboots the ESP32.
+That first patch reduced needless sensor and rail activity but did **not**
+make the ESP32 sleep. At that milestone, the firmware still had a foreground
+loop and 5 ms button polling even with the screen off. The following section
+records the subsequent Light-sleep implementation; battery current remains
+to be measured.
+
+## Retained-state Light-sleep implementation
+
+The next port milestone adds an explicit ESP32-S3 Light-sleep call in the
+screen-off `MainTick` path. The game and 64-sample motion ring remain in RAM.
+The wake timer is bounded by the next original 16 Hz motion sample or
+one-second inactive sample, the next RTC second, and a 100 ms maximum for the
+PM1 side key. M and R also wake through RTC-capable GPIO11/12. A press cannot
+be delayed by the sample cadence; after wake, the runtime runs its input poll
+before sleeping again. The PM1 side key's existing latched event is read on
+that timer. Sound, IR, menus, active gestures, and lit display stay awake.
+
+The first attempt routed the PM1 button IRQ to GPIO13. On this board it
+repeatedly asserted just as Light-sleep began, causing `ESP_ERR_SLEEP_REJECT`
+(259) and zero completed sleeps. The port therefore leaves PM1 routing as it
+was and uses the bounded timer for L; it keeps direct GPIO wake for M and R.
+Automatic Light-sleep is disabled while VBUS is present because USB
+Serial/JTAG disconnects during it. The bench-only `Y` command permits a
+five-second USB-powered sleep trial, after which normal USB operation resumes.
+
+The flashed bench image is `stick/.build/port-sleep-001-bench-app.bin` (SHA-256
+`5d59cd016fd5d34287909f96d0651b3ec482dc8d5c99f011675fad589055cf60`).
+The production image was also built as `port-sleep-001-production-app.bin`
+(SHA-256 `cba9d5fbef9c3f37efb176013791762d848cc734a2f69d28b7dac56abdfcd9cf`)
+but remains unflashed so the bench diagnostics stay available.
+
+On-device results from the bench image:
+
+- Screen off, motion cadence: 101 successful timer wakes, 4.70 seconds spent
+  within the sleep call during the five-second trial, zero errors.
+- Inactive cadence: 55 successful timer wakes, 4.92 seconds within the sleep
+  call, zero errors. The original foreground ran seven times in 6.6 seconds;
+  all seven BMI270 reads succeeded.
+- A second inactive trial reached 106 cumulative sleeps and 9.93 seconds
+  cumulative sleep-call time, with 1,156/1,156 cumulative BMI270 reads
+  successful; the bench M-hold then woke the original interactive view.
+- A same-image source-faithful HGSS `back` and `put` after sleep each reached
+  the original completion path with zero invalid packets (90/90 and 133/133
+  valid receives). Independent 64 KiB EEPROM readback after `put` matched all
+  10,430 course bytes, both status mirrors, and the source checksum.
+
+The peer traces and sealed trial records are under
+`stick/.build/trials/sleep-001-back/` and `sleep-002-put/`; the independent
+readback and verdict are `stick/.build/trials/sleep-final-eeprom.bin` and
+`sleep-final-verification.json`.
+
+The individual GPIO wake on a physical M/R press and USB-disconnected battery
+current have not yet been measured. The sleep-call duration includes entry
+and exit overhead, so it is a residency indicator rather than an ammeter
+reading. A whole-battery discharge result is still required for a runtime
+estimate. No original step-count semantics were replaced by the BMI270's
+hardware counter.
 
 At M5Stack's published active-state current, 30 minutes of active use alone
 consumes `36.69 mA × 0.5 h = 18.345 mAh` per day. Even granting zero drain

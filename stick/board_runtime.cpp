@@ -7,6 +7,7 @@
 #include "input_bridge.h"
 #include "ir_transport.h"
 #include "sound_bridge.h"
+#include "power_sleep.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -43,6 +44,11 @@ uint64_t next_quarter_us = 0;
 uint64_t next_second_us = 0;
 uint64_t next_input_us = 0;
 uint64_t next_beep_us = 0;
+uint64_t next_vbus_check_us = 0;
+bool usb_present = true;
+#ifdef PW_STICK_BENCH_CONTROL
+uint64_t usb_sleep_trial_end_us = 0;
+#endif
 
 uint64_t sample_period_us() {
   // The H8 disables regular 16 Hz sampling after its motion timeout and
@@ -114,7 +120,10 @@ extern "C" void StickPortSetup(void) {
   // The external 5 V rail feeds the board IR hardware, not the bare GPIO5
   // photodiode. It is restored by StickIrConfigure when a session starts.
   StickBoardPower().setExtOutput(false);
+  StickSleepBegin();
   const uint64_t now = uint64_t(esp_timer_get_time());
+  usb_present = StickBoardPower().getVBUSVoltage() >= 4000;
+  next_vbus_check_us = now + 1000000;
   next_sample_us = now + sample_period_us();
   next_quarter_us = now + 250000;
   next_second_us = now + 1000000;
@@ -288,6 +297,27 @@ extern "C" void StickPortLoop(void) {
                     unsigned(power.getExtOutput()),
                     unsigned(StickForegroundIsInactive()),
                     (unsigned long long)sample_period_us());
+      uint64_t count, sleep_us, timer_wakes, gpio_wakes, errors;
+      int last_sleep_error;
+      unsigned sleep_gpio, sleep_duration;
+      StickSleepDiagnostic(&count, &sleep_us, &timer_wakes, &gpio_wakes,
+                           &errors, &last_sleep_error, &sleep_gpio,
+                           &sleep_duration);
+      Serial.printf("PW_STICK_SLEEP count=%llu sleep_us=%llu timer=%llu "
+                    "gpio=%llu errors=%llu last_error=%d last_gpio=%u "
+                    "duration=%u\n",
+                    (unsigned long long)count,
+                    (unsigned long long)sleep_us,
+                    (unsigned long long)timer_wakes,
+                    (unsigned long long)gpio_wakes,
+                    (unsigned long long)errors,
+                    last_sleep_error,
+                    sleep_gpio, sleep_duration);
+      unsigned accel_reads, accel_successes, accel_failures;
+      StickBoardAccelDiagnostic(&accel_reads, &accel_successes,
+                                &accel_failures);
+      Serial.printf("PW_STICK_ACCEL reads=%u successes=%u failures=%u\n",
+                    accel_reads, accel_successes, accel_failures);
     }
     if (command == 'o' && !StickForegroundIsIr()) {
       Serial.printf("PW_STICK_DEVICE_MENU open=%u row=%u profile=%u orientation=%u chord_ms=%u\n",
@@ -331,6 +361,10 @@ extern "C" void StickPortLoop(void) {
       StickForegroundBenchSleep();
       present_game_if_changed(true);
       Serial.println("PW_STICK_BENCH_SLEEP");
+    }
+    if (command == 'Y' && !StickForegroundIsIr()) {
+      usb_sleep_trial_end_us = uint64_t(esp_timer_get_time()) + 5000000;
+      Serial.println("PW_STICK_USB_SLEEP_TRIAL duration_ms=5000");
     }
     if (command == 'n' && !StickForegroundIsIr()) {
       StickForegroundBenchInactive();
@@ -496,6 +530,34 @@ extern "C" void StickPortLoop(void) {
     present_us += uint64_t(esp_timer_get_time()) - present_begin;
 #endif
     return;
+  }
+  if (StickForegroundIsMain() && !device_menu_open &&
+      !StickDisplayIsPowered() && !StickInputWakeScanActive() &&
+      !Serial.available()) {
+    // USB Serial/JTAG disconnects during ESP32-S3 light sleep. Keep the
+    // charging/debug connection usable; the bench command Y runs a bounded
+    // five-second real-sleep trial to verify the same path on hardware.
+    if (now >= next_vbus_check_us) {
+      usb_present = StickBoardPower().getVBUSVoltage() >= 4000;
+      next_vbus_check_us = now + 1000000;
+    }
+    const bool usb_sleep_allowed = !usb_present
+#ifdef PW_STICK_BENCH_CONTROL
+        || uint64_t(esp_timer_get_time()) < usb_sleep_trial_end_us
+#endif
+        ;
+    if (usb_sleep_allowed) {
+      uint64_t deadline = next_sample_us;
+      if (next_second_us < deadline) deadline = next_second_us;
+      if (!StickForegroundIsInactive() && next_quarter_us < deadline)
+        deadline = next_quarter_us;
+      if (StickSleepUntil(deadline)) {
+        // A switch can wake the chip between scheduled 5 ms polls. Poll it in
+        // the next loop before returning to sleep or delivering a native scan.
+        next_input_us = uint64_t(esp_timer_get_time());
+        return;
+      }
+    }
   }
   delay(1);
 }

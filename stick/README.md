@@ -159,9 +159,19 @@ instructions and requalify it with sealed traffic and complete exchanges.
   the final candidate passed a complete `back` and `put` after the wake
   test, then 10/10 further whole operations on one boot with exact course
   readback and valid status mirrors. Research, assumptions, and measurement
-  needs are in `stick/docs/power-source-research.md`. The processor still
-  does not enter a measured sleep state, and battery current/life have not
-  been measured.
+  needs are in `stick/docs/power-source-research.md`.
+- The screen-off foreground now enters ESP32-S3 Light-sleep between the
+  original 16 Hz walking samples or one-second inactive samples. M and R are
+  RTC GPIO wake sources; the PM1 side-key event is polled within 100 ms.
+  State, clock deadlines, and the original motion estimator stay in RAM.
+  The receiver, sound playback, menus, and active gestures keep their normal
+  timing. USB power suppresses automatic sleep because the USB Serial/JTAG
+  connection disconnects during Light-sleep. A bounded bench trial verified
+  101 sleep cycles and about 4.70 seconds in the sleep call over five seconds
+  at 16 Hz; an inactive trial verified 55 cycles, about 4.92 seconds in the
+  sleep call, and seven successful BMI270 samples. A source-faithful `back`
+  and `put` passed afterward, with 90/90 and 133/133 valid receives and exact
+  EEPROM course readback. Battery current and actual runtime remain unmeasured.
 - The current serial `c` trigger and verbose burst output are enabled only
   with `PW_STICK_BENCH_CONTROL`; they are bringup instruments, not protocol
   decision makers. The 3DS runs the source-owned retail peer. The native
