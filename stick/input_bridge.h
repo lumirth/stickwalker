@@ -12,6 +12,8 @@ void StickInputInit(void);
 void StickInputPoll(unsigned long milliseconds);
 /* Consume one native Pokewalker input scan, returning BUTTON_* bits. */
 u8 StickInputLevels(void);
+/* True while a physical press or a queued gesture needs prompt native scans. */
+int StickInputWakeScanActive(void);
 int StickMenuRequested(void);
 /* Device overlay consumes physical M/R/L without sending game input. */
 void StickInputMenuMode(int enabled);

@@ -222,6 +222,14 @@ extern "C" u8 StickInputLevels(void) {
   return value;
 }
 
+extern "C" int StickInputWakeScanActive(void) {
+  if (sampled_raw || !controls.idle()) return 1;
+#ifdef PW_STICK_BENCH_CONTROL
+  if (held_scans || injected_button) return 1;
+#endif
+  return 0;
+}
+
 #ifdef PW_STICK_BENCH_CONTROL
 extern "C" void StickInputBenchInject(u8 button) { injected_button = button; }
 extern "C" void StickInputBenchMainHold(unsigned milliseconds) {

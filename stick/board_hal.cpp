@@ -41,6 +41,11 @@ bool StickBoardBegin(void) {
   if (imu.WhoAmI() != 0x24) imu.setAddress(0x68);
   imu_ready = imu.WhoAmI() == 0x24 &&
               imu.begin() != m5::IMU_Base::imu_spec_none;
+  // M5Unified's BMI270 startup enables gyro and temperature too. The native
+  // Pokewalker application reads only acceleration, so leave its current
+  // accelerometer filter and rate intact while disabling unused sensors.
+  if (imu_ready)
+    imu_ready = imu.writeRegister8(m5::BMI270_Class::PWR_CTRL_ADDR, 0x04);
 
   if (!pm1.setGPIOOutput(P::gpio2, true) ||
       !pm1.setGPIOFunction(P::gpio2, P::gpio) ||

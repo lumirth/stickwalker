@@ -11,12 +11,16 @@
 void RtcQuarterSecondInterrupt(void);
 void RtcSecondInterrupt(void);
 void BeepTick(void);
+void MotionSessionEnd(void);
 
 void StickForegroundQuarterSecond(void) { RtcQuarterSecondInterrupt(); }
 void StickForegroundSecond(void) { RtcSecondInterrupt(); }
 int StickForegroundIsIr(void) { return g_task == IrProtocolTick; }
 int StickForegroundIsMain(void) { return g_task == MainTick; }
 int StickForegroundIsBeep(void) { return g_task == BeepTick; }
+int StickForegroundIsInactive(void) {
+  return (g_state.flags.byte & SYSTEM_MODE_MASK) == SYSTEM_MODE_INACTIVE;
+}
 unsigned StickForegroundUiFrame(void) { return g_state.uiFrame; }
 void StickForegroundRun(void) {
   if (g_task) g_task();
@@ -48,6 +52,14 @@ void StickForegroundBenchSleep(void) {
   g_state.flags.byte = (g_state.flags.byte & SYSTEM_MODE_CLEAR) |
                        SYSTEM_MODE_MOTION;
   g_state.idleSeconds[IDLE_DISPLAY] = 0;
+  g_state.buttonWake[0] = 0;
+  g_state.centerHoldScans = 0;
+}
+void StickForegroundBenchInactive(void) {
+  DisplayEnterPowerSave();
+  MotionSessionEnd();
+  g_state.idleSeconds[IDLE_DISPLAY] = 0;
+  g_state.idleSeconds[IDLE_MOTION] = 0;
   g_state.buttonWake[0] = 0;
   g_state.centerHoldScans = 0;
 }

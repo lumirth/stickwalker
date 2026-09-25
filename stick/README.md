@@ -135,6 +135,33 @@ instructions and requalify it with sealed traffic and complete exchanges.
   the next occurrence can distinguish weak/missing optical observation from
   phase assignment. The flashed diagnostic app SHA-256 is
   `b8ec2c57cf16cf8834e9f1816adb95d2666ba6542ee4dad7ada4b724a9325dd9`.
+- A longer frozen-image diagnostic recorded 44 successful whole operations
+  before `cycle-023-back` failed. The source 3DS sent a page control packet
+  beginning `A6`; the Stick decoded `A7`, the source checksum rejected it,
+  and the peer timed out. Two release-late gate sentinels occur near that
+  packet's opening UART cells. The artifact retains the full trace and the
+  opening gate snapshot under `stick/.build/trials/opening-long-001/`.
+  The sentinel encoding overwrites any measured crossing on those gates,
+  so the capture does not distinguish a missed optical pulse from a late
+  sample. All 45 attempts remain in the ledger.
+- A power audit found the ESP32 remained active at 240 MHz with 16 Hz motion
+  sampling even after the source entered inactive mode. The port now uses the
+  source's one-second inactive sample cadence, temporarily returning to
+  16 Hz for a physical or queued button gesture so wake controls remain
+  prompt. It gates the external 5 V IR rail around sessions, disables the
+  BMI270's unused gyro and temperature sensors, carries the last good
+  acceleration sample across an I2C/data-ready miss, and reads voltage from
+  the initialized PMIC instead of uninitialized `M5.Power`. On the flashed
+  candidate, the external rail read off after `back` and `put`; the inactive
+  test counted six main ticks in 5.2 seconds, and held Center woke the source
+  game within 1.4 seconds. A 20-operation same-boot series on the first
+  power candidate passed with exact course readback and valid status mirrors;
+  the final candidate passed a complete `back` and `put` after the wake
+  test, then 10/10 further whole operations on one boot with exact course
+  readback and valid status mirrors. Research, assumptions, and measurement
+  needs are in `stick/docs/power-source-research.md`. The processor still
+  does not enter a measured sleep state, and battery current/life have not
+  been measured.
 - The current serial `c` trigger and verbose burst output are enabled only
   with `PW_STICK_BENCH_CONTROL`; they are bringup instruments, not protocol
   decision makers. The 3DS runs the source-owned retail peer. The native

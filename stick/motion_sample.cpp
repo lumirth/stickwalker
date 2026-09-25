@@ -17,10 +17,17 @@ int8_t high_byte(float gravity) {
 }  // namespace
 
 extern "C" void StickMotionSample(s8 *x, s8 *y, s8 *z) {
+  static s8 last_x = 0, last_y = 0, last_z = 0;
   float ax = 0, ay = 0, az = 0;
   if (!x || !y || !z) return;
-  if (!StickBoardAccel(&ax, &ay, &az)) return;
-  *x = high_byte(ax);
-  *y = high_byte(ay);
-  *z = high_byte(az);
+  // A missed BMI270 data-ready poll must not inject a synthetic (0,0,0)
+  // movement into the original activity and step estimator.
+  if (StickBoardAccel(&ax, &ay, &az)) {
+    last_x = high_byte(ax);
+    last_y = high_byte(ay);
+    last_z = high_byte(az);
+  }
+  *x = last_x;
+  *y = last_y;
+  *z = last_z;
 }

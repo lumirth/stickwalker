@@ -1,6 +1,7 @@
 #include "display_panel.h"
 #include "display_bus.h"
 #include "board_hal.h"
+#include "battery_bridge.h"
 #include "eeprom_backend.h"
 #include "foreground_bridge.h"
 #include "input_bridge.h"
@@ -42,6 +43,13 @@ uint64_t next_quarter_us = 0;
 uint64_t next_second_us = 0;
 uint64_t next_input_us = 0;
 uint64_t next_beep_us = 0;
+
+uint64_t sample_period_us() {
+  // The H8 disables regular 16 Hz sampling after its motion timeout and
+  // collects one activity sample on each RTC second instead.
+  return StickForegroundIsInactive() && !StickInputWakeScanActive() ?
+      1000000 : 62500;
+}
 
 void fatal(const char *reason) {
   Serial.printf("PW_STICK_FATAL %s\n", reason);
@@ -103,8 +111,11 @@ extern "C" void StickPortSetup(void) {
   StickEepromDefer(0);
   StickDisplayPanelSetOrientation(StickInputOrientation());
   present_game_if_changed(true);
+  // The external 5 V rail feeds the board IR hardware, not the bare GPIO5
+  // photodiode. It is restored by StickIrConfigure when a session starts.
+  StickBoardPower().setExtOutput(false);
   const uint64_t now = uint64_t(esp_timer_get_time());
-  next_sample_us = now + 62500;
+  next_sample_us = now + sample_period_us();
   next_quarter_us = now + 250000;
   next_second_us = now + 1000000;
   next_input_us = now + 5000;
@@ -267,6 +278,17 @@ extern "C" void StickPortLoop(void) {
       Serial.printf("PW_STICK_SOUND_TIMING measured=%u under20=%u under50=%u shortest_us=%u\n",
                     measured, under20, under50, shortest);
     }
+    if (command == 'b' && !StickForegroundIsIr()) {
+      auto &power = StickBoardPower();
+      Serial.printf("PW_STICK_POWER battery_mv=%u vbus_mv=%u source=%u "
+                    "ext_5v=%u inactive=%u sample_period_us=%llu\n",
+                    unsigned(StickBatteryMillivolts()),
+                    unsigned(power.getVBUSVoltage()),
+                    unsigned(power.getPowerSource()),
+                    unsigned(power.getExtOutput()),
+                    unsigned(StickForegroundIsInactive()),
+                    (unsigned long long)sample_period_us());
+    }
     if (command == 'o' && !StickForegroundIsIr()) {
       Serial.printf("PW_STICK_DEVICE_MENU open=%u row=%u profile=%u orientation=%u chord_ms=%u\n",
                     device_menu_open, device_menu_row,
@@ -310,6 +332,11 @@ extern "C" void StickPortLoop(void) {
       present_game_if_changed(true);
       Serial.println("PW_STICK_BENCH_SLEEP");
     }
+    if (command == 'n' && !StickForegroundIsIr()) {
+      StickForegroundBenchInactive();
+      present_game_if_changed(true);
+      Serial.println("PW_STICK_BENCH_INACTIVE");
+    }
     if (command == 'w' && !StickForegroundIsIr()) {
       StickInputBenchHold(2, 10);
       Serial.println("PW_STICK_BENCH_CENTER_HOLD");
@@ -333,7 +360,7 @@ extern "C" void StickPortLoop(void) {
 #endif
   if (now >= next_quarter_us) {
     next_quarter_us += 250000;
-    StickForegroundQuarterSecond();
+    if (!StickForegroundIsInactive()) StickForegroundQuarterSecond();
   }
   if (now >= next_second_us) {
     next_second_us += 1000000;
@@ -351,7 +378,7 @@ extern "C" void StickPortLoop(void) {
     previous_ir = false;
     // IR owns the foreground for seconds at a time. Those elapsed samples
     // cannot be replayed as a burst of MainTick calls after the handoff.
-    next_sample_us = now + 62500;
+    next_sample_us = now + sample_period_us();
     next_beep_us = now + 8000;
 #ifdef PW_STICK_BENCH_CONTROL
     if (StickIrBenchTraceEnabled())
@@ -372,7 +399,8 @@ extern "C" void StickPortLoop(void) {
 
   // A foreground owner may have held the loop past several sample slots.
   // Resume at the current wall clock rather than replaying obsolete ticks.
-  if (now > next_sample_us + 62500) next_sample_us = now;
+  const uint64_t sample_period = sample_period_us();
+  if (now > next_sample_us + sample_period) next_sample_us = now;
   if (now > next_input_us + 5000) next_input_us = now;
   if (now > next_beep_us + 8000) next_beep_us = now;
   if (now >= next_input_us) {
@@ -381,6 +409,12 @@ extern "C" void StickPortLoop(void) {
     const uint64_t begin = uint64_t(esp_timer_get_time());
 #endif
     StickInputPoll(millis());
+    // The H8's center IRQ resumes its fast sampling timer immediately. On
+    // this board the comfort chord is resolved by polling, so hold that
+    // cadence while a physical or queued gesture needs native input scans.
+    if (sample_period_us() < sample_period &&
+        next_sample_us > now + sample_period_us())
+      next_sample_us = now + sample_period_us();
 #ifdef PW_STICK_BENCH_CONTROL
     ++input_polls;
     input_us += uint64_t(esp_timer_get_time()) - begin;
@@ -423,11 +457,13 @@ extern "C" void StickPortLoop(void) {
     }
   }
   if (StickForegroundIsMain() && now >= next_sample_us) {
-    next_sample_us += 62500;
+    next_sample_us += sample_period;
 #ifdef PW_STICK_BENCH_CONTROL
     const uint64_t begin = uint64_t(esp_timer_get_time());
 #endif
     StickForegroundRun();
+    if (sample_period_us() != sample_period)
+      next_sample_us = now + sample_period_us();
 #ifdef PW_STICK_BENCH_CONTROL
     ++main_ticks;
     main_us += uint64_t(esp_timer_get_time()) - begin;
@@ -455,7 +491,7 @@ extern "C" void StickPortLoop(void) {
     const uint64_t present_begin = uint64_t(esp_timer_get_time());
 #endif
     if (!device_menu_open) present_game_if_changed();
-    if (StickForegroundIsMain()) next_sample_us = now + 62500;
+    if (StickForegroundIsMain()) next_sample_us = now + sample_period_us();
 #ifdef PW_STICK_BENCH_CONTROL
     present_us += uint64_t(esp_timer_get_time()) - present_begin;
 #endif

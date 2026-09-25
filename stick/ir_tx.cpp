@@ -1,4 +1,5 @@
 #include "ir_tx.h"
+#include "board_hal.h"
 
 #include <M5Unified.h>
 #include <driver/gpio.h>
@@ -14,7 +15,6 @@ constexpr unsigned kBaud = 115200;
 constexpr unsigned kRmtHz = 80000000;
 constexpr unsigned kPulseTicks = 130;  // 1.625 us at the RMT clock.
 
-m5::M5PM1_Class pm1;
 rmt_channel_handle_t channel = nullptr;
 rmt_encoder_handle_t encoder = nullptr;
 rmt_symbol_word_t *symbols = nullptr;
@@ -23,10 +23,15 @@ bool ready = false;
 }  // namespace
 
 bool prepare_ir_tx() {
+  // The 5 V IR rail is disabled outside a session. Restore it before either
+  // transmit or receive setup, including when the RMT channel already exists.
+  auto &power = StickBoardPower();
+  const bool was_off = !power.getExtOutput();
+  if (!power.setExtOutput(true)) return false;
+  if (was_off) delay(20);
   if (ready) return true;
   gpio_set_level(GPIO_NUM_46, 0);
   gpio_set_direction(GPIO_NUM_46, GPIO_MODE_OUTPUT);
-  if (!pm1.begin() || !pm1.setExtOutput(true)) return false;
   symbols = static_cast<rmt_symbol_word_t *>(heap_caps_malloc(
       kMaxBytes * 10 * sizeof(rmt_symbol_word_t),
       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));

@@ -4,6 +4,7 @@
 #include "ir_rx_core.h"
 #include "ir_tx.h"
 #include "sound_bridge.h"
+#include "board_hal.h"
 
 #include <Arduino.h>
 #include <driver/dedic_gpio.h>
@@ -382,6 +383,7 @@ extern "C" void StickIrStop(void) {
   gpio_set_direction(GPIO_NUM_5, GPIO_MODE_INPUT);
   gpio_pullup_dis(GPIO_NUM_5);
   gpio_pulldown_dis(GPIO_NUM_5);
+  StickBoardPower().setExtOutput(false);
 #ifdef PW_STICK_BENCH_CONTROL
   if (trace_enabled()) {
   unsigned histogram[8] = {};

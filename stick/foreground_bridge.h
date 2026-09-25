@@ -10,6 +10,7 @@ void StickForegroundSecond(void);
 int StickForegroundIsIr(void);
 int StickForegroundIsMain(void);
 int StickForegroundIsBeep(void);
+int StickForegroundIsInactive(void);
 unsigned StickForegroundUiFrame(void);
 void StickForegroundRun(void);
 void StickForegroundRequestIr(void);
@@ -18,6 +19,7 @@ void StickForegroundWakeDisplay(void);
 void StickForegroundCenterWake(void);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickForegroundBenchSleep(void);
+void StickForegroundBenchInactive(void);
 #endif
 unsigned StickForegroundIrResult(void);
 void StickForegroundIrDiagnostic(unsigned *phase, unsigned *received,
