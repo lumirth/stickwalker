@@ -61,7 +61,7 @@ def main() -> None:
                         help="HGSS source-built resource image; other sealed inputs remain fresh")
     parser.add_argument("--course", type=Path,
                         help="10,430-byte source-backed course fixture for put")
-    parser.add_argument("--mode", choices=("entry", "put", "back", "present", "cleanup"),
+    parser.add_argument("--mode", choices=("entry", "put", "back", "present", "cleanup", "cleanup_all"),
                         default="entry", help="Original HGSS PHC operation")
     args = parser.parse_args()
     run = args.run.resolve()
