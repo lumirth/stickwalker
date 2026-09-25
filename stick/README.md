@@ -122,10 +122,16 @@ instructions and requalify it with sealed traffic and complete exchanges.
   clear commit markers. After reboot, the received course and staged-course
   regions remained exact; only mirrored save counters changed. The validated
   bench app hash is `56b27c350da65bde2efcd855709cfcbb87519a31f482f08a6ff4f69482f9a7c2`.
-  The cleaned bench app now flashed on the Stick has the same sampler machine
-  bytes, and its hash is `6e38abbed86906bb4d98d2ec3ecbe954f159a366d006929bff53df1b707bbc35`.
-  Repeated real-card transactions and the separate production build remain
-  to be qualified.
+  The cleaned bench app had the same sampler machine bytes; its hash is
+  `6e38abbed86906bb4d98d2ec3ecbe954f159a366d006929bff53df1b707bbc35`.
+  The same source was then compiled without `PW_STICK_BENCH_CONTROL` and
+  flashed as an app-only update. The diagnostic-free image hash is
+  `317943ba93b54810ea5be57fc936574f70bf403b63a1196458b4b174b59129d9`.
+  Flash verification passed, and the user reported that a normal HeartGold
+  connection on this production image worked. This second real-card success
+  is user-observed; the production image has no per-burst serial trace.
+  Repeated quantitative qualification on one frozen production image remains
+  open.
 - A source-faithful registered-walker `back` transaction on the integrated
   firmware received 90 valid bursts, ended with the original HGSS DONE result,
   and cleared the saved Pokémon flag while retaining registration. An `entry`
