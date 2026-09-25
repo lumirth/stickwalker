@@ -172,6 +172,24 @@ instructions and requalify it with sealed traffic and complete exchanges.
   sleep call, and seven successful BMI270 samples. A source-faithful `back`
   and `put` passed afterward, with 90/90 and 133/133 valid receives and exact
   EEPROM course readback. Battery current and actual runtime remain unmeasured.
+- The user confirmed that the battery-powered Stick woke and accepted button
+  input after sleeping. Connect had a separate display handoff defect: the
+  virtual NT7508 switched to the prepared IR frame, but the physical panel
+  still showed the previous menu. The Stick now presents that frame before
+  starting IR. A second visual defect came from the HGSS image builder missing
+  its two direct-array cursor copies. The corrected source image was sent by
+  the 3DS through the original cleanup (preserving lifetime steps), entry,
+  back, and put operations. All 35,920 image bytes and 10,430 course bytes
+  matched independent EEPROM readback; the four operations received 2/2,
+  374/374, 90/90, and 133/133 valid packets with zero invalid packets. The
+  saved brightness was restored through the native Settings menu. The
+  corrected result framebuffer shows the intended blinking cursor in place
+  of the solid square. Trial records are under
+  `stick/.build/trials/connect-ui-{cleanup,entry-corrected,back-corrected,put-corrected}-001/`;
+  `connect-ui-final-verification.json` records both valid status and save
+  mirrors, 137 preserved lifetime steps, and the restored setting byte.
+  The tested Stick app SHA-256 is
+  `be6bc4939279e98d0024da856863ed249fc3b8b7906d8ff3f36faa320f373846`.
 - The current serial `c` trigger and verbose burst output are enabled only
   with `PW_STICK_BENCH_CONTROL`; they are bringup instruments, not protocol
   decision makers. The 3DS runs the source-owned retail peer. The native

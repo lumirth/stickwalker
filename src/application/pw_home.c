@@ -15,6 +15,9 @@
 #include "application/pw_player_input.h"
 #include "support/lib_common.h"
 #include "support/scratch.h"
+#ifdef PW_STICK_S3
+#include "stick/display_panel.h"
+#endif
 
 #define HOME_DISPLAY_HEIGHT_PIXELS 0x40
 #define HOME_INITIAL_X 0x20
@@ -56,6 +59,12 @@ void TryBeginIr(void)
       RenderBattery(0, 0);
     }
     DisplayToggleBank();
+#ifdef PW_STICK_S3
+    /* The NT7508 bank switch is immediate on the original panel. The Stick's
+     * virtual display needs one physical transfer before IR takes ownership;
+     * presenting in the receive loop would delay packet replies. */
+    StickDisplayPresent();
+#endif
     set_ccr(0x80);
     IrBegin();
     InstallTask(IrProtocolTick);

@@ -130,8 +130,9 @@ The peer traces and sealed trial records are under
 readback and verdict are `stick/.build/trials/sleep-final-eeprom.bin` and
 `sleep-final-verification.json`.
 
-The individual GPIO wake on a physical M/R press and USB-disconnected battery
-current have not yet been measured. The sleep-call duration includes entry
+The user confirmed one battery-powered screen-off wake followed by working
+button input. The exact GPIO wake source and USB-disconnected battery current
+have not yet been measured. The sleep-call duration includes entry
 and exit overhead, so it is a residency indicator rather than an ammeter
 reading. A whole-battery discharge result is still required for a runtime
 estimate. No original step-count semantics were replaced by the BMI270's

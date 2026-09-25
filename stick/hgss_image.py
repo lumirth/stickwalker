@@ -124,8 +124,12 @@ def build(source: Path) -> tuple[bytes, dict]:
     end = link.index("setup_sound( &myImageData->soundData)", begin)
     fragment = re.sub(r"//[^\n]*|/\*.*?\*/", "", link[begin:end], flags=re.S)
     copies = re.findall(r"MI_CpuCopy8\s*\(\s*(phc_\w+|buf)\s*,\s*"
-                        r"&myImageData->(\w+)\[(.*?)\]\s*,\s*(.*?)\s*\)\s*;",
+                        r"&?myImageData->(\w+)(?:\[(.*?)\])?\s*,\s*(.*?)\s*\)\s*;",
                         fragment, re.S)
+    # The continuation cursor copies use array names rather than &field[index].
+    # Reject any future unparsed copy instead of generating a blank UI asset.
+    assert len(copies) == len(re.findall(r"\bMI_CpuCopy8\s*\(", fragment)), \
+        "unparsed HGSS image copy"
     offsets = image_offsets(source / "include/phc/phc_struct.h",
                             {field for _, field, _, _ in copies} | {"soundData"})
     image = bytearray(35920)
@@ -134,7 +138,7 @@ def build(source: Path) -> tuple[bytes, dict]:
         if symbol == "buf":  # Trainer name is rendered dynamically from save data.
             continue
         relative, field_size = offsets[field]
-        start = arithmetic(index)
+        start = arithmetic(index) if index else 0
         size = arithmetic(length)
         # The retail source has a few copies that cross a declared field. The
         # later copies in set_image overwrite those bytes; retain its order.
