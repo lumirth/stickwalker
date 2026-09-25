@@ -215,6 +215,12 @@ extern "C" void StickPortLoop(void) {
       Serial.println("PW_STICK_BENCH_CONNECT");
       if (!StickForegroundIsIr()) StickIrBenchTrace(0);
     }
+    if (command == 'd' && !StickForegroundIsIr()) {
+      // Capture a normal menu-initiated session without starting IR from the
+      // host. The session completion path clears this one-shot trace flag.
+      StickIrBenchTrace(1);
+      Serial.println("PW_STICK_TRACE_ARMED");
+    }
     if (command == 'p' && !StickForegroundIsIr()) {
       StickIrBenchTrace(1);
       StickIrConfigure();

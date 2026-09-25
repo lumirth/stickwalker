@@ -16,6 +16,9 @@ struct WireBurst {
   uint8_t stops = 0;
   uint16_t weak_pairs = 0;
   uint16_t recovery_tails = 0;
+  uint16_t baud_step_10000 = 0;
+  int16_t origin_twice = 0;
+  uint8_t fit_pass = 0;
 
   // Framing alone determines physical acceptability. The native protocol
   // checks CONNECT value, checksum, command, length, and session state.
@@ -32,6 +35,10 @@ struct WireBurst {
 // optical-gap detection, and timestamps.
 bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
                        uint8_t pulse_cutoff = 124);
+
+// The optical peer's baud estimate is retained only within one IR session.
+// A credible long burst supplies the estimate; protocol bytes do not.
+void reset_rx_timing();
 
 }  // namespace pw_stick
 

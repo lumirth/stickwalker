@@ -8,12 +8,14 @@ namespace {
 
 constexpr unsigned kCells = kMaxWireBytes * 10;
 constexpr unsigned kMaxStrongGates = 4096;
+int learned_step_10000 = 0;
 
 struct Geometry {
   int origin_twice = 0;
   int inverse_q15 = 0;
   int step_10000 = 0;
   unsigned bytes = 0;
+  uint8_t fit_pass = 0;
   uint8_t occupied[kCells] = {};
 };
 
@@ -23,10 +25,8 @@ int nearest_cell(unsigned gate, const Geometry &geometry) {
   return (position_q16 + (1 << 15)) >> 16;
 }
 
-void map_cells(const uint16_t *strong, unsigned count, Geometry &geometry,
-               uint64_t &phase_error) {
+void map_cells(const uint16_t *strong, unsigned count, Geometry &geometry) {
   memset(geometry.occupied, 0, sizeof(geometry.occupied));
-  phase_error = 0;
   for (unsigned i = 0; i < count; ++i) {
     const int32_t position_q16 =
         (int32_t(strong[i]) * 2 - geometry.origin_twice) *
@@ -34,9 +34,21 @@ void map_cells(const uint16_t *strong, unsigned count, Geometry &geometry,
     const int cell = (position_q16 + (1 << 15)) >> 16;
     if (cell >= 0 && cell < int(geometry.bytes * 10))
       geometry.occupied[cell] = 1;
-    const int64_t offset = int64_t(position_q16) - int64_t(cell) * 65536;
-    phase_error += uint64_t(offset * offset);
   }
+}
+
+uint64_t phase_error_for(const uint16_t *strong, unsigned count,
+                         const Geometry &geometry) {
+  uint64_t phase_error = 0;
+  for (unsigned i = 0; i < count; ++i) {
+    const int32_t position_q16 =
+        (int32_t(strong[i]) * 2 - geometry.origin_twice) *
+        geometry.inverse_q15;
+    const int cell = (position_q16 + (1 << 15)) >> 16;
+    const int32_t offset = position_q16 - cell * 65536;
+    phase_error += uint32_t(offset * offset);
+  }
+  return phase_error;
 }
 
 unsigned framing_errors(const Geometry &geometry) {
@@ -48,7 +60,8 @@ unsigned framing_errors(const Geometry &geometry) {
   return bad;
 }
 
-bool fit_geometry(const uint16_t *strong, unsigned count, Geometry &best) {
+bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
+                  Geometry &best) {
   const unsigned span = strong[count - 1] - strong[0];
   unsigned bytes = unsigned(double(span) / 30.04) + 1;
   if (!bytes || bytes > kMaxWireBytes) return false;
@@ -56,28 +69,49 @@ bool fit_geometry(const uint16_t *strong, unsigned count, Geometry &best) {
   for (unsigned length_trial = 0; length_trial < 2; ++length_trial) {
     unsigned best_bad = UINT_MAX;
     uint64_t best_phase = UINT64_MAX;
-    for (int step = 30000; step <= 30080; step += 5) {
-      for (int half = -10; half <= 8; ++half) {
-        // This decoder is called only from the foreground IR transport. Keep
-        // the large geometry workspace out of Arduino's 8 KiB loop stack.
-        static Geometry candidate;
-        candidate.bytes = bytes;
-        candidate.origin_twice = int(strong[0]) * 2 + half;
-        candidate.step_10000 = step;
-        candidate.inverse_q15 =
-            int(((1u << 15) * 10000u + unsigned(step / 2)) / unsigned(step));
-        // A missing first optical pulse can leave the first data-zero pulse
-        // as the first strong observation. Let UART framing across the whole
-        // burst decide between cell 0 and cell 1, without using payload bytes.
-        const int opening_cell = nearest_cell(strong[0], candidate);
-        if (opening_cell < 0 || opening_cell > 1) continue;
-        uint64_t phase = 0;
-        map_cells(strong, count, candidate, phase);
-        const unsigned bad = framing_errors(candidate);
-        if (bad < best_bad || (bad == best_bad && phase < best_phase)) {
-          best = candidate;
-          best_bad = bad;
-          best_phase = phase;
+    // Search the peer's previous credible long-burst baud first. Otherwise
+    // estimate it from this burst's gate count. The first observed pulse may
+    // be a data pulse, so even the fast search needs the full origin range.
+    // All fits use only UART framing and optical phase, never payload bytes.
+    const bool short_frame = bytes <= 16;
+    const int estimated_step =
+        int((gate_count * 10000u + bytes * 5u) / (bytes * 10u));
+    const unsigned passes = short_frame ? 1u : (learned_step_10000 ? 3u : 2u);
+    for (unsigned pass = 0; pass < passes; ++pass) {
+      if (pass && best_bad <= 1) break;
+      const bool full_search = short_frame || pass == passes - 1;
+      const int anchor = pass == 0 && learned_step_10000 ?
+          learned_step_10000 : estimated_step;
+      const int radius = pass == 0 && learned_step_10000 ? 25 : 35;
+      const int first_step = full_search ? 29700 :
+          (anchor - radius < 29700 ? 29700 : anchor - radius);
+      const int last_step = full_search ? 30120 :
+          (anchor + radius > 30120 ? 30120 : anchor + radius);
+      for (int step = first_step; step <= last_step; step += 5) {
+        for (int half = -10; half <= 8; ++half) {
+          // This decoder is called only from the foreground IR transport.
+          // Keep the geometry workspace out of Arduino's 8 KiB loop stack.
+          static Geometry candidate;
+          candidate.bytes = bytes;
+          candidate.origin_twice = int(strong[0]) * 2 + half;
+          candidate.step_10000 = step;
+          candidate.fit_pass = uint8_t(pass);
+          candidate.inverse_q15 = int(((1u << 15) * 10000u +
+                                       unsigned(step / 2)) / unsigned(step));
+          // A missing first optical pulse can leave the first data-zero pulse
+          // as the first strong observation. Framing decides between cells 0
+          // and 1 without using payload bytes.
+          const int opening_cell = nearest_cell(strong[0], candidate);
+          if (opening_cell < 0 || opening_cell > 1) continue;
+          map_cells(strong, count, candidate);
+          const unsigned bad = framing_errors(candidate);
+          if (bad > best_bad) continue;
+          const uint64_t phase = phase_error_for(strong, count, candidate);
+          if (bad < best_bad || (bad == best_bad && phase < best_phase)) {
+            best = candidate;
+            best_bad = bad;
+            best_phase = phase;
+          }
         }
       }
     }
@@ -135,6 +169,8 @@ bool weak_pair_in_cell(const uint8_t *bins, size_t gates, unsigned cell,
 
 }  // namespace
 
+void reset_rx_timing() { learned_step_10000 = 0; }
+
 bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
                        uint8_t pulse_cutoff) {
   out = WireBurst{};
@@ -151,7 +187,7 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
   if (!strong_count) return false;
 
   static Geometry geometry;
-  if (!fit_geometry(strong, strong_count, geometry)) return false;
+  if (!fit_geometry(strong, strong_count, gate_count, geometry)) return false;
   remove_recovery_tails(bins, strong, strong_count, geometry, out);
 
   for (unsigned byte = 0; byte < geometry.bytes; ++byte) {
@@ -172,6 +208,11 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
     out.stops += geometry.occupied[base + 9] == 0;
   }
   out.length = uint8_t(geometry.bytes);
+  out.baud_step_10000 = uint16_t(geometry.step_10000);
+  out.origin_twice = int16_t(geometry.origin_twice);
+  out.fit_pass = geometry.fit_pass;
+  if (out.length >= 32 && out.credible_uart())
+    learned_step_10000 = geometry.step_10000;
   return true;
 }
 

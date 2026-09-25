@@ -85,10 +85,26 @@ struct BurstDiagnostic {
   unsigned bytes;
   unsigned starts;
   unsigned stops;
+  unsigned decode_us;
+  unsigned baud_step_10000;
+  int origin_twice;
+  unsigned fit_pass;
   uint8_t wire[16];
 };
 BurstDiagnostic burst_diagnostics[32];
 unsigned burst_diagnostic_count = 0;
+#ifdef PW_STICK_BENCH_CONTROL
+struct TxDiagnostic {
+  unsigned command;
+  unsigned bytes;
+  int64_t since_peer_us;
+  unsigned tx_us;
+  unsigned success;
+};
+TxDiagnostic tx_diagnostics[32];
+unsigned tx_diagnostic_count = 0;
+int64_t last_peer_pulse_us = 0;
+#endif
 TaskHandle_t worker_handle = nullptr;
 TaskHandle_t protocol_handle = nullptr;
 
@@ -297,6 +313,7 @@ extern "C" void StickIrPassiveDiagnostic(int enabled) {
 
 extern "C" void StickIrStart(void) {
   if (__atomic_load_n(&failed, __ATOMIC_ACQUIRE)) return;
+  pw_stick::reset_rx_timing();
   StickSoundQuiesceForIr();
   if (!ring) ring = static_cast<uint8_t *>(heap_caps_malloc(
       kRingSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -328,6 +345,8 @@ extern "C" void StickIrStart(void) {
   diagnostic_count = 0;
   burst_diagnostic_count = 0;
 #ifdef PW_STICK_BENCH_CONTROL
+  tx_diagnostic_count = 0;
+  last_peer_pulse_us = 0;
   checksum_opening_count = 0;
 #endif
   __atomic_store_n(&event_write, 0, __ATOMIC_RELEASE);
@@ -435,12 +454,22 @@ extern "C" void StickIrStop(void) {
   for (unsigned i = 0; i < burst_diagnostic_count; ++i) {
     const auto &entry = burst_diagnostics[i];
     Serial.printf("PW_STICK_BURST index=%u gates=%u decoded=%u credible=%u "
-                  "bytes=%u starts=%u stops=%u wire=", i, entry.gates,
+                  "bytes=%u starts=%u stops=%u decode_us=%u step=%u "
+                  "origin2=%d fit_pass=%u wire=", i, entry.gates,
                   entry.decoded, entry.credible, entry.bytes, entry.starts,
-                  entry.stops);
+                  entry.stops, entry.decode_us, entry.baud_step_10000,
+                  entry.origin_twice, entry.fit_pass);
     for (unsigned byte = 0; byte < entry.bytes && byte < 16; ++byte)
       Serial.printf("%02x", entry.wire[byte]);
     Serial.println();
+  }
+  for (unsigned i = 0; i < tx_diagnostic_count; ++i) {
+    const auto &entry = tx_diagnostics[i];
+    Serial.printf("PW_STICK_TX index=%u command=%u bytes=%u "
+                  "since_peer_us=%lld tx_us=%u success=%u\n", i,
+                  entry.command, entry.bytes,
+                  static_cast<long long>(entry.since_peer_us), entry.tx_us,
+                  entry.success);
   }
   Serial.println("PW_STICK_STOP_COMPLETE");
   }
@@ -482,8 +511,22 @@ extern "C" void StickIrDelayTicks(u16 ticks) {
 
 extern "C" void StickIrSendFrame(const u8 *logical, u8 length) {
   __atomic_store_n(&tx_busy, true, __ATOMIC_RELEASE);
-  if (!pw_stick::transmit_logical(logical, length))
+#ifdef PW_STICK_BENCH_CONTROL
+  const int64_t started_us = esp_timer_get_time();
+#endif
+  const bool sent = pw_stick::transmit_logical(logical, length);
+  if (!sent)
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+#ifdef PW_STICK_BENCH_CONTROL
+  if (trace_enabled()) {
+    const unsigned slot = tx_diagnostic_count < 32 ? tx_diagnostic_count++ : 31;
+    tx_diagnostics[slot] = {logical && length ? unsigned(logical[0]) : 0,
+                            length,
+                            last_peer_pulse_us ? started_us - last_peer_pulse_us : -1,
+                            unsigned(esp_timer_get_time() - started_us),
+                            unsigned(sent)};
+  }
+#endif
   __atomic_store_n(&tx_busy, false, __ATOMIC_RELEASE);
 }
 
@@ -527,8 +570,14 @@ extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
   }
 #endif
   pw_stick::WireBurst burst;
+#ifdef PW_STICK_BENCH_CONTROL
+  const int64_t decode_started_us = esp_timer_get_time();
+#endif
   const bool decoded = pw_stick::decode_wire_burst(packet_bins, count, burst,
                                                    kLowCutoff);
+#ifdef PW_STICK_BENCH_CONTROL
+  const unsigned decode_us = unsigned(esp_timer_get_time() - decode_started_us);
+#endif
   const bool credible = decoded && burst.credible_uart();
 #ifdef PW_STICK_BENCH_CONTROL
   if (!credible && count <= sizeof(diagnostic_bins)) {
@@ -547,6 +596,10 @@ extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
     entry.bytes = burst.length;
     entry.starts = burst.starts;
     entry.stops = burst.stops;
+    entry.decode_us = decode_us;
+    entry.baud_step_10000 = burst.baud_step_10000;
+    entry.origin_twice = burst.origin_twice;
+    entry.fit_pass = burst.fit_pass;
     memcpy(entry.wire, burst.bytes,
            burst.length < sizeof(entry.wire) ? burst.length : sizeof(entry.wire));
   }
@@ -562,8 +615,12 @@ extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
   memcpy(wire, burst.bytes, burst.length);
   ++valid_bursts;
   *length = burst.length;
-  *lastObservationTick = ticks_from_us(
-      event.end_us - int64_t(event.end_gate - event.last) * 6250 / 2160);
+  const int64_t peer_pulse_us =
+      event.end_us - int64_t(event.end_gate - event.last) * 6250 / 2160;
+#ifdef PW_STICK_BENCH_CONTROL
+  last_peer_pulse_us = peer_pulse_us;
+#endif
+  *lastObservationTick = ticks_from_us(peer_pulse_us);
   return 1;
 }
 

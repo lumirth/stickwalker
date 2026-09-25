@@ -105,6 +105,27 @@ instructions and requalify it with sealed traffic and complete exchanges.
   screen. Full repeated transaction qualification remains open. A frozen `.137`
   app image remains at `../bench/experiments/g5-terminal-start-137/app.bin`;
   its full pre-port flash backup is also retained under `stick/.build/`.
+- A real HeartGold Game Card completed a walk-start transfer with the Stick.
+  Its optical UART clock measured about 2.9855 gates/cell, outside the old
+  3.0000-3.0080 fit range learned from the 3DS bench transmitter. A wider
+  full fit recovered its packets but took 132-149 ms, exceeding both the
+  game's 100 ms reply timeout and the port's roughly 98 ms inactivity check.
+  The receiver now searches the full start-phase range around the current
+  burst's or a previous credible long burst's baud estimate, and computes
+  the expensive phase score only for competitive fits. This uses UART framing
+  only; the original protocol still checks commands, tokens, and checksums.
+  The successful real-card trace recorded 374/374 valid optical bursts,
+  no rejected burst or checksum failure, and a normal completion. Its first
+  32 retained burst diagnostics all used the fast fit; maximum recorded decode time
+  was 30.9 ms and maximum recorded reply-start time was 31.7 ms. A 65,536-byte
+  EEPROM readback after transfer had matching status and save mirrors and
+  clear commit markers. After reboot, the received course and staged-course
+  regions remained exact; only mirrored save counters changed. The validated
+  bench app hash is `56b27c350da65bde2efcd855709cfcbb87519a31f482f08a6ff4f69482f9a7c2`.
+  The cleaned bench app now flashed on the Stick has the same sampler machine
+  bytes, and its hash is `6e38abbed86906bb4d98d2ec3ecbe954f159a366d006929bff53df1b707bbc35`.
+  Repeated real-card transactions and the separate production build remain
+  to be qualified.
 - A source-faithful registered-walker `back` transaction on the integrated
   firmware received 90 valid bursts, ended with the original HGSS DONE result,
   and cleared the saved Pokémon flag while retaining registration. An `entry`
