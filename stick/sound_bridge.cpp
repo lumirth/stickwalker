@@ -15,6 +15,7 @@ u16 compare_value = 0;
 u8 output_mode = 0;
 int64_t next_period_us = 0;
 int64_t test_tone_end_us = 0;
+int64_t amplifier_hold_end_us = 0;
 // Timer W drives the original piezo with a pulse waveform. The library's
 // default tone is a sine, which softens very brief score notes on the Stick's
 // speaker. Keep the source pitch and note durations, but render each cycle as
@@ -22,6 +23,11 @@ int64_t test_tone_end_us = 0;
 constexpr uint8_t kPiezoCycle[16] = {
     255, 255, 255, 255, 255, 255, 255, 255,
       0,   0,   0,   0,   0,   0,   0,   0};
+// The Stick S3's AW8737A amplifier takes about 40 ms to start after SHDN
+// rises. A Pokewalker menu note can be shorter than that startup interval.
+// Start its score clock only after the amplifier has had time to settle.
+constexpr int64_t kAmplifierStartupUs = 65000;
+constexpr int64_t kAmplifierHoldUs = 500000;
 #ifdef PW_STICK_BENCH_CONTROL
 unsigned begin_count = 0, begin_failures = 0, power_failures = 0;
 unsigned tone_count = 0, tone_failures = 0;
@@ -77,6 +83,7 @@ void stop_tone() {
 void stop_output() {
   stop_tone();
   test_tone_end_us = 0;
+  amplifier_hold_end_us = 0;
   if (codec_on) {
     speaker_power(nullptr, false);
     codec_on = false;
@@ -119,8 +126,22 @@ extern "C" void StickSoundEnable(void) {
 #ifndef PW_STICK_BENCH_CONTROL
   if (test_tone_end_us) stop_output();
 #endif
+  const bool cold_amp = !codec_on;
+  if (!speaker_ready) {
+#ifdef PW_STICK_BENCH_CONTROL
+    ++begin_count;
+#endif
+    speaker_ready = M5.Speaker.begin();
+#ifdef PW_STICK_BENCH_CONTROL
+    begin_failures += !speaker_ready;
+#endif
+  }
+  if (speaker_ready && !codec_on)
+    codec_on = speaker_power(nullptr, true);
+  amplifier_hold_end_us = 0;
   enabled = true;
-  next_period_us = esp_timer_get_time();
+  next_period_us = esp_timer_get_time() +
+                   (cold_amp && codec_on ? kAmplifierStartupUs : 0);
 }
 
 extern "C" void StickSoundDisable(void) {
@@ -128,7 +149,11 @@ extern "C" void StickSoundDisable(void) {
 #ifdef PW_STICK_BENCH_CONTROL
   if (test_tone_end_us) return;
 #endif
-  stop_output();
+  stop_tone();
+  // A short game cue is often followed by another button press. Leave the
+  // amplifier ready briefly, then switch it off without a blocking delay.
+  amplifier_hold_end_us = codec_on ? esp_timer_get_time() +
+                                      kAmplifierHoldUs : 0;
 }
 
 extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
@@ -209,6 +234,9 @@ extern "C" void StickSoundQuiesceForIr(void) {
 
 extern "C" void StickSoundService(void) {
   if (test_tone_end_us && esp_timer_get_time() >= test_tone_end_us)
+    stop_output();
+  if (!enabled && amplifier_hold_end_us &&
+      esp_timer_get_time() >= amplifier_hold_end_us)
     stop_output();
   if (!enabled) return;
   const int64_t now = esp_timer_get_time();
