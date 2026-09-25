@@ -45,6 +45,7 @@ uint64_t next_second_us = 0;
 uint64_t next_input_us = 0;
 uint64_t next_beep_us = 0;
 uint64_t next_vbus_check_us = 0;
+uint64_t last_battery_draw_us = 0;
 bool usb_present = true;
 #ifdef PW_STICK_BENCH_CONTROL
 uint64_t usb_sleep_trial_end_us = 0;
@@ -67,6 +68,35 @@ void fatal(const char *reason) {
   }
 }
 
+int battery_percent_estimate(u16 millivolts) {
+  if (!millivolts) return -1;
+  // M5Unified uses this voltage-only scale for M5PM1. It is an estimate,
+  // particularly while charging or under a changing load.
+  if (millivolts <= 3300) return 0;
+  if (millivolts >= 4100) return 100;
+  return (millivolts - 3300) * 100 / 800;
+}
+
+void draw_battery_readout() {
+  auto *screen = StickBoardScreen();
+  if (!screen) return;
+  const u16 millivolts = StickBatteryMillivolts();
+  const int percent = battery_percent_estimate(millivolts);
+  const bool on_usb = StickBoardPower().getVBUSVoltage() >= 4000;
+  screen->fillRect(8, 27, 224, 12, TFT_BLACK);
+  screen->setTextColor(TFT_WHITE, TFT_BLACK);
+  screen->setTextSize(1);
+  screen->setCursor(10, 28);
+  if (percent < 0) {
+    screen->print("Battery unavailable");
+  } else {
+    screen->printf("Battery %u.%02u V  ~%d%%  %s", unsigned(millivolts / 1000),
+                   unsigned((millivolts % 1000) / 10), percent,
+                   on_usb ? "USB" : "");
+  }
+  last_battery_draw_us = uint64_t(esp_timer_get_time());
+}
+
 void draw_device_menu() {
   auto *screen = StickBoardScreen();
   if (!screen) return;
@@ -76,6 +106,7 @@ void draw_device_menu() {
   screen->setTextSize(2);
   screen->setCursor(8, 8);
   screen->print("STICK SETTINGS");
+  draw_battery_readout();
   screen->setTextSize(1);
   screen->setCursor(10, 42);
   screen->printf("%c Input: %s", device_menu_row == 0 ? '>' : ' ',
@@ -320,10 +351,13 @@ extern "C" void StickPortLoop(void) {
                     accel_reads, accel_successes, accel_failures);
     }
     if (command == 'o' && !StickForegroundIsIr()) {
-      Serial.printf("PW_STICK_DEVICE_MENU open=%u row=%u profile=%u orientation=%u chord_ms=%u\n",
+      const u16 millivolts = StickBatteryMillivolts();
+      Serial.printf("PW_STICK_DEVICE_MENU open=%u row=%u profile=%u orientation=%u chord_ms=%u battery_mv=%u battery_pct=%d usb=%u\n",
                     device_menu_open, device_menu_row,
                     StickInputProfile(), StickInputOrientation(),
-                    80 + StickInputChordWindowIndex() * 40);
+                    80 + StickInputChordWindowIndex() * 40,
+                    unsigned(millivolts), battery_percent_estimate(millivolts),
+                    unsigned(StickBoardPower().getVBUSVoltage() >= 4000));
     }
     if (command == 't' && !StickForegroundIsIr()) {
       const uint64_t end = uint64_t(esp_timer_get_time());
@@ -400,6 +434,9 @@ extern "C" void StickPortLoop(void) {
     next_second_us += 1000000;
     StickForegroundSecond();
   }
+
+  if (device_menu_open && now - last_battery_draw_us >= 5000000)
+    draw_battery_readout();
 
   if (StickForegroundIsIr()) {
     previous_ir = true;

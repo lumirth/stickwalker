@@ -216,7 +216,11 @@ scan. A held Center wakes the original game after eight 62.5 ms scans.
 In Stick settings, M moves to the next row, R changes that row, and L closes
 the menu. Settings include Comfort or Three Button input, either landscape
 orientation, an 80/120/160 ms chord window, and a one-second speaker test.
-They persist separately from the Pokéwalker's 64 KiB EEPROM. In Three Button
-mode, M is native Center, R and L are the directional keys; hold L for 1.2
-seconds to open Stick settings. Device settings pause game input while keeping
-the original clock and foreground code running.
+These settings persist separately from the Pokéwalker's 64 KiB EEPROM.
+The header shows live battery voltage, an approximate voltage-derived charge
+percentage, and whether USB power is connected. It refreshes every five
+seconds while the menu is open. The percentage is not a measured remaining
+runtime or a fuel-gauge reading.
+In Three Button mode, M is native Center, R and L are the directional keys;
+hold L for 1.2 seconds to open Stick settings. Device settings pause game input
+while keeping the original clock and foreground code running.
