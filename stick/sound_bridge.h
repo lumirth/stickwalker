@@ -17,6 +17,7 @@ void StickSoundQuiesceForIr(void);
 void StickSoundService(void);
 int StickSoundTestTone(void);
 #ifdef PW_STICK_BENCH_CONTROL
+int StickSoundBenchTone(void);
 void StickSoundDiagnostic(unsigned *enabled, unsigned *ready,
                           unsigned *codec, unsigned *mode,
                           unsigned *compare, unsigned *begins,

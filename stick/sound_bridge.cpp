@@ -194,6 +194,10 @@ extern "C" void StickSoundQuiesceForIr(void) {
 extern "C" void StickSoundService(void) {
   if (test_tone_end_us && esp_timer_get_time() >= test_tone_end_us)
     stop_output();
+#ifdef PW_STICK_BENCH_CONTROL
+  // Keep the source sequencer from replacing a diagnostic continuous tone.
+  if (test_tone_end_us) return;
+#endif
   if (!enabled) return;
   const int64_t now = esp_timer_get_time();
   unsigned serviced = 0;
@@ -231,6 +235,23 @@ extern "C" int StickSoundTestTone(void) {
 }
 
 #ifdef PW_STICK_BENCH_CONTROL
+extern "C" int StickSoundBenchTone(void) {
+  if (!speaker_ready) {
+    ++begin_count;
+    speaker_ready = M5.Speaker.begin();
+    begin_failures += !speaker_ready;
+  }
+  if (!speaker_ready) return 0;
+  if (!codec_on) codec_on = speaker_power(nullptr, true);
+  if (!codec_on) return 0;
+  M5.Speaker.setVolume(170);
+  const bool started = M5.Speaker.tone(880.0f, 8000);
+  ++tone_count;
+  tone_failures += !started;
+  if (started) test_tone_end_us = esp_timer_get_time() + 8000000;
+  return started ? 1 : 0;
+}
+
 extern "C" void StickSoundDiagnostic(unsigned *active, unsigned *ready,
                                        unsigned *codec, unsigned *mode,
                                        unsigned *compare, unsigned *begins,

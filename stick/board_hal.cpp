@@ -32,6 +32,12 @@ bool StickBoardBegin(void) {
   gpio_pulldown_dis(GPIO_NUM_5);
   using P = m5::M5PM1_Class;
   if (!m5::In_I2C.begin(I2C_NUM_1, 47, 48) || !pm1.begin() ||
+      // The original PM1 GPIO1 IRQ output is unused: L is polled through the
+      // latched button register. With both button reset/off actions disabled,
+      // that IRQ function also makes the PM1 flash its status LED repeatedly.
+      !pm1.setGPIOFunction(P::gpio1, P::gpio) ||
+      !pm1.setGPIOMode(P::gpio1, P::input) ||
+      !pm1.setLedEnLevel(false) ||
       !pm1.setGPIOOutput(P::gpio3, false) ||
       !pm1.setGPIOFunction(P::gpio3, P::gpio) ||
       !pm1.setGPIODrive(P::gpio3, P::push_pull) ||
