@@ -116,13 +116,18 @@ extern "C" void StickSoundInit(void) {
 }
 
 extern "C" void StickSoundEnable(void) {
+#ifndef PW_STICK_BENCH_CONTROL
   if (test_tone_end_us) stop_output();
+#endif
   enabled = true;
   next_period_us = esp_timer_get_time();
 }
 
 extern "C" void StickSoundDisable(void) {
   enabled = false;
+#ifdef PW_STICK_BENCH_CONTROL
+  if (test_tone_end_us) return;
+#endif
   stop_output();
 }
 
@@ -132,6 +137,9 @@ extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
 #endif
   compare_value = compare;
   output_mode = mode;
+#ifdef PW_STICK_BENCH_CONTROL
+  if (test_tone_end_us) return;
+#endif
   if (!enabled || !compare || !output_mode) {
     stop_tone();
     return;
@@ -178,10 +186,18 @@ extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
 
 extern "C" void StickSoundSilencePeriod(u16 compare) {
   compare_value = compare;
+#ifdef PW_STICK_BENCH_CONTROL
+  if (test_tone_end_us) return;
+#endif
   stop_tone();
 }
 
-extern "C" void StickSoundMute(void) { stop_tone(); }
+extern "C" void StickSoundMute(void) {
+#ifdef PW_STICK_BENCH_CONTROL
+  if (test_tone_end_us) return;
+#endif
+  stop_tone();
+}
 
 extern "C" void StickSoundQuiesceForIr(void) {
   stop_output();
@@ -194,10 +210,6 @@ extern "C" void StickSoundQuiesceForIr(void) {
 extern "C" void StickSoundService(void) {
   if (test_tone_end_us && esp_timer_get_time() >= test_tone_end_us)
     stop_output();
-#ifdef PW_STICK_BENCH_CONTROL
-  // Keep the source sequencer from replacing a diagnostic continuous tone.
-  if (test_tone_end_us) return;
-#endif
   if (!enabled) return;
   const int64_t now = esp_timer_get_time();
   unsigned serviced = 0;
@@ -250,6 +262,10 @@ extern "C" int StickSoundBenchTone(void) {
   tone_failures += !started;
   if (started) test_tone_end_us = esp_timer_get_time() + 8000000;
   return started ? 1 : 0;
+}
+
+extern "C" int StickSoundBenchToneActive(void) {
+  return test_tone_end_us != 0 && esp_timer_get_time() < test_tone_end_us;
 }
 
 extern "C" void StickSoundDiagnostic(unsigned *active, unsigned *ready,

@@ -323,18 +323,23 @@ extern "C" void StickPortLoop(void) {
       StickSoundTimingDiagnostic(&measured, &under20, &under50, &shortest);
       Serial.printf("PW_STICK_SOUND_TIMING measured=%u under20=%u under50=%u shortest_us=%u\n",
                     measured, under20, under50, shortest);
-      uint8_t gpio_out = 0, gpio_mode = 0, gpio_func = 0, pwr_cfg = 0;
+      uint8_t gpio_out = 0, gpio_in = 0, gpio_mode = 0;
+      uint8_t gpio_func = 0, pwr_cfg = 0, codec_reg = 0;
       const bool pmic_ok =
           m5::In_I2C.readRegister(0x6e, 0x11, &gpio_out, 1, 100000) &&
+          m5::In_I2C.readRegister(0x6e, 0x12, &gpio_in, 1, 100000) &&
           m5::In_I2C.readRegister(0x6e, 0x10, &gpio_mode, 1, 100000) &&
           m5::In_I2C.readRegister(0x6e, 0x16, &gpio_func, 1, 100000) &&
           m5::In_I2C.readRegister(0x6e, 0x06, &pwr_cfg, 1, 100000);
+      const bool codec_ok = m5::In_I2C.readRegister(
+          0x18, 0x00, &codec_reg, 1, 100000);
       unsigned m_edges, r_edges, l_edges, l_events, pmic_errors, raw, logical, power_ready;
       StickInputDiagnostic(&m_edges, &r_edges, &l_edges, &l_events, &pmic_errors,
                            &raw, &logical, &power_ready);
-      Serial.printf("PW_STICK_SOUND_HW pmic_ok=%u gpio_out=%02x gpio_mode=%02x gpio_func=%02x pwr_cfg=%02x input_raw=%u power_edges=%u\n",
-                    unsigned(pmic_ok), gpio_out, gpio_mode, gpio_func,
-                    pwr_cfg, raw, l_edges);
+      Serial.printf("PW_STICK_SOUND_HW pmic_ok=%u gpio_out=%02x gpio_in=%02x gpio_mode=%02x gpio_func=%02x pwr_cfg=%02x codec_ok=%u codec_00=%02x input_raw=%u power_edges=%u\n",
+                    unsigned(pmic_ok), gpio_out, gpio_in, gpio_mode,
+                    gpio_func, pwr_cfg, unsigned(codec_ok), codec_reg,
+                    raw, l_edges);
     }
     if (command == 'a' && !StickForegroundIsIr())
       Serial.printf("PW_STICK_SOUND_BENCH_TONE started=%u duration_ms=8000\n",

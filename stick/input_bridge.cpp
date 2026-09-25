@@ -3,6 +3,9 @@
 #include "controls.h"
 #include "display_bus.h"
 #include "foreground_bridge.h"
+#ifdef PW_STICK_BENCH_CONTROL
+#include "sound_bridge.h"
+#endif
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -38,6 +41,7 @@ u8 last_raw = 0, last_logical = 0;
 unsigned left_edges = 0, right_edges = 0, center_edges = 0;
 uint32_t bench_main_until_ms = 0;
 bool bench_power_event = false;
+bool bench_suppress_until_release = false;
 #endif
 
 bool pm1_read(uint8_t reg, uint8_t &value) {
@@ -49,15 +53,17 @@ bool pm1_write(uint8_t reg, uint8_t value) {
 }
 
 bool enable_power_button_input() {
-  // Preserve the long-hold recovery path. Change only the short-reset and
-  // double-off bits, then read both registers back before using L as input.
+  // Keep hardware download-mode recovery available, but move its hold
+  // threshold from two to four seconds so the three-button menu shortcut
+  // (1.2 seconds) cannot enter it during an ordinary long press.
   uint8_t single, twice, single_after, twice_after;
   if (!pm1_read(0x49, single) || !pm1_read(0x4a, twice)) return false;
-  if (!pm1_write(0x49, uint8_t(single | 1u)) ||
+  const uint8_t button_config = uint8_t((single & ~0x18u) | 0x18u | 1u);
+  if (!pm1_write(0x49, button_config) ||
       !pm1_write(0x4a, uint8_t(twice | 1u)) ||
       !pm1_read(0x49, single_after) || !pm1_read(0x4a, twice_after))
     return false;
-  return (single_after & 1u) && (twice_after & 1u);
+  return (single_after & 0x19u) == 0x19u && (twice_after & 1u);
 }
 
 }  // namespace
@@ -127,6 +133,18 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
   power_events += power_event;
   pmic_errors += power_button_ready && !power_read;
   last_raw = raw;
+  // During the sustained sound test, sample the physical PM1 key but do not
+  // dispatch it to the game or to the Stick Settings long-hold shortcut.
+  if (StickSoundBenchToneActive()) bench_suppress_until_release = true;
+  if (bench_suppress_until_release) {
+    if (!sampled_raw) bench_suppress_until_release = false;
+    controls.require_release();
+    three_menu_started = false;
+    three_menu_sent = false;
+    three_menu_requested = false;
+    power_event_requested = false;
+    return;
+  }
 #endif
   if (menu_active) {
     if (power_action) menu_pending |= 4u;
