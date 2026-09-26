@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 import time
+import re
 
 from hardware_power_probe import Link, last
 
@@ -19,6 +20,8 @@ def main():
     parser.add_argument('--port', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--repeats', type=int, default=3)
+    parser.add_argument('--lcd-readback', action='store_true',
+                        help='Require the ST7789P3 output-on and sleep-out bits')
     args = parser.parse_args()
     assert 1 <= args.repeats <= 20
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +39,7 @@ def main():
                 link.collect(repeat * .037)
                 start = time.monotonic()
                 link.command(trigger, .9)
-                link.command('Pto', .15)
+                link.command('DPto' if args.lcd_readback else 'Pto', .15)
                 after = last(link.rows, 'PW_STICK_POWER_HW ')
                 observation = next(r for r in reversed(link.rows)
                                    if r['text'] == after)
@@ -47,6 +50,13 @@ def main():
                                   'pwm_ready=1 ' in after and
                                   'gpio_out=04 ' in after and
                                   case['observed_after_ms'] <= 1100)
+                if args.lcd_readback:
+                    lcd = last(link.rows, 'PW_STICK_LCD_REG ')
+                    case['lcd'] = lcd
+                    match = re.search(r'power=([0-9a-f]+).*pixel=([0-9a-f]+)', lcd)
+                    case['passed'] = case['passed'] and bool(match) and (
+                        int(match[1], 16) & 0x54 == 0x14 and
+                        int(match[2], 16) == 0x05)
                 report['cases'].append(case)
                 assert case['passed'], case
                 if trigger == 'l':

@@ -494,6 +494,34 @@ extern "C" void StickPortLoop(void) {
       Serial.printf("PW_STICK_ACCEL reads=%u successes=%u failures=%u\n",
                     accel_reads, accel_successes, accel_failures);
     }
+    if (command == 'F' && !StickForegroundIsIr() &&
+        StickDisplayPanelIsReady()) {
+      // A reversible hardware check for the cold-wake command contract.
+      // End in display-on with the existing image, without touching game data.
+      auto *screen = StickBoardScreen();
+      auto *panel = screen->getPanel();
+      screen->startWrite(); screen->writeCommand(0x28); screen->endWrite();
+      const unsigned off = panel->readCommand(0x0a, 0, 1);
+      screen->writeCommand(0x29);  // Reproduce the former unselected write.
+      panel->waitDMA();
+      const unsigned unselected = panel->readCommand(0x0a, 0, 1);
+      screen->startWrite(); screen->writeCommand(0x29); screen->endWrite();
+      const unsigned selected = panel->readCommand(0x0a, 0, 1);
+      Serial.printf("PW_STICK_LCD_CS off=%02x unselected=%02x selected=%02x\n",
+                    off, unselected, selected);
+    }
+    if (command == 'D' && !StickForegroundIsIr()) {
+      auto *screen = StickBoardScreen();
+      if (!screen || !StickDisplayPanelIsReady()) {
+        Serial.println("PW_STICK_LCD_REG ready=0");
+      } else {
+        auto *panel = screen->getPanel();
+        Serial.printf("PW_STICK_LCD_REG ready=1 power=%02x madctl=%02x pixel=%02x\n",
+                      unsigned(panel->readCommand(0x0a, 0, 1)),
+                      unsigned(panel->readCommand(0x0b, 0, 1)),
+                      unsigned(panel->readCommand(0x0c, 0, 1)));
+      }
+    }
     if (command == 'P' && !StickForegroundIsIr()) {
       uint8_t gpio_out = 0, pwr_cfg = 0, accel_conf = 0;
       uint8_t imu_power = 0, imu_power_conf = 0;

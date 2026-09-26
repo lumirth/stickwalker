@@ -68,8 +68,11 @@ inline unsigned ulTaskNotifyTake(int, unsigned ticks) {
 #pragma once
 #include <cstdint>
 #include "backlight.h"
+#include <cassert>
 namespace lgfx {
 struct LGFX_Device {
+  unsigned transaction_depth = 0, unselected_commands = 0;
+  bool output_enabled = true, asleep = false;
   unsigned brightness = 68;
   unsigned sleep_calls = 0, wake_calls = 0, init_calls = 0;
   unsigned pushes = 0, last_x = 0, last_y = 0, last_w = 0, last_h = 0;
@@ -77,15 +80,22 @@ struct LGFX_Device {
   LGFX_Device *getPanel() { return this; }
   void initBus() {}
   void releaseBus() {}
-  bool init() { ++init_calls; return StickBacklightInit(0); }
+  bool init() { ++init_calls; output_enabled = false; asleep = true; return StickBacklightInit(0); }
   bool getInvert() { return false; }
   void invertDisplay(bool) {}
   void setColorDepth(unsigned) {}
-  void writeCommand(unsigned) {}
+  void startWrite() { ++transaction_depth; }
+  void endWrite() { assert(transaction_depth); --transaction_depth; }
+  void writeCommand(unsigned command) {
+    // The installed Panel_Device forwards commands without asserting CS.
+    // A cold ST7789 ignores those bytes unless its caller owns a transaction.
+    if (!transaction_depth) { ++unselected_commands; return; }
+    if (command == 0x29) output_enabled = true;
+  }
   void setBrightness(unsigned value) { brightness = value; StickBacklightSet(value); }
   void setSleep(bool on) { sleep_calls += on; }
-  void sleep() { ++sleep_calls; }
-  void wakeup() { ++wake_calls; }
+  void sleep() { ++sleep_calls; asleep = true; }
+  void wakeup() { ++wake_calls; asleep = false; }
   void setSwapBytes(bool) {}
   void setRotation(unsigned) {}
   void fillScreen(unsigned) {}
@@ -97,6 +107,7 @@ struct LGFX_Device {
   template<class... T> void printf(T...) {}
   template<class... T> void drawFastHLine(T...) {}
   void pushImage(unsigned x, unsigned y, unsigned w, unsigned h, uint16_t *p) {
+    assert(output_enabled && !asleep && "visible wake must send selected DISPON before presenting");
     ++pushes; last_x=x; last_y=y; last_w=w; last_h=h; first_pixel=p[0];
   }
 };
@@ -314,7 +325,7 @@ bool StickBoardPeripheralSupply(bool on) {
   return true;
 }
 void StickBoardDisplayReset(bool) {}
-bool StickBoardDisplayInitRegisters() { ++screen.init_calls; return StickBacklightInit(0); }
+bool StickBoardDisplayInitRegisters() { return screen.init(); }
 lgfx::LGFX_Device *StickBoardScreen() { return &screen; }
 m5::M5PM1_Class &StickBoardPower() { return power; }
 bool StickBoardVbusVoltage(uint16_t *mv) {
@@ -448,6 +459,7 @@ int main(int argc, char **argv) {
   clock_us += 64000; StickDisplayPowerService();
   clock_us += 130000; StickDisplayPowerService();
   assert(StickDisplayPresent());
+  assert(screen.transaction_depth == 0 && screen.unselected_commands == 0);
   unsigned pushes = screen.pushes;
   StickDisplayPresent();
   assert(screen.pushes == pushes);
@@ -479,6 +491,17 @@ int main(int argc, char **argv) {
   StickDisplayWrite(0xa9);
   StickDisplayPresent();
   assert(power.levels[2] && power.levels[3]);
+  // Also wake while sound retains the shared rail: no reset/init occurs,
+  // but the delayed IDMOFF/DISPON commands still need selected transactions.
+  clock_us += 800000; StickDisplayPowerService();
+  assert(!StickDisplayPanelIsReady() && power.levels[2]);
+  const unsigned init_before_warm = screen.init_calls;
+  StickDisplayWrite(0xe1);
+  assert(!StickDisplayPresent());
+  clock_us += 130000; StickDisplayPowerService();
+  assert(StickDisplayPresent() && screen.init_calls == init_before_warm);
+  assert(screen.transaction_depth == 0 && screen.unselected_commands == 0);
+  StickDisplayWrite(0xa9); StickDisplayPresent();
   StickSoundDisable();
   clock_us += 800000;
   StickSoundService();

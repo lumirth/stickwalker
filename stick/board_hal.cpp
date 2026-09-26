@@ -131,7 +131,8 @@ bool StickBoardBegin(void) {
   b.spi_mode = 0;
   b.spi_3wire = true;
   b.freq_write = 40000000;
-  b.freq_read = 16000000;
+  // ST7789P3 specifies a minimum 150 ns serial read cycle.
+  b.freq_read = 4000000;
   b.pin_mosi = 39;
   b.pin_miso = -1;
   b.pin_sclk = 40;
@@ -147,6 +148,9 @@ bool StickBoardBegin(void) {
   p.offset_y = 40;
   p.invert = true;
   p.readable = true;
+  // P3's 8-bit status reads start immediately after the command. The generic
+  // ST7789 driver's default dummy clock shifts these replies by one bit.
+  p.dummy_read_bits = 0;
   p.bus_shared = false;
   panel.config(p);
   panel.setLight(&light);

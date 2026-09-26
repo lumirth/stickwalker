@@ -129,8 +129,12 @@ extern "C" void StickDisplayPowerService(void) {
       wake_stage = 3;
       wake_deadline_us = esp_timer_get_time() + 130000;
     } else {
+      // writeCommand forwards bytes without selecting the panel. Match the
+      // driver's sleep/wakeup transactions so these commands reach the LCD.
+      screen->startWrite();
       screen->writeCommand(0x38);  // IDMOFF
       screen->writeCommand(0x29);  // DISPON
+      screen->endWrite();
       if (panel_generation != StickPeripheralGeneration()) {
         screen->setSwapBytes(true);
         screen->invertDisplay(screen->getPanel()->getInvert());
