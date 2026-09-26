@@ -29,14 +29,13 @@ void Controls::emit(uint8_t value) {
 }
 
 uint8_t Controls::direction(bool main_button) const {
-  if (orientation_ == Orientation::LeftSideDown)
+  if (layout_ == Layout::TwoKeyMR)
     return main_button ? kLeft : kRight;
   return main_button ? kRight : kLeft;
 }
 
-void Controls::configure(Profile profile, Orientation orientation) {
-  profile_ = profile;
-  orientation_ = orientation;
+void Controls::configure(Layout layout) {
+  layout_ = layout;
   require_release();
 }
 
@@ -68,12 +67,12 @@ void Controls::sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
     return;
   }
 
-  if (profile_ == Profile::ThreeButton) {
+  if (three_key(layout_)) {
     uint8_t value = m ? kCenter : 0;
-    if (orientation_ == Orientation::LeftSideDown)
-      value |= (r ? kLeft : 0) | (l ? kRight : 0);
-    else
+    if (layout_ == Layout::ThreeKeyLR)
       value |= (l ? kLeft : 0) | (r ? kRight : 0);
+    else
+      value |= (r ? kLeft : 0) | (l ? kRight : 0);
     emit(value);
     return;
   }

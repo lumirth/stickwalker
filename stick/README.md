@@ -42,7 +42,7 @@ instructions and requalify it with sealed traffic and complete exchanges.
   profile and three-button profile. The physical M, R, and L switches were
   counted on the Stick; an M+R chord delivered native Center and opened the
   original menu. Its host test covers chord ordering, late second presses,
-  short taps across native scans, and both landscape orientations. The chord
+  short taps across native scans, and all four independent layouts. The chord
   window is selectable as 80, 120, or 160 ms.
 - `src/support/ir.c` now has a guarded target seam for the physical transport;
   its packet and session logic remains the original source. That source passes
@@ -242,26 +242,43 @@ and lower-power sensing are still pending.
 
 ## Stick controls
 
-The default Comfort layout in left-side-down orientation maps M to native
-Left, R to native Right, M+R held together to native Center, and L to the
-Stick settings screen. The direction mapping follows the observed movement
-of the original menu's selected icon on this panel. The first press is held
-for the selected 80/120/160 ms chord window; Center requires both buttons
-to remain pressed together for 20 ms after the second debounced press. A
-fleeting overlap while alternating directions produces direction taps.
-Once a single
-direction has been emitted, a late second press cannot become Center until
-both buttons are released. Short taps are queued for the next native input
-scan. A held Center wakes the original game after eight 62.5 ms scans.
+Input layout and display rotation are independent. Layout codes list the
+physical directional keys in native Left/Right order:
+
+| Layout | Left | Center | Right |
+| --- | --- | --- | --- |
+| 2-key M/R | M | M+R | R |
+| 2-key R/M | R | M+R | M |
+| 3-key L/R | L | M | R |
+| 3-key R/L | R | M | L |
+
+The default is 2-key M/R. Existing saved settings migrate to the same actual
+button directions and rotation. Changing rotation then leaves the chosen
+layout intact. In either two-key layout L opens Stick Settings; in either
+three-key layout hold L for 1.2 seconds to open it.
+
+For two-key input, the first press is held for the selected 80/120/160 ms chord
+window; Center requires both buttons to remain pressed together for 20 ms
+after the second debounced press. Fleeting overlap while alternating directions
+produces direction taps. Once a direction has been emitted, a late second press
+cannot become Center until both buttons release. Short taps are queued for the
+next native input scan. The existing screen-wake gestures remain available.
 
 In Stick settings, M moves to the next row, R changes that row, and L closes
-the menu. Settings include Comfort or Three Button input, either landscape
-orientation, an 80/120/160 ms chord window, and a one-second speaker test.
+the menu. Settings include the four input layouts, either landscape rotation,
+Light/Dark appearance, an 80/120/160 ms two-key chord window, and a one-second
+speaker test. In three-key layouts the chord row shows Center: M and is skipped.
 These settings persist separately from the Pokéwalker's 64 KiB EEPROM.
 The header shows live battery voltage, an approximate voltage-derived charge
 percentage, and whether USB power is connected. It refreshes every five
 seconds while the menu is open. The percentage is not a measured remaining
 runtime or a fuel-gauge reading.
-In Three Button mode, M is native Center, R and L are the directional keys;
-hold L for 1.2 seconds to open Stick settings. Device settings pause game input
-while keeping the original clock and foreground code running.
+Device settings pause game input while keeping the original clock and
+foreground code running.
+
+Light mode uses a white background, two neutral intermediate grays, and black
+foreground. Dark mode reverses those four levels. Appearance applies to the
+native image, border and Stick Settings and persists separately from native
+EEPROM. Native contrast continues to set backlight brightness. See the
+[display and settings notes](docs/device-settings-and-display.md) for the color
+pipeline, validation and physical calibration limits.

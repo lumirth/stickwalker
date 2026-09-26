@@ -18,6 +18,28 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 HEADERS = {
+    "Preferences.h": r"""
+#pragma once
+#include <cstdint>
+#include <map>
+#include <string>
+inline std::map<std::string, uint8_t> preference_values;
+inline bool preference_write_fault_once = false;
+class Preferences {
+  std::string space;
+ public:
+  bool begin(const char *name, bool) { space=name; return true; }
+  void end() {}
+  uint8_t getUChar(const char *key, uint8_t fallback) {
+    auto it=preference_values.find(space+"/"+key);
+    return it==preference_values.end() ? fallback : it->second;
+  }
+  size_t putUChar(const char *key, uint8_t value) {
+    if (preference_write_fault_once) { preference_write_fault_once=false; return 0; }
+    preference_values[space+"/"+key]=value; return 1;
+  }
+};
+""",
     "Arduino.h": r"""
 #pragma once
 #include <cstdint>
@@ -239,6 +261,7 @@ HARNESS = r"""
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <Preferences.h>
 uint64_t clock_us = 100000, timer_duration_us = 0;
 int serial_bytes = 0;
 bool sleep_init_failed = false, sleep_start_failed = false;
@@ -248,6 +271,7 @@ bool supply_on_fault_once = false, speaker_begin_fault_once = false;
 bool speaker_tone_fault_once = false;
 bool ledc_timer_active = false, ledc_update_fault_once = false;
 bool menu_requested = false;
+u8 input_layout = 0, input_orientation = 0, input_chord = 0;
 u8 menu_buttons = 0;
 unsigned completed_sleeps = 0;
 unsigned main_runs = 0;
@@ -307,10 +331,13 @@ void StickInputMenuMode(int) {}
 u8 StickInputTakeMenuButtons() {
   u8 buttons=menu_buttons; menu_buttons=0; return buttons;
 }
-u8 StickInputProfile() { return 0; }
-u8 StickInputOrientation() { return 0; }
-u8 StickInputChordWindowIndex() { return 0; }
-int StickInputConfigure(u8, u8, u8) { return 1; }
+u8 StickInputProfile() { return input_layout >= 2; }
+u8 StickInputLayout() { return input_layout; }
+u8 StickInputOrientation() { return input_orientation; }
+u8 StickInputChordWindowIndex() { return input_chord; }
+int StickInputConfigure(u8 layout, u8 orientation, u8 chord) {
+  input_layout=layout; input_orientation=orientation; input_chord=chord; return 1;
+}
 }
 int main(int argc, char **argv) {
   const bool serial_case = argc > 1 && !strcmp(argv[1], "serial");
@@ -401,7 +428,7 @@ int main(int argc, char **argv) {
   assert(screen.pushes == pushes + 1);
   assert(screen.last_x == 34 && screen.last_y == 17);
   assert(screen.last_w == 2 && screen.last_h == 2);
-  assert(screen.first_pixel == 0xad55);
+  assert(screen.first_pixel == 0xad75);
   StickDisplayInvalidate();
   StickDisplayPresent();
   assert(screen.last_w == 192 && screen.last_h == 128);
@@ -443,7 +470,27 @@ int main(int argc, char **argv) {
   uint64_t until=clock_us+300000;
   while (clock_us<until) StickPortLoop();
   const unsigned overlay_pushes=screen.pushes;
-  for (unsigned i=0;i<8;++i) {
+  // Four layout choices cycle without touching rotation. Rotation changes do
+  // not touch layout. Appearance changes persist, invalidate and repaint.
+  for (unsigned i=0;i<4;++i) {
+    menu_buttons=2;
+    until=clock_us+150000;
+    while (clock_us<until) StickPortLoop();
+    assert(input_layout==(i+1)%4 && input_orientation==0);
+  }
+  menu_buttons=1; until=clock_us+150000;
+  while (clock_us<until) StickPortLoop();
+  menu_buttons=2; until=clock_us+150000;
+  while (clock_us<until) StickPortLoop();
+  assert(input_layout==0 && input_orientation==1);
+  menu_buttons=1; until=clock_us+150000;
+  while (clock_us<until) StickPortLoop();
+  menu_buttons=2; until=clock_us+150000;
+  while (clock_us<until) StickPortLoop();
+  assert(!StickDisplayIsDark() && preference_values["pw-display/dark"]==0);
+  preference_write_fault_once=true;
+  assert(!StickDisplaySetDark(1) && !StickDisplayIsDark());
+  for (unsigned i=0;i<10;++i) {
     menu_buttons=1;
     until=clock_us+150000;
     while (clock_us<until) StickPortLoop();
@@ -454,6 +501,8 @@ int main(int argc, char **argv) {
   while (clock_us<until) StickPortLoop();
   assert(!menu_buttons && screen.pushes>overlay_pushes);
   assert(screen.last_w==192 && screen.last_h==128);
+  assert(screen.first_pixel==0xffff && StickDisplayBackground()==0xffff &&
+         StickDisplayForeground()==0);
   // An abandoned board overlay must relinquish the physical display without
   // waking a native screen whose own timeout has already expired.
   menu_requested=true;
@@ -473,6 +522,8 @@ int main(int argc, char **argv) {
   speaker_tone_fault_once = true;
   assert(!StickSoundTestTone());
   assert(!StickSoundIsBusy() && !power.levels[2] && !power.levels[3]);
+  // A new panel initialization reads the persisted Light setting.
+  assert(StickDisplayPanelInit() && !StickDisplayIsDark());
   return 0;
 }
 """

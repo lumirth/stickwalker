@@ -10,6 +10,8 @@
 #include "power_sleep.h"
 #include "backlight.h"
 #include "peripheral_power.h"
+#include "controls.h"
+#include "display_palette.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -51,6 +53,7 @@ uint64_t next_vbus_check_us = 0;
 uint64_t last_battery_draw_us = 0;
 uint64_t last_menu_input_us = 0;
 constexpr uint64_t kDeviceMenuIdleUs = 90000000;
+constexpr unsigned kDeviceMenuRows = 5;
 bool usb_present = true;
 #ifdef PW_STICK_BENCH_CONTROL
 uint64_t usb_sleep_trial_end_us = 0;
@@ -89,8 +92,8 @@ void draw_battery_readout() {
   const u16 millivolts = StickBatteryMillivolts();
   const int percent = battery_percent_estimate(millivolts);
   const bool on_usb = StickBoardPower().getVBUSVoltage() >= 4000;
-  screen->fillRect(8, 27, 224, 12, TFT_BLACK);
-  screen->setTextColor(TFT_WHITE, TFT_BLACK);
+  screen->fillRect(8, 27, 224, 12, StickDisplayBackground());
+  screen->setTextColor(StickDisplayForeground(), StickDisplayBackground());
   screen->setTextSize(1);
   screen->setCursor(10, 28);
   if (percent < 0) {
@@ -109,8 +112,8 @@ void draw_device_menu() {
   StickDisplayPanelSetBacklight(1);
   device_menu_draw_pending = !StickDisplayPanelIsReady();
   if (device_menu_draw_pending) return;
-  screen->fillScreen(TFT_BLACK);
-  screen->setTextColor(TFT_WHITE, TFT_BLACK);
+  screen->fillScreen(StickDisplayBackground());
+  screen->setTextColor(StickDisplayForeground(), StickDisplayBackground());
   screen->setTextSize(2);
   screen->setCursor(8, 8);
   screen->print("STICK SETTINGS");
@@ -118,16 +121,25 @@ void draw_device_menu() {
   screen->setTextSize(1);
   screen->setCursor(10, 42);
   screen->printf("%c Input: %s", device_menu_row == 0 ? '>' : ' ',
-                 StickInputProfile() ? "Three buttons" : "Comfort M+R");
-  screen->setCursor(10, 59);
+                 pw_stick::layout_name(pw_stick::Layout(StickInputLayout())));
+  screen->setCursor(10, 55);
   screen->printf("%c Rotation: %s", device_menu_row == 1 ? '>' : ' ',
                  StickInputOrientation() ? "Right side down" : "Left side down");
-  screen->setCursor(10, 76);
-  screen->printf("%c Chord window: %u ms", device_menu_row == 2 ? '>' : ' ',
+  screen->setCursor(10, 68);
+  screen->printf("%c Appearance: %s", device_menu_row == 2 ? '>' : ' ',
+                 StickDisplayIsDark() ? "Dark" : "Light");
+  for (unsigned shade = 0; shade < 4; ++shade)
+    screen->fillRect(176 + shade * 12, 68, 10, 8,
+                    pw_stick::palette_color(StickDisplayIsDark(), shade));
+  screen->setCursor(10, 81);
+  if (StickInputProfile())
+    screen->printf("  Center: M");
+  else
+    screen->printf("%c Chord window: %u ms", device_menu_row == 3 ? '>' : ' ',
                  80 + StickInputChordWindowIndex() * 40);
-  screen->setCursor(10, 93);
-  screen->printf("%c Test speaker", device_menu_row == 3 ? '>' : ' ');
-  screen->drawFastHLine(8, 107, 224, TFT_WHITE);
+  screen->setCursor(10, 94);
+  screen->printf("%c Test speaker", device_menu_row == 4 ? '>' : ' ');
+  screen->drawFastHLine(8, 107, 224, StickDisplayForeground());
   screen->setCursor(10, 115);
   screen->print("M next  R change  L close");
 }
@@ -148,7 +160,8 @@ void close_device_menu(bool wake_game) {
   device_menu_draw_pending = false;
   StickInputMenuMode(0);
   if (wake_game) StickForegroundDeviceMenuClosed();
-  if (StickDisplayPanelIsReady()) StickBoardScreen()->fillScreen(TFT_BLACK);
+  if (StickDisplayPanelIsReady())
+    StickBoardScreen()->fillScreen(StickDisplayBackground());
   StickDisplayInvalidate();
   present_game_if_changed(true);
 }
@@ -407,12 +420,13 @@ extern "C" void StickPortLoop(void) {
     }
     if (command == 'o' && !StickForegroundIsIr()) {
       const u16 millivolts = StickBatteryMillivolts();
-      Serial.printf("PW_STICK_DEVICE_MENU open=%u row=%u profile=%u orientation=%u chord_ms=%u battery_mv=%u battery_pct=%d usb=%u\n",
+      Serial.printf("PW_STICK_DEVICE_MENU open=%u row=%u profile=%u orientation=%u chord_ms=%u battery_mv=%u battery_pct=%d usb=%u layout=%u dark=%u\n",
                     device_menu_open, device_menu_row,
                     StickInputProfile(), StickInputOrientation(),
                     80 + StickInputChordWindowIndex() * 40,
                     unsigned(millivolts), battery_percent_estimate(millivolts),
-                    unsigned(StickBoardPower().getVBUSVoltage() >= 4000));
+                    unsigned(StickBoardPower().getVBUSVoltage() >= 4000),
+                    StickInputLayout(), StickDisplayIsDark());
     }
     if (command == 't' && !StickForegroundIsIr()) {
       const uint64_t end = uint64_t(esp_timer_get_time());
@@ -568,18 +582,21 @@ extern "C" void StickPortLoop(void) {
         // settings text in the border before returning to that framebuffer.
         close_device_menu(true);
       } else if (buttons & 1u) {
-        device_menu_row = (device_menu_row + 1u) % 4u;
+        device_menu_row = (device_menu_row + 1u) % kDeviceMenuRows;
+        if (device_menu_row == 3 && StickInputProfile()) ++device_menu_row;
         draw_device_menu();
       } else if (buttons & 2u) {
-        const u8 profile = StickInputProfile();
+        const u8 layout = StickInputLayout();
         const u8 orientation = StickInputOrientation();
         const u8 chord = StickInputChordWindowIndex();
-        const u8 next_profile = device_menu_row == 0 ? profile ^ 1u : profile;
+        const u8 next_layout = device_menu_row == 0 ? (layout + 1u) % 4u : layout;
         const u8 next_orientation = device_menu_row == 1 ? orientation ^ 1u : orientation;
-        const u8 next_chord = device_menu_row == 2 ? (chord + 1u) % 3u : chord;
-        if (device_menu_row == 3) {
+        const u8 next_chord = device_menu_row == 3 ? (chord + 1u) % 3u : chord;
+        if (device_menu_row == 4) {
           StickSoundTestTone();
-        } else if (StickInputConfigure(next_profile, next_orientation,
+        } else if (device_menu_row == 2) {
+          if (StickDisplaySetDark(!StickDisplayIsDark())) draw_device_menu();
+        } else if (StickInputConfigure(next_layout, next_orientation,
                                        next_chord)) {
           if (next_orientation != orientation)
             StickDisplayPanelSetOrientation(next_orientation);

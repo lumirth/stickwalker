@@ -21,6 +21,11 @@ int StickDisplayPanelIsReady(void);
 uint64_t StickDisplayNextDeadline(void);
 /* Call after an overlay or external drawing replaces the physical image. */
 void StickDisplayInvalidate(void);
+/* Appearance changes pixel colors; native contrast still controls brightness. */
+unsigned StickDisplayIsDark(void);
+int StickDisplaySetDark(unsigned dark);
+uint16_t StickDisplayBackground(void);
+uint16_t StickDisplayForeground(void);
 
 #ifdef __cplusplus
 }

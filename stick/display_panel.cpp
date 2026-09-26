@@ -4,9 +4,11 @@
 #include "display_bus.h"
 #include "backlight.h"
 #include "peripheral_power.h"
+#include "display_palette.h"
 
 #include <M5Unified.h>
 #include <Arduino.h>
+#include <Preferences.h>
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 #include <cstring>
@@ -18,8 +20,8 @@ constexpr unsigned kNativeHeight = 64;
 constexpr unsigned kScale = 2;
 constexpr unsigned kPanelWidth = kNativeWidth * kScale;
 constexpr unsigned kPanelHeight = kNativeHeight * kScale;
-// Show the original four intensity levels as light pixels on a dark panel.
-constexpr uint16_t kPalette[4] = {0x0000, 0x52aa, 0xad55, 0xffff};
+// Retain Dark as the default until the user saves an appearance choice.
+bool dark_appearance = true;
 
 uint8_t native_pixels[kNativeWidth * kNativeHeight];
 uint8_t presented_pixels[kNativeWidth * kNativeHeight];
@@ -40,13 +42,18 @@ int64_t prewarm_until_us = 0;
 extern "C" int StickDisplayPanelInit(void) {
   auto *screen = StickBoardScreen();
   if (!screen) return 0;
+  Preferences preferences;
+  if (preferences.begin("pw-display", true)) {
+    dark_appearance = preferences.getUChar("dark", 1) != 0;
+    preferences.end();
+  }
   // The CPU stores uint16_t pixels little-endian. LGFX otherwise treats a
   // pushImage(uint16_t*) buffer as pre-swapped RGB565, which turns neutral
   // grays into colored pixels while black and white appear unchanged.
   screen->setSwapBytes(true);
   screen->setRotation(3);
   screen->setBrightness(backlight_level);
-  screen->fillScreen(kPalette[0]);
+  screen->fillScreen(StickDisplayBackground());
   panel_generation = StickPeripheralGeneration();
   panel_awake = true;
   image_valid = false;
@@ -65,7 +72,7 @@ extern "C" void StickDisplayPanelSetOrientation(unsigned right_side_down) {
   orientation = right_side_down ? 1 : 3;
   if (panel_awake) {
     screen->setRotation(orientation);
-    screen->fillScreen(kPalette[0]);
+    screen->fillScreen(StickDisplayBackground());
   }
   image_valid = false;
 }
@@ -129,7 +136,7 @@ extern "C" void StickDisplayPowerService(void) {
         screen->invertDisplay(screen->getPanel()->getInvert());
         screen->setColorDepth(16);
         screen->setRotation(orientation);
-        screen->fillScreen(kPalette[0]);
+        screen->fillScreen(StickDisplayBackground());
         panel_generation = StickPeripheralGeneration();
         image_valid = false;
       }
@@ -163,6 +170,27 @@ extern "C" uint64_t StickDisplayNextDeadline(void) {
 
 extern "C" void StickDisplayInvalidate(void) { image_valid = false; }
 
+extern "C" unsigned StickDisplayIsDark(void) { return dark_appearance; }
+extern "C" uint16_t StickDisplayBackground(void) {
+  return pw_stick::palette_color(dark_appearance, 0);
+}
+extern "C" uint16_t StickDisplayForeground(void) {
+  return pw_stick::palette_color(dark_appearance, 3);
+}
+extern "C" int StickDisplaySetDark(unsigned dark) {
+  if (dark > 1) return 0;
+  if (dark_appearance == bool(dark)) return 1;
+  Preferences preferences;
+  if (!preferences.begin("pw-display", false)) return 0;
+  const size_t written = preferences.putUChar("dark", dark);
+  preferences.end();
+  if (written != 1) return 0;
+  dark_appearance = dark;
+  image_valid = false;
+  if (panel_awake) StickBoardScreen()->fillScreen(StickDisplayBackground());
+  return 1;
+}
+
 extern "C" void StickDisplayPanelSetContrastDelta(unsigned delta) {
   auto *screen = StickBoardScreen();
   if (delta > 9) delta = 9;
@@ -195,7 +223,8 @@ extern "C" int StickDisplayPresent(void) {
   const unsigned width = (x1 - x0) * kScale;
   for (unsigned y = y0; y < y1; ++y) {
     for (unsigned x = x0; x < x1; ++x) {
-      const uint16_t color = kPalette[native_pixels[y * kNativeWidth + x] & 3u];
+      const uint16_t color = pw_stick::palette_color(
+          dark_appearance, native_pixels[y * kNativeWidth + x]);
       const unsigned offset = (y - y0) * width * kScale + (x - x0) * kScale;
       panel_pixels[offset] = panel_pixels[offset + 1] = color;
       panel_pixels[offset + width] = panel_pixels[offset + width + 1] = color;

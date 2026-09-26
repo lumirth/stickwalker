@@ -19,9 +19,11 @@ int StickMenuRequested(void);
 void StickInputMenuMode(int enabled);
 u8 StickInputTakeMenuButtons(void);
 u8 StickInputProfile(void);
+/* Four independent layouts; profile retains the 0=two/1=three diagnostic. */
+u8 StickInputLayout(void);
 u8 StickInputOrientation(void);
 u8 StickInputChordWindowIndex(void);
-int StickInputConfigure(u8 profile, u8 orientation, u8 chord_window_index);
+int StickInputConfigure(u8 layout, u8 orientation, u8 chord_window_index);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickInputBenchInject(u8 button);
 void StickInputBenchMainHold(unsigned milliseconds);

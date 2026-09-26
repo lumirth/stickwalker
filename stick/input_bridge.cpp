@@ -1,6 +1,7 @@
 #include "input_bridge.h"
 
 #include "controls.h"
+#include "control_settings.h"
 #include "display_bus.h"
 #include "display_panel.h"
 #include "foreground_bridge.h"
@@ -17,6 +18,7 @@ namespace {
 pw_stick::Controls controls;
 bool power_button_ready = false;
 u8 input_profile = 0;
+u8 input_layout = 0;
 u8 input_orientation = 0;
 u8 chord_window_index = 0;
 bool menu_active = false;
@@ -76,17 +78,17 @@ extern "C" void StickInputInit(void) {
   previous_levels = 0;
   Preferences preferences;
   if (preferences.begin("pw-controls", true)) {
-    const u8 stored = preferences.getUChar("layout", 0);
+    const u8 stored = preferences.getUChar("layout-v2", 0xff);
+    const auto settings = stored == 0xff ?
+        pw_stick::migrate_controls(preferences.getUChar("layout", 0)) :
+        pw_stick::decode_controls(stored);
     preferences.end();
-    input_profile = stored & 1u;
-    input_orientation = (stored >> 1) & 1u;
-    chord_window_index = (stored >> 2) & 3u;
-    if (chord_window_index > 2) chord_window_index = 0;
+    input_layout = u8(settings.layout);
+    input_orientation = settings.orientation;
+    chord_window_index = settings.chord_window;
   }
-  controls.configure(input_profile ? pw_stick::Profile::ThreeButton :
-                                     pw_stick::Profile::Comfort,
-                     input_orientation ? pw_stick::Orientation::RightSideDown :
-                                         pw_stick::Orientation::LeftSideDown);
+  input_profile = pw_stick::three_key(pw_stick::Layout(input_layout));
+  controls.configure(pw_stick::Layout(input_layout));
   controls.set_chord_window(80 + chord_window_index * 40);
 }
 
@@ -325,25 +327,25 @@ extern "C" u8 StickInputTakeMenuButtons(void) {
 }
 
 extern "C" u8 StickInputProfile(void) { return input_profile; }
+extern "C" u8 StickInputLayout(void) { return input_layout; }
 extern "C" u8 StickInputOrientation(void) { return input_orientation; }
 extern "C" u8 StickInputChordWindowIndex(void) { return chord_window_index; }
 
-extern "C" int StickInputConfigure(u8 profile, u8 orientation,
+extern "C" int StickInputConfigure(u8 layout, u8 orientation,
                                       u8 window_index) {
-  if (profile > 1 || orientation > 1 || window_index > 2) return 0;
+  if (layout > 3 || orientation > 1 || window_index > 2) return 0;
   Preferences preferences;
   if (!preferences.begin("pw-controls", false)) return 0;
   const size_t written = preferences.putUChar(
-      "layout", profile | orientation << 1 | window_index << 2);
+      "layout-v2", pw_stick::encode_controls(
+          {pw_stick::Layout(layout), orientation, window_index}));
   preferences.end();
   if (written != 1) return 0;
-  input_profile = profile;
+  input_layout = layout;
+  input_profile = pw_stick::three_key(pw_stick::Layout(layout));
   input_orientation = orientation;
   chord_window_index = window_index;
-  controls.configure(profile ? pw_stick::Profile::ThreeButton :
-                               pw_stick::Profile::Comfort,
-                     orientation ? pw_stick::Orientation::RightSideDown :
-                                   pw_stick::Orientation::LeftSideDown);
+  controls.configure(pw_stick::Layout(layout));
   controls.set_chord_window(80 + window_index * 40);
   return 1;
 }
