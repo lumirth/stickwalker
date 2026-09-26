@@ -415,14 +415,14 @@ int main(int argc, char **argv) {
   const unsigned begins_at_start = M5.Speaker.begin_calls;
   const unsigned ends_at_start = M5.Speaker.end_calls;
   // The cold amplifier starts the native score clock after the verified
-  // 65 ms warm-up. A second cue in the hold interval must reuse the output.
+  // 200 ms cold output preparation. A warm cue must reuse the output.
   StickSoundEnable();
   StickSoundPeriod(40, 2);
   const uint64_t tone_begin = clock_us;
-  clock_us = tone_begin + 64999;
+  clock_us = tone_begin + 199999;
   StickSoundService();
   assert(beep_advances == 0);
-  clock_us = tone_begin + 65000;
+  clock_us = tone_begin + 200000;
   StickSoundService();
   assert(beep_advances == 1);
   StickSoundDisable();

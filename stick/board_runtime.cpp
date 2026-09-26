@@ -20,6 +20,10 @@
 #include <esp_attr.h>
 #include <driver/rtc_io.h>
 #include <soc/rtc_io_reg.h>
+#include <driver/gpio.h>
+#include <soc/gpio_periph.h>
+#include <soc/io_mux_reg.h>
+extern "C" void StickSoundBenchCapture(bool microphone, bool calibration, bool muted);
 #endif
 
 extern "C" void StickPortBoot(void);
@@ -30,6 +34,24 @@ extern "C" void StickPortTrace(const char *message) {
 #endif
 
 namespace {
+
+#ifdef PW_STICK_BENCH_CONTROL
+unsigned sample_bclk_edges() {
+  // Observe the existing I2S output pad without taking over its matrix route.
+  const uint32_t saved = REG_READ(GPIO_PIN_MUX_REG[17]);
+  gpio_input_enable(GPIO_NUM_17);
+  unsigned edges = 0;
+  int previous = gpio_get_level(GPIO_NUM_17);
+  const int64_t end = esp_timer_get_time() + 400;
+  while (esp_timer_get_time() < end) {
+    const int level = gpio_get_level(GPIO_NUM_17);
+    edges += level != previous;
+    previous = level;
+  }
+  REG_WRITE(GPIO_PIN_MUX_REG[17], saved);
+  return edges;
+}
+#endif
 
 bool ready = false;
 bool device_menu_open = false;
@@ -426,6 +448,25 @@ extern "C" void StickPortLoop(void) {
       Serial.printf("PW_STICK_INPUT_PATH stable=%u gesture=%u desired=%u delivered=%u queued=%u wait=%u emitted=%u consumed=%u overflow=%u left=%u right=%u center=%u\n",
                     stable, gesture, desired, delivered, queued, wait_release,
                     emitted, consumed, overflow, left, right, center);
+    }
+    if ((command == 'K' || command == 'U' || command == 'Q' || command == 'O') && !StickForegroundIsIr()) {
+      StickSoundBenchCapture(command != 'U', command == 'Q', command == 'O');
+    }
+    if (command == 'H' && !StickForegroundIsIr()) {
+      const int started = StickForegroundBenchMoveScore();
+      const unsigned early = sample_bclk_edges();
+      delay(50);
+      const unsigned late = sample_bclk_edges();
+      Serial.printf("PW_STICK_CODEC_CLOCK started=%u early_edges=%u late_edges=%u registers=",
+                    started, early, late);
+      for (const unsigned reg : {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+                                0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x10,0x11,0x12,
+                                0x13,0x31,0x32,0x37,0x44}) {
+        uint8_t value = 0;
+        const bool ok = m5::In_I2C.readRegister(0x18, reg, &value, 1, 100000);
+        Serial.printf("%02x:%02x:%u,", reg, value, ok);
+      }
+      Serial.println();
     }
     if (command == 'G' && !StickForegroundIsIr()) {
       // Reproduce foreground/render latency after the native score handoff.

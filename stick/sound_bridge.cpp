@@ -33,10 +33,13 @@ uint8_t codec_image[sizeof(kSuspendRegisters)] = {};
 constexpr uint8_t kPiezoCycle[16] = {
     255, 255, 255, 255, 255, 255, 255, 255,
       0,   0,   0,   0,   0,   0,   0,   0};
-// The Stick S3's AW8737A amplifier takes about 40 ms to start after SHDN
-// rises. A Pokewalker menu note can be shorter than that startup interval.
-// Start its score clock only after the amplifier has had time to settle.
-constexpr int64_t kAmplifierStartupUs = 65000;
+// Start the score only after the whole output path has settled. The amplifier
+// alone is faster, but the diagnostic ADC's cold transient obscures our
+// 52 ms cue at 65 ms. The complete on-board acoustic check passes at 200 ms;
+// this is a conservative preparation interval, not a measured DAC minimum.
+// Warm repeats need no delay.
+// This is preparation time, not an extension or replacement of native notes.
+constexpr int64_t kOutputStartupUs = 200000;
 constexpr int64_t kAmplifierHoldUs = 500000;
 #ifdef PW_STICK_BENCH_CONTROL
 unsigned begin_count = 0, begin_failures = 0, power_failures = 0;
@@ -99,12 +102,33 @@ bool speaker_power(void *, bool on) {
     return ok;
   }
   codec_configured = true;  // Teardown also covers a partial resume failure.
+  // Explicitly configure ES8311's power-up stage timing instead of retaining
+  // its POR stage-C setting (0x20); the reference driver uses zero.
+  // Program the stage timing before ANY write that starts its state machine,
+  // including a retained-register resume. Confirm it: Espressif documents an
+  // occasional first-write loss on this codec, even when the bus acknowledges.
+  bool timing_ready = false;
+  for (unsigned attempt = 0; attempt < 2 && !timing_ready; ++attempt) {
+    uint8_t timing = 0xff;
+    timing_ready = m5::In_I2C.writeRegister8(0x18, 0x0c, 0x00, 100000) &&
+                   m5::In_I2C.readRegister(0x18, 0x0c, &timing, 1, 100000) &&
+                   timing == 0;
+  }
+  if (!timing_ready) {
+#ifdef PW_STICK_BENCH_CONTROL
+    ++power_failures;
+#endif
+    return false;
+  }
   if (codec_image_valid && codec_generation == StickPeripheralGeneration()) {
     for (unsigned i = 0; i < sizeof(kSuspendRegisters); ++i)
       if (!m5::In_I2C.writeRegister8(0x18, kSuspendRegisters[i],
                                      codec_image[i], 100000)) return false;
   }
   static constexpr uint8_t codec[][2] = {
+      // Complete the DAC-side bias and serial format setup used by the
+      // reference ES8311 driver, rather than relying on POR defaults.
+      {0x0b, 0x00}, {0x10, 0x1f}, {0x11, 0x7f}, {0x09, 0x0c},
       {0x00, 0x80}, {0x01, 0xb5}, {0x02, 0x18}, {0x0d, 0x01},
       {0x12, 0x00}, {0x13, 0x10}, {0x32, 0xbf}, {0x37, 0x08},
   };
@@ -210,7 +234,7 @@ extern "C" void StickSoundEnable(void) {
   amplifier_hold_end_us = 0;
   enabled = true;
   next_period_us = esp_timer_get_time() +
-                   (cold_amp && codec_on ? kAmplifierStartupUs : 0);
+                   (cold_amp && codec_on ? kOutputStartupUs : 0);
 }
 
 extern "C" void StickSoundDisable(void) {
