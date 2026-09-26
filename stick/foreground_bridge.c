@@ -6,6 +6,7 @@
 #include "application/pw_home.h"
 #include "application/pw_power.h"
 #include "application/pw_nt7508.h"
+#include "application/pw_buzzer.h"
 #include "support/ir.h"
 
 void RtcQuarterSecondInterrupt(void);
@@ -62,6 +63,14 @@ void StickForegroundBenchInactive(void) {
   g_state.idleSeconds[IDLE_MOTION] = 0;
   g_state.buttonWake[0] = 0;
   g_state.centerHoldScans = 0;
+}
+int StickForegroundBenchMoveScore(void) {
+  if (!StickForegroundIsMain()) return 0;
+  BeepLoadScore(SCORE_MOVE);
+  if (!BeepHasScore()) return 0;
+  InstallTask(BeepTick);
+  BeepEnableTimer();
+  return 1;
 }
 #endif
 unsigned StickForegroundIrResult(void) { return g_state.irResult; }

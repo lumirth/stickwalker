@@ -59,6 +59,15 @@ int64_t period_us() {
   return (int64_t(compare_value + 1) * 1000000 + 32767) / 32768;
 }
 
+void anchor_output_period() {
+  // The native period write resets Timer W. A newly emitted note/rest must
+  // start at the actual output transition, not inherit overdue cycles from
+  // foreground drawing. Otherwise one service call can start and erase an
+  // entire short note before the asynchronous speaker task consumes it.
+  const int64_t now = esp_timer_get_time();
+  if (next_period_us < now) next_period_us = now;
+}
+
 bool speaker_power(void *, bool on) {
   using P = m5::M5PM1_Class;
   if (!StickBoardPower().setGPIOOutput(P::gpio3, on)) {
@@ -227,6 +236,7 @@ extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
 #endif
   if (!enabled || !compare || !output_mode) {
     stop_tone();
+    anchor_output_period();
     return;
   }
   // H8 output modes select progressively stronger drive. The M5 speaker's
@@ -235,7 +245,9 @@ extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
                        output_mode == 2 ? 170 : 235);
   if (speaker_ready && codec_on) {
     const bool started = M5.Speaker.tone(
-        32768.0f / float(compare + 1), UINT32_MAX, -1, true,
+        // Timer W is one voice. Automatic channel allocation would leave
+        // preceding pitches playing on other channels until the score ends.
+        32768.0f / float(compare + 1), UINT32_MAX, 0, true,
         kPiezoCycle, sizeof(kPiezoCycle));
 #ifdef PW_STICK_BENCH_CONTROL
     ++tone_count;
@@ -245,6 +257,7 @@ extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
     (void)started;
 #endif
   }
+  anchor_output_period();
 }
 
 extern "C" void StickSoundSilencePeriod(u16 compare) {
@@ -253,6 +266,7 @@ extern "C" void StickSoundSilencePeriod(u16 compare) {
   if (test_tone_end_us) return;
 #endif
   stop_tone();
+  anchor_output_period();
 }
 
 extern "C" void StickSoundMute(void) {

@@ -20,6 +20,7 @@ void StickForegroundCenterWake(void);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickForegroundBenchSleep(void);
 void StickForegroundBenchInactive(void);
+int StickForegroundBenchMoveScore(void);
 #endif
 unsigned StickForegroundIrResult(void);
 void StickForegroundIrDiagnostic(unsigned *phase, unsigned *received,

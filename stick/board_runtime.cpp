@@ -427,6 +427,13 @@ extern "C" void StickPortLoop(void) {
                     stable, gesture, desired, delivered, queued, wait_release,
                     emitted, consumed, overflow, left, right, center);
     }
+    if (command == 'G' && !StickForegroundIsIr()) {
+      // Reproduce foreground/render latency after the native score handoff.
+      // No navigation, save edits, or replacement of native sound settings.
+      const int started = StickForegroundBenchMoveScore();
+      if (started) delay(80);
+      Serial.printf("PW_STICK_SOUND_STALL started=%u stall_ms=80\n", started);
+    }
     if (command == 's' && !StickForegroundIsIr()) {
       unsigned active, speaker_ready, codec, mode, compare, begins;
       unsigned begin_errors, power_errors, tones, tone_errors, playing;
