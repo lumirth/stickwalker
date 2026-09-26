@@ -8,6 +8,8 @@
 #include "ir_transport.h"
 #include "sound_bridge.h"
 #include "power_sleep.h"
+#include "backlight.h"
+#include "peripheral_power.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -24,6 +26,7 @@ namespace {
 
 bool ready = false;
 bool device_menu_open = false;
+bool device_menu_draw_pending = false;
 u8 device_menu_row = 0;
 bool previous_ir = false;
 unsigned last_present_frame = ~0u;
@@ -46,6 +49,8 @@ uint64_t next_input_us = 0;
 uint64_t next_beep_us = 0;
 uint64_t next_vbus_check_us = 0;
 uint64_t last_battery_draw_us = 0;
+uint64_t last_menu_input_us = 0;
+constexpr uint64_t kDeviceMenuIdleUs = 90000000;
 bool usb_present = true;
 #ifdef PW_STICK_BENCH_CONTROL
 uint64_t usb_sleep_trial_end_us = 0;
@@ -78,6 +83,7 @@ int battery_percent_estimate(u16 millivolts) {
 }
 
 void draw_battery_readout() {
+  if (!StickDisplayPanelIsReady()) return;
   auto *screen = StickBoardScreen();
   if (!screen) return;
   const u16 millivolts = StickBatteryMillivolts();
@@ -101,6 +107,8 @@ void draw_device_menu() {
   auto *screen = StickBoardScreen();
   if (!screen) return;
   StickDisplayPanelSetBacklight(1);
+  device_menu_draw_pending = !StickDisplayPanelIsReady();
+  if (device_menu_draw_pending) return;
   screen->fillScreen(TFT_BLACK);
   screen->setTextColor(TFT_WHITE, TFT_BLACK);
   screen->setTextSize(2);
@@ -130,9 +138,19 @@ void present_game_if_changed(bool force = false) {
   const int power = StickDisplayIsPowered();
   if (!force && last_present_frame == frame && last_present_power == power)
     return;
-  StickDisplayPresent();
+  if (!StickDisplayPresent()) return;
   last_present_frame = frame;
   last_present_power = power;
+}
+
+void close_device_menu(bool wake_game) {
+  device_menu_open = false;
+  device_menu_draw_pending = false;
+  StickInputMenuMode(0);
+  if (wake_game) StickForegroundDeviceMenuClosed();
+  if (StickDisplayPanelIsReady()) StickBoardScreen()->fillScreen(TFT_BLACK);
+  StickDisplayInvalidate();
+  present_game_if_changed(true);
 }
 
 }  // namespace
@@ -151,7 +169,8 @@ extern "C" void StickPortSetup(void) {
   // The external 5 V rail feeds the board IR hardware, not the bare GPIO5
   // photodiode. It is restored by StickIrConfigure when a session starts.
   StickBoardPower().setExtOutput(false);
-  StickSleepBegin();
+  if (!StickSleepBegin())
+    Serial.printf("PW_STICK_SLEEP_SETUP_FAILED retry_ms=1000\n");
   const uint64_t now = uint64_t(esp_timer_get_time());
   usb_present = StickBoardPower().getVBUSVoltage() >= 4000;
   next_vbus_check_us = now + 1000000;
@@ -160,6 +179,10 @@ extern "C" void StickPortSetup(void) {
   next_second_us = now + 1000000;
   next_input_us = now + 5000;
   next_beep_us = now + 8000;
+  // Keep APB/SPI/I2S at their normal clock while reducing CPU work cost.
+  // The physical receiver restores 240 MHz before any session setup.
+  if (!setCpuFrequencyMhz(80))
+    Serial.printf("PW_STICK_IDLE_CLOCK_FAILED\n");
 #ifdef PW_STICK_BENCH_CONTROL
   timing_started_us = now;
 #endif
@@ -171,6 +194,12 @@ extern "C" void StickPortSetup(void) {
 
 extern "C" void StickPortLoop(void) {
   if (!ready) { delay(50); return; }
+#ifndef PW_STICK_BENCH_CONTROL
+  // Production has no serial command parser. Unread debug input must never
+  // become a persistent battery-powered sleep veto, even after unplugging.
+  for (unsigned discarded = 0; discarded < 64 && Serial.available(); ++discarded)
+    Serial.read();
+#endif
   const uint64_t now = uint64_t(esp_timer_get_time());
 #ifdef PW_STICK_BENCH_CONTROL
   if (last_loop_entry_us && now - last_loop_entry_us > loop_gap_max_us)
@@ -484,6 +513,14 @@ extern "C" void StickPortLoop(void) {
 #endif
   }
 
+  StickDisplayPowerService();
+  StickPeripheralPowerService();
+  // Apply the native settings' idle-availability scale to our additional
+  // board overlay too. Leaving it open must not leave the backlight on all day.
+  if (device_menu_open && now - last_menu_input_us >= kDeviceMenuIdleUs)
+    close_device_menu(false);
+  if (device_menu_open && device_menu_draw_pending) draw_device_menu();
+
 #ifdef PW_STICK_BENCH_CONTROL
   const uint64_t sound_begin = uint64_t(esp_timer_get_time());
 #endif
@@ -518,20 +555,18 @@ extern "C" void StickPortLoop(void) {
 #endif
     if (!device_menu_open && StickMenuRequested()) {
       device_menu_open = true;
+      last_menu_input_us = now;
       device_menu_row = 0;
       StickInputMenuMode(1);
       draw_device_menu();
     }
     if (device_menu_open) {
       const u8 buttons = StickInputTakeMenuButtons();
+      if (buttons) last_menu_input_us = now;
       if (buttons & 4u) {
-        device_menu_open = false;
-        StickInputMenuMode(0);
-        StickForegroundDeviceMenuClosed();
         // The game occupies only the centered 192x128 region. Erase the
         // settings text in the border before returning to that framebuffer.
-        StickBoardScreen()->fillScreen(TFT_BLACK);
-        present_game_if_changed(true);
+        close_device_menu(true);
       } else if (buttons & 1u) {
         device_menu_row = (device_menu_row + 1u) % 4u;
         draw_device_menu();
@@ -594,9 +629,14 @@ extern "C" void StickPortLoop(void) {
 #endif
     return;
   }
-  if (StickForegroundIsMain() && !device_menu_open &&
-      !StickDisplayIsPowered() && !StickInputWakeScanActive() &&
-      !Serial.available()) {
+  if (StickForegroundIsMain() && !StickSoundIsBusy() &&
+      !StickInputWakeScanActive() &&
+      ((!StickDisplayIsPowered() && !device_menu_open) ||
+       StickBacklightSleepReady())
+#ifdef PW_STICK_BENCH_CONTROL
+      && !Serial.available()
+#endif
+      ) {
     // USB Serial/JTAG disconnects during ESP32-S3 light sleep. Keep the
     // charging/debug connection usable; the bench command Y runs a bounded
     // five-second real-sleep trial to verify the same path on hardware.
@@ -611,6 +651,10 @@ extern "C" void StickPortLoop(void) {
         ;
     if (usb_sleep_allowed) {
       uint64_t deadline = next_sample_us;
+      const uint64_t display_deadline = StickDisplayNextDeadline();
+      if (display_deadline < deadline) deadline = display_deadline;
+      if (device_menu_open && last_menu_input_us + kDeviceMenuIdleUs < deadline)
+        deadline = last_menu_input_us + kDeviceMenuIdleUs;
       if (next_second_us < deadline) deadline = next_second_us;
       if (!StickForegroundIsInactive() && next_quarter_us < deadline)
         deadline = next_quarter_us;

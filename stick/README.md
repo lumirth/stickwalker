@@ -226,6 +226,20 @@ instructions and requalify it with sealed traffic and complete exchanges.
   The user also confirmed responsive controls and the 20 ms M+R hold. A
   Settings save's measured main-loop gap fell from 3.48 seconds to 12 ms.
 
+## Power candidate
+
+The [agreed design](docs/power-design-discussion.md) targets one month between
+charges, with two weeks minimum useful and one week as the absolute floor.
+The [first candidate](docs/power-lifecycle-implementation-2026-09-26.md) adds
+shared peripheral supply ownership, real LCD/codec/I2S shutdown, asynchronous
+display restoration, dirty transfers, visible-UI processor sleep, sleep-error
+recovery, an idle settings timeout, 80 MHz non-IR operation and RMT teardown.
+The native motion estimator, sampling ownership gaps, game/protocol code,
+screen availability, shades and sound startup/hold remain the references.
+Both builds and host regressions pass. This candidate has not been flashed;
+hardware behavior and battery lifetime remain unqualified. Motion FIFO batching
+and lower-power sensing are still pending.
+
 ## Stick controls
 
 The default Comfort layout in left-side-down orientation maps M to native

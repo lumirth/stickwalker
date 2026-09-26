@@ -1,6 +1,8 @@
 #ifndef PW_STICK_DISPLAY_PANEL_H
 #define PW_STICK_DISPLAY_PANEL_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,7 +13,14 @@ int StickDisplayPanelInit(void);
 void StickDisplayPanelSetOrientation(unsigned right_side_down);
 void StickDisplayPanelSetBacklight(unsigned enabled);
 void StickDisplayPanelSetContrastDelta(unsigned delta);
-void StickDisplayPresent(void);
+/* False until asynchronous physical wake is ready; keep the image pending. */
+int StickDisplayPresent(void);
+void StickDisplayPowerService(void);
+void StickDisplayPrepareWake(void);
+int StickDisplayPanelIsReady(void);
+uint64_t StickDisplayNextDeadline(void);
+/* Call after an overlay or external drawing replaces the physical image. */
+void StickDisplayInvalidate(void);
 
 #ifdef __cplusplus
 }

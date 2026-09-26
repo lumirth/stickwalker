@@ -304,7 +304,9 @@ extern "C" void StickIrInitPins(void) {
 }
 
 extern "C" void StickIrConfigure(void) {
-  __atomic_store_n(&failed, !pw_stick::prepare_ir_tx(), __ATOMIC_RELEASE);
+  const bool clock_ok = setCpuFrequencyMhz(240);
+  __atomic_store_n(&failed, !clock_ok || !pw_stick::prepare_ir_tx(),
+                    __ATOMIC_RELEASE);
 }
 
 extern "C" void StickIrPassiveDiagnostic(int enabled) {
@@ -394,7 +396,9 @@ extern "C" void StickIrStop(void) {
                   unsigned(__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE)),
                   unsigned(heap_caps_check_integrity_all(false)));
 #endif
-  if (worker_handle && __atomic_load_n(&worker_done, __ATOMIC_ACQUIRE))
+  const bool worker_stopped = !worker_handle ||
+      __atomic_load_n(&worker_done, __ATOMIC_ACQUIRE);
+  if (worker_handle && worker_stopped)
     vTaskDelete(worker_handle);
   worker_handle = nullptr;
   __atomic_store_n(&running, false, __ATOMIC_RELEASE);
@@ -402,7 +406,11 @@ extern "C" void StickIrStop(void) {
   gpio_set_direction(GPIO_NUM_5, GPIO_MODE_INPUT);
   gpio_pullup_dis(GPIO_NUM_5);
   gpio_pulldown_dis(GPIO_NUM_5);
+  if (!pw_stick::suspend_ir_tx())
+    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
   StickBoardPower().setExtOutput(false);
+  // Never change the sampling clock beneath a worker that failed to stop.
+  if (worker_stopped) setCpuFrequencyMhz(80);
 #ifdef PW_STICK_BENCH_CONTROL
   if (trace_enabled()) {
   unsigned histogram[8] = {};

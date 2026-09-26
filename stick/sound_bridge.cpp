@@ -1,6 +1,7 @@
 #include "sound_bridge.h"
 
 #include "board_hal.h"
+#include "peripheral_power.h"
 
 #include <M5Unified.h>
 #include <esp_timer.h>
@@ -16,6 +17,15 @@ u8 output_mode = 0;
 int64_t next_period_us = 0;
 int64_t test_tone_end_us = 0;
 int64_t amplifier_hold_end_us = 0;
+int64_t shutdown_retry_us = 0;
+bool codec_configured = false;
+bool codec_image_valid = false;
+unsigned codec_generation = 0;
+// Snapshot every register modified by Espressif's ES8311 suspend sequence.
+// Warm resume restores the actual proven configuration, not guessed defaults.
+constexpr uint8_t kSuspendRegisters[] = {
+    0x00, 0x01, 0x02, 0x0d, 0x0e, 0x12, 0x14, 0x15, 0x17, 0x32, 0x45};
+uint8_t codec_image[sizeof(kSuspendRegisters)] = {};
 // Timer W drives the original piezo with a pulse waveform. The library's
 // default tone is a sine, which softens very brief score notes on the Stick's
 // speaker. Keep the source pitch and note durations, but render each cycle as
@@ -57,7 +67,34 @@ bool speaker_power(void *, bool on) {
 #endif
     return false;
   }
-  if (!on) return true;
+  if (!on) {
+    if (!codec_configured) return true;
+    if (!codec_image_valid) {
+      for (unsigned i = 0; i < sizeof(kSuspendRegisters); ++i)
+        if (!m5::In_I2C.readRegister(0x18, kSuspendRegisters[i],
+                                      &codec_image[i], 1, 100000)) return false;
+      codec_image_valid = true;
+    }
+    // ES8311 suspend, after muting its external amplifier and before ending
+    // I2S. The microphone is removed when the shared supply's last owner exits.
+    static constexpr uint8_t suspend[][2] = {
+        {0x32, 0x00}, {0x17, 0x00}, {0x0e, 0xff}, {0x12, 0x02},
+        {0x14, 0x00}, {0x0d, 0xfa}, {0x15, 0x00}, {0x02, 0x10},
+        {0x00, 0x00}, {0x00, 0x1f}, {0x01, 0x30}, {0x01, 0x00},
+        {0x45, 0x00}, {0x0d, 0xfc}, {0x02, 0x00},
+    };
+    bool ok = true;
+    for (const auto &value : suspend)
+      ok = m5::In_I2C.writeRegister8(0x18, value[0], value[1], 100000) && ok;
+    if (ok) codec_configured = false;
+    return ok;
+  }
+  codec_configured = true;  // Teardown also covers a partial resume failure.
+  if (codec_image_valid && codec_generation == StickPeripheralGeneration()) {
+    for (unsigned i = 0; i < sizeof(kSuspendRegisters); ++i)
+      if (!m5::In_I2C.writeRegister8(0x18, kSuspendRegisters[i],
+                                     codec_image[i], 100000)) return false;
+  }
   static constexpr uint8_t codec[][2] = {
       {0x00, 0x80}, {0x01, 0xb5}, {0x02, 0x18}, {0x0d, 0x01},
       {0x12, 0x00}, {0x13, 0x10}, {0x32, 0xbf}, {0x37, 0x08},
@@ -70,6 +107,9 @@ bool speaker_power(void *, bool on) {
 #endif
       return false;
     }
+  codec_generation = StickPeripheralGeneration();
+  codec_image_valid = false;
+  codec_configured = true;
   return true;
 }
 
@@ -84,10 +124,35 @@ void stop_output() {
   stop_tone();
   test_tone_end_us = 0;
   amplifier_hold_end_us = 0;
-  if (codec_on) {
-    speaker_power(nullptr, false);
-    codec_on = false;
+  const bool off = speaker_power(nullptr, false);
+  codec_on = false;
+  if (speaker_ready) M5.Speaker.end();
+  speaker_ready = false;
+  if (off) {
+    shutdown_retry_us = 0;
+    StickPeripheralRelease(StickPeripheral::Sound);
+  } else shutdown_retry_us = esp_timer_get_time() + 1000000;
+}
+
+bool start_output() {
+  if (!StickPeripheralAcquire(StickPeripheral::Sound)) {
+    StickPeripheralRelease(StickPeripheral::Sound);
+    return false;
   }
+  if (!speaker_ready) {
+#ifdef PW_STICK_BENCH_CONTROL
+    ++begin_count;
+#endif
+    speaker_ready = M5.Speaker.begin();
+    if (!speaker_ready) M5.Speaker.end();  // Tear down partial I2S setup too.
+#ifdef PW_STICK_BENCH_CONTROL
+    begin_failures += !speaker_ready;
+#endif
+  }
+  if (speaker_ready && !codec_on) codec_on = speaker_power(nullptr, true);
+  if (!speaker_ready || !codec_on) { stop_output(); return false; }
+  shutdown_retry_us = 0;
+  return true;
 }
 }  // namespace
 
@@ -119,6 +184,11 @@ extern "C" void StickSoundInit(void) {
   enabled = false;
   compare_value = 0;
   output_mode = 0;
+  // Quiet the powered codec even when sound is disabled in the native save
+  // or no score has played yet. Preserve its reset configuration for resume.
+  codec_generation = StickPeripheralGeneration();
+  codec_image_valid = false;
+  codec_configured = StickPeripheralAcquire(StickPeripheral::Sound);
   stop_output();
 }
 
@@ -127,17 +197,7 @@ extern "C" void StickSoundEnable(void) {
   if (test_tone_end_us) stop_output();
 #endif
   const bool cold_amp = !codec_on;
-  if (!speaker_ready) {
-#ifdef PW_STICK_BENCH_CONTROL
-    ++begin_count;
-#endif
-    speaker_ready = M5.Speaker.begin();
-#ifdef PW_STICK_BENCH_CONTROL
-    begin_failures += !speaker_ready;
-#endif
-  }
-  if (speaker_ready && !codec_on)
-    codec_on = speaker_power(nullptr, true);
+  start_output();
   amplifier_hold_end_us = 0;
   enabled = true;
   next_period_us = esp_timer_get_time() +
@@ -173,39 +233,17 @@ extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
   // default master level is only 64/255 and made level 2 effectively silent.
   M5.Speaker.setVolume(output_mode == 1 ? 100 :
                        output_mode == 2 ? 170 : 235);
-  if (speaker_ready) {
-    if (!codec_on) codec_on = speaker_power(nullptr, true);
-    if (codec_on) {
-      const bool started = M5.Speaker.tone(
-          32768.0f / float(compare + 1), UINT32_MAX, -1, true,
-          kPiezoCycle, sizeof(kPiezoCycle));
+  if (speaker_ready && codec_on) {
+    const bool started = M5.Speaker.tone(
+        32768.0f / float(compare + 1), UINT32_MAX, -1, true,
+        kPiezoCycle, sizeof(kPiezoCycle));
 #ifdef PW_STICK_BENCH_CONTROL
-      ++tone_count;
-      tone_failures += !started;
-      if (started) last_tone_us = uint64_t(esp_timer_get_time());
+    ++tone_count;
+    tone_failures += !started;
+    if (started) last_tone_us = uint64_t(esp_timer_get_time());
+#else
+    (void)started;
 #endif
-    }
-  } else {
-#ifdef PW_STICK_BENCH_CONTROL
-    ++begin_count;
-#endif
-    speaker_ready = M5.Speaker.begin();
-#ifdef PW_STICK_BENCH_CONTROL
-    begin_failures += !speaker_ready;
-#endif
-    if (speaker_ready) {
-      codec_on = speaker_power(nullptr, true);
-      if (codec_on) {
-        const bool started = M5.Speaker.tone(
-            32768.0f / float(compare + 1), UINT32_MAX, -1, true,
-            kPiezoCycle, sizeof(kPiezoCycle));
-#ifdef PW_STICK_BENCH_CONTROL
-        ++tone_count;
-        tone_failures += !started;
-        if (started) last_tone_us = uint64_t(esp_timer_get_time());
-#endif
-      }
-    }
   }
 }
 
@@ -226,13 +264,15 @@ extern "C" void StickSoundMute(void) {
 
 extern "C" void StickSoundQuiesceForIr(void) {
   stop_output();
-  if (speaker_ready) {
-    M5.Speaker.end();
-    speaker_ready = false;
-  }
+}
+
+extern "C" int StickSoundIsBusy(void) {
+  return enabled || test_tone_end_us || speaker_ready;
 }
 
 extern "C" void StickSoundService(void) {
+  if (!enabled && shutdown_retry_us &&
+      esp_timer_get_time() >= shutdown_retry_us) stop_output();
   if (test_tone_end_us && esp_timer_get_time() >= test_tone_end_us)
     stop_output();
   if (!enabled && amplifier_hold_end_us &&
@@ -252,18 +292,7 @@ extern "C" void StickSoundService(void) {
 
 extern "C" int StickSoundTestTone(void) {
   if (enabled) return 0;
-  if (!speaker_ready) {
-#ifdef PW_STICK_BENCH_CONTROL
-    ++begin_count;
-#endif
-    speaker_ready = M5.Speaker.begin();
-#ifdef PW_STICK_BENCH_CONTROL
-    begin_failures += !speaker_ready;
-#endif
-  }
-  if (!speaker_ready) return 0;
-  if (!codec_on) codec_on = speaker_power(nullptr, true);
-  if (!codec_on) return 0;
+  if (!start_output()) return 0;
   M5.Speaker.setVolume(170);
   const bool started = M5.Speaker.tone(880.0f, 1000);
 #ifdef PW_STICK_BENCH_CONTROL
@@ -271,24 +300,19 @@ extern "C" int StickSoundTestTone(void) {
   tone_failures += !started;
 #endif
   if (started) test_tone_end_us = esp_timer_get_time() + 1000000;
+  else stop_output();
   return started ? 1 : 0;
 }
 
 #ifdef PW_STICK_BENCH_CONTROL
 extern "C" int StickSoundBenchTone(void) {
-  if (!speaker_ready) {
-    ++begin_count;
-    speaker_ready = M5.Speaker.begin();
-    begin_failures += !speaker_ready;
-  }
-  if (!speaker_ready) return 0;
-  if (!codec_on) codec_on = speaker_power(nullptr, true);
-  if (!codec_on) return 0;
+  if (!start_output()) return 0;
   M5.Speaker.setVolume(170);
   const bool started = M5.Speaker.tone(880.0f, 8000);
   ++tone_count;
   tone_failures += !started;
   if (started) test_tone_end_us = esp_timer_get_time() + 8000000;
+  else stop_output();
   return started ? 1 : 0;
 }
 

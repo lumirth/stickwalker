@@ -6,6 +6,10 @@
 bool StickBoardBegin(void);
 lgfx::LGFX_Device *StickBoardScreen(void);
 bool StickBoardAccel(float *x, float *y, float *z);
+// Called only by the shared peripheral owner, after display/audio teardown.
+bool StickBoardPeripheralSupply(bool on);
+void StickBoardDisplayReset(bool released);
+bool StickBoardDisplayInitRegisters(void);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickBoardAccelDiagnostic(unsigned *reads, unsigned *successes,
                                unsigned *failures);

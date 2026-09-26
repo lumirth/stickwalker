@@ -15,6 +15,8 @@ void StickSoundSilencePeriod(u16 compare);
 void StickSoundMute(void);
 void StickSoundQuiesceForIr(void);
 void StickSoundService(void);
+/* Includes amplifier warm hold: don't clock-gate an open audio stream. */
+int StickSoundIsBusy(void);
 int StickSoundTestTone(void);
 #ifdef PW_STICK_BENCH_CONTROL
 int StickSoundBenchTone(void);

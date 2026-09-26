@@ -2,6 +2,7 @@
 
 #include "controls.h"
 #include "display_bus.h"
+#include "display_panel.h"
 #include "foreground_bridge.h"
 #ifdef PW_STICK_BENCH_CONTROL
 #include "sound_bridge.h"
@@ -125,6 +126,10 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
   const bool side_pressed = digitalRead(12) == LOW;
   sampled_raw = (main_pressed ? 1u : 0u) | (side_pressed ? 2u : 0u) |
                 (power_pressed ? 4u : 0u);
+  // Hardware restoration runs during the existing wake gesture. It neither
+  // lights the display nor changes native motion/input state before acceptance.
+  if (!StickDisplayIsPowered() && (main_pressed || power_action))
+    StickDisplayPrepareWake();
 #ifdef PW_STICK_BENCH_CONTROL
   const u8 raw = sampled_raw;
   main_edges += (raw & 1u) && !(last_raw & 1u);

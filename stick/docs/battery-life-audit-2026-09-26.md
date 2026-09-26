@@ -16,6 +16,15 @@ are inferred from component specifications, rather than measured on this port.
 No device connection, firmware flash, reset, or saved Pokémon access was used
 for this assessment.
 
+## Implementation follow-up
+
+This document records the frozen pre-fix audit. The subsequent
+[lifecycle implementation](power-lifecycle-implementation-2026-09-26.md)
+addresses the largest shutdown defects and several sleep/interactive costs.
+Its host regressions and builds have passed; its hardware current, wake,
+sound and IR behavior have not yet been validated. The historical audit
+findings below describe the audited baseline, not the new candidate.
+
 ## Audited implementation
 
 - Port source: `c2e7f76`, branch `stick-s3`; clean before the audit artifacts.

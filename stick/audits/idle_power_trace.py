@@ -4,7 +4,9 @@
 This is a lifecycle probe, not a current or battery simulator. Hardware and
 native foreground work are stubbed; the production runtime, display adapter,
 sound adapter, and sleep scheduler are compiled unchanged. The speaker stub
-records begin/stop/end calls. See the separately audited M5Unified implementation
+records begin/stop/end calls. Regression cases also exercise power ownership,
+wake restoration, dirty display transfers, PWM setup, and fault recovery.
+See the separately audited M5Unified implementation
 for the electrical consequences of those calls.
 """
 
@@ -28,7 +30,8 @@ struct SerialStub {
   template<class... T> void printf(const char *, T...) {}
 };
 extern SerialStub Serial;
-inline void setCpuFrequencyMhz(int) {}
+extern unsigned cpu_mhz;
+inline bool setCpuFrequencyMhz(unsigned mhz) { cpu_mhz = mhz; return true; }
 inline void delay(unsigned ms) { clock_us += ms * 1000; }
 inline unsigned long millis() { return clock_us / 1000; }
 inline int digitalRead(int) { return 1; }
@@ -42,14 +45,25 @@ inline unsigned ulTaskNotifyTake(int, unsigned ticks) {
     "M5Unified.h": r"""
 #pragma once
 #include <cstdint>
+#include "backlight.h"
 namespace lgfx {
 struct LGFX_Device {
   unsigned brightness = 68;
-  unsigned sleep_calls = 0;
-  void setBrightness(unsigned value) { brightness = value; }
+  unsigned sleep_calls = 0, wake_calls = 0, init_calls = 0;
+  unsigned pushes = 0, last_x = 0, last_y = 0, last_w = 0, last_h = 0;
+  uint16_t first_pixel = 0;
+  LGFX_Device *getPanel() { return this; }
+  void initBus() {}
+  void releaseBus() {}
+  bool init() { ++init_calls; return StickBacklightInit(0); }
+  bool getInvert() { return false; }
+  void invertDisplay(bool) {}
+  void setColorDepth(unsigned) {}
+  void writeCommand(unsigned) {}
+  void setBrightness(unsigned value) { brightness = value; StickBacklightSet(value); }
   void setSleep(bool on) { sleep_calls += on; }
   void sleep() { ++sleep_calls; }
-  void wakeup() {}
+  void wakeup() { ++wake_calls; }
   void setSwapBytes(bool) {}
   void setRotation(unsigned) {}
   void fillScreen(unsigned) {}
@@ -60,7 +74,9 @@ struct LGFX_Device {
   template<class... T> void print(T...) {}
   template<class... T> void printf(T...) {}
   template<class... T> void drawFastHLine(T...) {}
-  template<class... T> void pushImage(T...) {}
+  void pushImage(unsigned x, unsigned y, unsigned w, unsigned h, uint16_t *p) {
+    ++pushes; last_x=x; last_y=y; last_w=w; last_h=h; first_pixel=p[0];
+  }
 };
 }
 namespace m5 {
@@ -71,16 +87,26 @@ struct M5PM1_Class {
   bool setExtOutput(bool) { return true; }
   unsigned getVBUSVoltage() { return 0; }
 };
+extern bool codec_fault_once;
 struct I2CStub {
   unsigned writes = 0;
   uint8_t codec[256] = {};
+  bool readRegister(unsigned address, unsigned reg, uint8_t *value, unsigned, unsigned) {
+    *value = address == 0x18 ? codec[reg] : 0; return true;
+  }
   bool writeRegister8(unsigned address, unsigned reg, uint8_t value, unsigned) {
-    if (address == 0x18) { ++writes; codec[reg] = value; }
+    if (address == 0x18) {
+      ++writes;
+      if (codec_fault_once && reg == 0x0d) { codec_fault_once=false; return false; }
+      codec[reg] = value;
+    }
     return true;
   }
 };
 extern I2CStub In_I2C;
 }
+extern bool speaker_begin_fault_once;
+extern bool speaker_tone_fault_once;
 struct SpeakerStub {
   struct Config {
     int pin_mck, pin_bck, pin_ws, pin_data_out, i2s_port, magnification;
@@ -91,11 +117,18 @@ struct SpeakerStub {
   unsigned begin_calls = 0, end_calls = 0, stop_calls = 0;
   Config config() { return cfg; }
   void config(Config value) { cfg = value; }
-  bool begin() { ++begin_calls; return true; }
+  bool begin() {
+    ++begin_calls;
+    if (speaker_begin_fault_once) { speaker_begin_fault_once=false; return false; }
+    return true;
+  }
   void end() { ++end_calls; }
   void stop() { ++stop_calls; }
   void setVolume(unsigned) {}
-  template<class... T> bool tone(T...) { return true; }
+  template<class... T> bool tone(T...) {
+    if (speaker_tone_fault_once) { speaker_tone_fault_once=false; return false; }
+    return true;
+  }
 };
 struct M5Stub { SpeakerStub Speaker; };
 extern M5Stub M5;
@@ -121,7 +154,11 @@ inline void *heap_caps_malloc(size_t size, unsigned) { return malloc(size); }
 #include <initializer_list>
 extern bool sleep_init_failed;
 enum gpio_num_t { GPIO_NUM_11 = 11, GPIO_NUM_12 = 12 };
-inline int rtc_gpio_pullup_en(gpio_num_t) { return sleep_init_failed ? -1 : 0; }
+extern unsigned setup_attempts;
+inline int rtc_gpio_pullup_en(gpio_num_t pin) {
+  setup_attempts += pin == GPIO_NUM_11;
+  return sleep_init_failed ? -1 : 0;
+}
 inline int rtc_gpio_pulldown_dis(gpio_num_t) { return 0; }
 """,
     "esp_sleep.h": r"""
@@ -136,51 +173,116 @@ typedef int esp_err_t;
 #define ESP_SLEEP_WAKEUP_EXT1 1
 extern uint64_t clock_us, timer_duration_us;
 extern unsigned completed_sleeps;
+extern bool sleep_start_failed;
 inline int esp_sleep_pd_config(int, int) { return 0; }
 inline int esp_sleep_enable_ext1_wakeup_io(uint64_t, int) { return 0; }
 inline int esp_sleep_enable_timer_wakeup(uint64_t duration) {
   timer_duration_us = duration; return 0;
 }
 inline int esp_light_sleep_start() {
+  if (sleep_start_failed) { sleep_start_failed = false; return -2; }
   clock_us += timer_duration_us; ++completed_sleeps; return 0;
 }
 inline int esp_sleep_get_wakeup_cause() { return ESP_SLEEP_WAKEUP_TIMER; }
 """,
 }
 
+HEADERS["driver/gpio.h"] = r"""
+#pragma once
+#define ESP_OK 0
+"""
+HEADERS["driver/ledc.h"] = r"""
+#pragma once
+#include <cassert>
+#define LEDC_LOW_SPEED_MODE 0
+#define LEDC_TIMER_3 3
+#define LEDC_CHANNEL_7 7
+#define LEDC_TIMER_9_BIT 9
+#define LEDC_USE_RC_FAST_CLK 1
+#define LEDC_INTR_DISABLE 0
+#define LEDC_SLEEP_MODE_KEEP_ALIVE 2
+struct ledc_timer_config_t {
+  int speed_mode, timer_num, duty_resolution, freq_hz, clk_cfg;
+  bool deconfigure;
+};
+struct ledc_channel_config_t {
+  int gpio_num, speed_mode, channel, timer_sel, intr_type;
+  unsigned duty;
+  int sleep_mode;
+};
+extern bool ledc_timer_active, ledc_update_fault_once;
+inline int ledc_timer_config(const ledc_timer_config_t *p) {
+  assert(p->deconfigure || p->clk_cfg == LEDC_USE_RC_FAST_CLK);
+  ledc_timer_active = !p->deconfigure;
+  return 0;
+}
+inline int ledc_channel_config(const ledc_channel_config_t *p) {
+  assert(p->sleep_mode == LEDC_SLEEP_MODE_KEEP_ALIVE); return 0;
+}
+inline int ledc_set_duty(int, int, unsigned) { return 0; }
+inline int ledc_update_duty(int, int) {
+  if (ledc_update_fault_once) { ledc_update_fault_once=false; return -1; }
+  return 0;
+}
+inline int ledc_stop(int, int, int) { return 0; }
+inline int ledc_timer_pause(int, int) { return 0; }
+"""
+
 HARNESS = r"""
 #include <Arduino.h>
 #include <M5Unified.h>
 #include "display_bus.h"
 #include "sound_bridge.h"
+#include "peripheral_power.h"
+#include "backlight.h"
+#include "display_panel.h"
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 uint64_t clock_us = 100000, timer_duration_us = 0;
 int serial_bytes = 0;
-bool sleep_init_failed = false;
+bool sleep_init_failed = false, sleep_start_failed = false;
+unsigned setup_attempts = 0, beep_advances = 0, cpu_mhz = 240;
+bool lit_case = false, moving_case = false, supply_fault_once = false;
+bool supply_on_fault_once = false, speaker_begin_fault_once = false;
+bool speaker_tone_fault_once = false;
+bool ledc_timer_active = false, ledc_update_fault_once = false;
+bool menu_requested = false;
+u8 menu_buttons = 0;
 unsigned completed_sleeps = 0;
 unsigned main_runs = 0;
 SerialStub Serial;
 M5Stub M5;
-namespace m5 { I2CStub In_I2C; }
+namespace m5 { I2CStub In_I2C; bool codec_fault_once=false; }
 lgfx::LGFX_Device screen;
 m5::M5PM1_Class power;
 bool StickBoardBegin() {
-  // This stub isolates runtime behavior. board_hal.cpp independently shows
-  // that setup enables GPIO2 and never disables it.
+  // The board starts with the display supply powered; compile the real
+  // shared-ownership state machine above this physical write stub.
   power.levels[m5::M5PM1_Class::gpio2] = true;
+  StickPeripheralPowerInit();
+  StickBacklightInit(68);
   return true;
 }
+bool StickBoardPeripheralSupply(bool on) {
+  if (on && supply_on_fault_once) { supply_on_fault_once=false; return false; }
+  if (!on && supply_fault_once) { supply_fault_once=false; return false; }
+  power.levels[m5::M5PM1_Class::gpio2] = on;
+  if (!on) std::memset(m5::In_I2C.codec, 0, 256);
+  return true;
+}
+void StickBoardDisplayReset(bool) {}
+bool StickBoardDisplayInitRegisters() { ++screen.init_calls; return StickBacklightInit(0); }
 lgfx::LGFX_Device *StickBoardScreen() { return &screen; }
 m5::M5PM1_Class &StickBoardPower() { return power; }
 extern "C" {
 void StickPortSetup();
 void StickPortLoop();
-void BeepAdvance() {}
+void BeepAdvance() { ++beep_advances; }
 void StickPortBoot() {
   StickSoundInit();
   IO.PDR1.BIT.B1 = 0;
-  StickDisplayWrite(0xa9); // actual native display power-save command
+  StickDisplayWrite(lit_case ? 0xe1 : 0xa9);
 }
 int StickEepromMount() { return 1; }
 void StickEepromDefer(int) {}
@@ -188,17 +290,23 @@ u16 StickBatteryMillivolts() { return 4000; }
 int StickForegroundIsIr() { return 0; }
 int StickForegroundIsMain() { return 1; }
 int StickForegroundIsBeep() { return 0; }
-int StickForegroundIsInactive() { return 1; }
+int StickForegroundIsInactive() { return !moving_case; }
 unsigned StickForegroundUiFrame() { return 0; }
 void StickForegroundQuarterSecond() {}
 void StickForegroundSecond() {}
 void StickForegroundRun() { ++main_runs; }
-void StickForegroundDeviceMenuClosed() {}
+void StickForegroundDeviceMenuClosed() {
+  IO.PDR1.BIT.B1=0; StickDisplayWrite(0xe1);
+}
 void StickInputPoll(unsigned long) {}
 int StickInputWakeScanActive() { return 0; }
-int StickMenuRequested() { return 0; }
+int StickMenuRequested() {
+  bool requested=menu_requested; menu_requested=false; return requested;
+}
 void StickInputMenuMode(int) {}
-u8 StickInputTakeMenuButtons() { return 0; }
+u8 StickInputTakeMenuButtons() {
+  u8 buttons=menu_buttons; menu_buttons=0; return buttons;
+}
 u8 StickInputProfile() { return 0; }
 u8 StickInputOrientation() { return 0; }
 u8 StickInputChordWindowIndex() { return 0; }
@@ -207,18 +315,55 @@ int StickInputConfigure(u8, u8, u8) { return 1; }
 int main(int argc, char **argv) {
   const bool serial_case = argc > 1 && !strcmp(argv[1], "serial");
   const bool error_case = argc > 1 && !strcmp(argv[1], "init-error");
-  sleep_init_failed = error_case;
+  const bool persistent_error = argc > 1 && !strcmp(argv[1], "persistent-error");
+  lit_case = argc > 1 && !strcmp(argv[1], "lit");
+  moving_case = argc > 1 && !strcmp(argv[1], "moving");
+  sleep_start_failed = argc > 1 && !strcmp(argv[1], "sleep-error");
+  sleep_init_failed = error_case || persistent_error;
+  supply_fault_once = argc>1 && !strcmp(argv[1], "supply-error");
+  m5::codec_fault_once = argc>1 && !strcmp(argv[1], "codec-error");
   StickPortSetup();
+  assert(cpu_mhz == 80);
   if (serial_case) serial_bytes = 1;
   const uint64_t end = clock_us + 1200000;
   unsigned guard = 0;
-  while (clock_us < end && ++guard < 10000) StickPortLoop();
+  while (clock_us < end && ++guard < 10000) {
+    if (error_case && clock_us + 900000 >= end) sleep_init_failed = false;
+    StickPortLoop();
+  }
   if (guard == 10000) return 2;
-  std::printf("{\"sleeps\":%u,\"main_runs\":%u,\"serial_bytes\":%d,\"brightness\":%u,"
+  std::printf("{\"setup_attempts\":%u,\"sleeps\":%u,\"main_runs\":%u,\"serial_bytes\":%d,\"brightness\":%u,"
               "\"lcd_sleep_calls\":%u,\"l3b_on\":%s,",
-              completed_sleeps, main_runs, serial_bytes, screen.brightness,
+              setup_attempts, completed_sleeps, main_runs, serial_bytes, screen.brightness,
               screen.sleep_calls, power.levels[2] ? "true" : "false");
+  if (argc>1 && (!strcmp(argv[1], "supply-on-error") ||
+                  !strcmp(argv[1], "speaker-error"))) {
+    supply_on_fault_once = !strcmp(argv[1], "supply-on-error");
+    speaker_begin_fault_once = !strcmp(argv[1], "speaker-error");
+    StickSoundEnable(); StickSoundDisable();
+    assert(!StickSoundIsBusy() && !power.levels[2] && !power.levels[3]);
+  }
+  const unsigned begins_at_start = M5.Speaker.begin_calls;
+  const unsigned ends_at_start = M5.Speaker.end_calls;
+  // The cold amplifier starts the native score clock after the verified
+  // 65 ms warm-up. A second cue in the hold interval must reuse the output.
   StickSoundEnable();
+  StickSoundPeriod(40, 2);
+  const uint64_t tone_begin = clock_us;
+  clock_us = tone_begin + 64999;
+  StickSoundService();
+  assert(beep_advances == 0);
+  clock_us = tone_begin + 65000;
+  StickSoundService();
+  assert(beep_advances == 1);
+  StickSoundDisable();
+  clock_us += 200000;
+  StickSoundService();
+  assert(power.levels[3] && M5.Speaker.end_calls == ends_at_start);
+  StickSoundEnable();
+  assert(M5.Speaker.begin_calls == begins_at_start + 1);
+  StickSoundService();
+  assert(beep_advances > 1);
   StickSoundPeriod(40, 2);
   const unsigned writes_before_disable = m5::In_I2C.writes;
   StickSoundDisable();
@@ -229,6 +374,105 @@ int main(int argc, char **argv) {
               power.levels[3] ? "true" : "false", M5.Speaker.end_calls,
               m5::In_I2C.writes - writes_before_disable,
               m5::In_I2C.codec[0x0d]);
+  // Restore the same native image after supply loss. Identical images do
+  // not transfer; one changed pixel transfers its 2x2 scaled rectangle.
+  IO.PDR1.BIT.B1 = 0;
+  StickDisplayWrite(0xe1);
+  // Restoration is asynchronous: no 200 ms block in an input/motion call.
+  // lit case retains RAM; use an explicit sleep/supply cycle for this check.
+  StickDisplayWrite(0xa9); StickDisplayPresent();
+  clock_us += 800000; StickDisplayPowerService();
+  StickDisplayWrite(0xe1);
+  const uint64_t wake_begin = clock_us;
+  assert(!StickDisplayPresent());
+  assert(clock_us - wake_begin <= 2000);
+  clock_us += 8000; StickDisplayPowerService();
+  clock_us += 64000; StickDisplayPowerService();
+  clock_us += 130000; StickDisplayPowerService();
+  assert(StickDisplayPresent());
+  unsigned pushes = screen.pushes;
+  StickDisplayPresent();
+  assert(screen.pushes == pushes);
+  StickDisplayWrite(0x10); StickDisplayWrite(5); StickDisplayWrite(0xb0);
+  IO.PDR1.BIT.B1 = 1;
+  StickDisplayWrite(0x80); StickDisplayWrite(0);
+  IO.PDR1.BIT.B1 = 0;
+  StickDisplayPresent();
+  assert(screen.pushes == pushes + 1);
+  assert(screen.last_x == 34 && screen.last_y == 17);
+  assert(screen.last_w == 2 && screen.last_h == 2);
+  assert(screen.first_pixel == 0xad55);
+  StickDisplayInvalidate();
+  StickDisplayPresent();
+  assert(screen.last_w == 192 && screen.last_h == 128);
+  // Keep LCD power when sound ends; warm codec resume restores registers
+  // while the LCD owner still holds the shared rail.
+  StickSoundEnable();
+  const unsigned before = m5::In_I2C.codec[0x0e];
+  StickSoundDisable();
+  clock_us += 600000;
+  StickSoundService();
+  assert(power.levels[2] && !power.levels[3]);
+  assert(m5::In_I2C.codec[0x0d] == 0xfc);
+  StickSoundEnable();
+  assert(m5::In_I2C.codec[0x0e] == before);
+  const unsigned begins = M5.Speaker.begin_calls;
+  // LCD sleep must not cut off active sound, nor reinitialize virtual RAM.
+  StickDisplayWrite(0xa9);
+  StickDisplayPresent();
+  assert(power.levels[2] && power.levels[3]);
+  StickSoundDisable();
+  clock_us += 800000;
+  StickSoundService();
+  StickDisplayPowerService();
+  assert(!power.levels[2] && !power.levels[3]);
+  assert(M5.Speaker.begin_calls == begins);
+  StickDisplayWrite(0xe1);
+  assert(!StickDisplayPresent());
+  clock_us += 8000; StickDisplayPowerService();
+  clock_us += 64000; StickDisplayPowerService();
+  clock_us += 130000; StickDisplayPowerService();
+  assert(StickDisplayPresent());
+  assert(screen.last_w == 192 && screen.last_h == 128);
+  uint8_t restored[96*64];
+  StickDisplayFrame(restored, sizeof(restored));
+  assert(restored[7*96+5] == 2);
+  assert(StickBacklightSleepReady());
+  // Exercise the real runtime overlay path, including a full cursor cycle.
+  menu_requested=true;
+  uint64_t until=clock_us+300000;
+  while (clock_us<until) StickPortLoop();
+  const unsigned overlay_pushes=screen.pushes;
+  for (unsigned i=0;i<8;++i) {
+    menu_buttons=1;
+    until=clock_us+150000;
+    while (clock_us<until) StickPortLoop();
+    assert(!menu_buttons);
+  }
+  menu_buttons=4;
+  until=clock_us+150000;
+  while (clock_us<until) StickPortLoop();
+  assert(!menu_buttons && screen.pushes>overlay_pushes);
+  assert(screen.last_w==192 && screen.last_h==128);
+  // An abandoned board overlay must relinquish the physical display without
+  // waking a native screen whose own timeout has already expired.
+  menu_requested=true;
+  until=clock_us+300000;
+  while (clock_us<until) StickPortLoop();
+  IO.PDR1.BIT.B1=0; StickDisplayWrite(0xa9);
+  clock_us += 91000000;
+  StickPortLoop(); StickDisplayPowerService();
+  assert(!StickDisplayIsPowered() && !power.levels[2]);
+  // Failed operations must not turn idle shutdown into a permanent lease.
+  assert(StickBacklightInit(0));
+  ledc_update_fault_once = true;
+  StickBacklightSet(40);
+  assert(!StickBacklightSleepReady() && ledc_timer_active);
+  StickBacklightSuspend();
+  assert(!ledc_timer_active);
+  speaker_tone_fault_once = true;
+  assert(!StickSoundTestTone());
+  assert(!StickSoundIsBusy() && !power.levels[2] && !power.levels[3]);
   return 0;
 }
 """
@@ -249,13 +493,27 @@ def main():
             str(folder / "trace.cpp"),
             *[str(ROOT / "stick" / name) for name in (
                 "board_runtime.cpp", "display_bus.cpp", "display_panel.cpp",
-                "sound_bridge.cpp", "power_sleep.cpp")],
+                "sound_bridge.cpp", "power_sleep.cpp", "peripheral_power.cpp",
+                "backlight.cpp")],
             "-o", str(binary),
         ], check=True)
         rows = {}
-        for case in ("quiet", "serial", "init-error"):
+        for case in ("quiet", "serial", "init-error", "persistent-error",
+                     "sleep-error", "lit", "moving", "supply-error", "codec-error", "supply-on-error", "speaker-error"):
             rows[case] = json.loads(subprocess.check_output([str(binary), case]))
         assert rows["quiet"]["sleeps"] > 0, "control must reach sleep"
+        assert not rows["supply-error"]["l3b_on"], "retry failed rail shutdown"
+        assert not rows["codec-error"]["l3b_on"], "retry failed codec shutdown"
+        assert rows["lit"]["sleeps"] > 0, "visible image must permit CPU sleep"
+        assert rows["lit"]["l3b_on"], "visible LCD must retain its supply"
+        assert rows["moving"]["main_runs"] >= 18, "keep motion sample cadence"
+        assert rows["init-error"]["sleeps"] > 0, "retry transient setup failure"
+        assert rows["sleep-error"]["sleeps"] > 0, "recover failed sleep entry"
+        assert rows["persistent-error"]["setup_attempts"] <= 3, "bound retry rate"
+        assert rows["quiet"]["lcd_sleep_calls"] > 0
+        assert not rows["quiet"]["l3b_on"]
+        assert rows["quiet"]["speaker_end_calls"] == 1
+        assert rows["quiet"]["codec_writes_during_shutdown"] == 15
         findings = {
             "display_shutdown_incomplete": rows["quiet"]["brightness"] == 0
             and rows["quiet"]["lcd_sleep_calls"] == 0
@@ -265,7 +523,7 @@ def main():
             and rows["quiet"]["codec_writes_during_shutdown"] == 0,
             "unconsumed_serial_vetoes_sleep": rows["serial"]["sleeps"] == 0
             and rows["serial"]["serial_bytes"] == 1,
-            "sleep_init_failure_is_silent": rows["init-error"]["sleeps"] == 0
+            "sleep_init_failure_is_permanent": rows["init-error"]["sleeps"] == 0
             and rows["init-error"]["main_runs"] > 0,
         }
         print(json.dumps({"trace": rows, "power_policy_violations": findings}, indent=2))

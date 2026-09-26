@@ -1,4 +1,6 @@
 #include "board_hal.h"
+#include "backlight.h"
+#include "peripheral_power.h"
 
 #include <M5Unified.h>
 #include <utility/imu/BMI270_Class.hpp>
@@ -15,8 +17,34 @@ unsigned accel_reads = 0, accel_successes = 0, accel_failures = 0;
 #endif
 lgfx::LGFX_Device screen;
 lgfx::Bus_SPI bus;
-lgfx::Panel_ST7789 panel;
-lgfx::Light_PWM light;
+struct RestorablePanel : lgfx::Panel_ST7789 {
+  bool deferred = false;
+  mutable uint8_t prefix[128];
+  const uint8_t *getInitCommands(uint8_t list) const override {
+    const uint8_t *source = lgfx::Panel_ST7789::getInitCommands(list);
+    if (!deferred || !source) return source;
+    unsigned used = 0;
+    // Reuse the installed driver's exact analog/gamma configuration, but
+    // stop before Sleep-out. Its reset and 130 ms delays run as deadlines.
+    while (source[0] != CMD_SLPOUT && source[0] != 0xff) {
+      const unsigned bytes = 2 + (source[1] & 0x7fu) +
+                             ((source[1] & CMD_INIT_DELAY) ? 1u : 0u);
+      if (used + bytes + 2 > sizeof(prefix)) return nullptr;
+      for (unsigned i = 0; i < bytes; ++i) prefix[used++] = *source++;
+    }
+    prefix[used++] = 0xff;
+    prefix[used] = 0xff;
+    return prefix;
+  }
+} panel;
+struct RetainedLight : lgfx::ILight {
+  bool init(uint8_t brightness) override {
+    return StickBacklightInit(brightness);
+  }
+  void setBrightness(uint8_t brightness) override {
+    StickBacklightSet(brightness);
+  }
+} light;
 bool screen_ready = false;
 
 }  // namespace
@@ -83,17 +111,36 @@ bool StickBoardBegin(void) {
   p.readable = true;
   p.bus_shared = false;
   panel.config(p);
-  auto l = light.config();
-  l.pin_bl = 38;
-  l.pwm_channel = 7;
-  l.freq = 256;
-  l.offset = 16;
-  light.config(l);
   panel.setLight(&light);
   screen.setPanel(&panel);
   screen_ready = screen.init();
   if (screen_ready) screen.setBrightness(40);
+  StickPeripheralPowerInit();
   return screen_ready;
+}
+
+bool StickBoardPeripheralSupply(bool on) {
+  if (!pm1.setGPIOOutput(m5::M5PM1_Class::gpio2, on)) return false;
+  if (!on) {
+    // The last owner has already stopped SPI/PWM/I2S. Disconnect output
+    // pads to avoid feeding unpowered peripherals through their signal pins.
+    // The sensor I2C bus remains available, as in the board's L2 power mode.
+    for (int pin : {14, 15, 17, 18, 21, 38, 39, 40, 41, 45})
+      gpio_reset_pin(gpio_num_t(pin));
+  }
+  return true;
+}
+
+void StickBoardDisplayReset(bool released) {
+  gpio_set_level(GPIO_NUM_21, released);
+  gpio_set_direction(GPIO_NUM_21, GPIO_MODE_OUTPUT);
+}
+
+bool StickBoardDisplayInitRegisters(void) {
+  panel.deferred = true;
+  const bool ok = panel.init(false);
+  panel.deferred = false;
+  return ok;
 }
 
 lgfx::LGFX_Device *StickBoardScreen(void) {

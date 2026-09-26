@@ -2,6 +2,7 @@
 #include "board_hal.h"
 
 #include <M5Unified.h>
+#include <Arduino.h>
 #include <driver/gpio.h>
 #include <driver/rmt_encoder.h>
 #include <driver/rmt_tx.h>
@@ -30,9 +31,13 @@ bool prepare_ir_tx() {
   if (!power.setExtOutput(true)) return false;
   if (was_off) delay(20);
   if (ready) return true;
+  if (channel && encoder) {
+    ready = rmt_enable(channel) == ESP_OK;
+    return ready;
+  }
   gpio_set_level(GPIO_NUM_46, 0);
   gpio_set_direction(GPIO_NUM_46, GPIO_MODE_OUTPUT);
-  symbols = static_cast<rmt_symbol_word_t *>(heap_caps_malloc(
+  if (!symbols) symbols = static_cast<rmt_symbol_word_t *>(heap_caps_malloc(
       kMaxBytes * 10 * sizeof(rmt_symbol_word_t),
       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   if (!symbols) return false;
@@ -47,7 +52,18 @@ bool prepare_ir_tx() {
   if (result == ESP_OK) result = rmt_new_copy_encoder(&encoder_config, &encoder);
   if (result == ESP_OK) result = rmt_enable(channel);
   ready = result == ESP_OK;
+  if (!ready) {
+    if (encoder) { rmt_del_encoder(encoder); encoder = nullptr; }
+    if (channel) { rmt_del_channel(channel); channel = nullptr; }
+  }
   return ready;
+}
+
+bool suspend_ir_tx() {
+  if (!ready) return true;
+  if (rmt_disable(channel) != ESP_OK) return false;
+  ready = false;
+  return true;
 }
 
 bool transmit_logical(const uint8_t *bytes, size_t length) {
