@@ -175,6 +175,7 @@ inline void *heap_caps_malloc(size_t size, unsigned) { return malloc(size); }
 #pragma once
 #include <initializer_list>
 extern bool sleep_init_failed;
+extern unsigned rtc_owned;
 enum gpio_num_t { GPIO_NUM_11 = 11, GPIO_NUM_12 = 12 };
 extern unsigned setup_attempts;
 inline int rtc_gpio_pullup_en(gpio_num_t pin) {
@@ -182,6 +183,8 @@ inline int rtc_gpio_pullup_en(gpio_num_t pin) {
   return sleep_init_failed ? -1 : 0;
 }
 inline int rtc_gpio_pulldown_dis(gpio_num_t) { return 0; }
+inline int rtc_gpio_hold_dis(gpio_num_t) { return 0; }
+inline int rtc_gpio_deinit(gpio_num_t pin) { rtc_owned &= ~(1u << (unsigned(pin) - 11)); return 0; }
 """,
     "esp_sleep.h": r"""
 #pragma once
@@ -198,6 +201,7 @@ typedef int esp_err_t;
 extern uint64_t clock_us, timer_duration_us;
 extern unsigned completed_sleeps;
 extern bool sleep_start_failed;
+extern unsigned rtc_owned;
 extern int sleep_reject_once;
 inline int esp_sleep_pd_config(int, int) { return 0; }
 inline int esp_sleep_enable_ext1_wakeup_io(uint64_t, int) { return 0; }
@@ -205,6 +209,7 @@ inline int esp_sleep_enable_timer_wakeup(uint64_t duration) {
   timer_duration_us = duration; return 0;
 }
 inline int esp_light_sleep_start() {
+  rtc_owned = 3; // EXT1 prepares the pads, including cancelled entries.
   if (sleep_start_failed) { sleep_start_failed = false; return -2; }
   if (sleep_reject_once) { int result=sleep_reject_once; sleep_reject_once=0; return result; }
   clock_us += timer_duration_us; ++completed_sleeps; return 0;
@@ -215,7 +220,12 @@ inline int esp_sleep_get_wakeup_cause() { return ESP_SLEEP_WAKEUP_TIMER; }
 
 HEADERS["driver/gpio.h"] = r"""
 #pragma once
+#include <driver/rtc_io.h>
 #define ESP_OK 0
+#define GPIO_MODE_INPUT 1
+#define GPIO_PULLUP_ONLY 1
+inline int gpio_set_direction(gpio_num_t, int) { return 0; }
+inline int gpio_set_pull_mode(gpio_num_t, int) { return 0; }
 """
 HEADERS["driver/ledc.h"] = r"""
 #pragma once
@@ -273,6 +283,7 @@ int sleep_reject_once = 0;
 unsigned setup_attempts = 0, beep_advances = 0, cpu_mhz = 240;
 bool vbus_fault = false, vbus_fault_once = false;
 bool pending_wake_scan = false;
+unsigned rtc_owned = 0;
 bool lit_case = false, moving_case = false, supply_fault_once = false;
 bool supply_on_fault_once = false, speaker_begin_fault_once = false;
 bool speaker_tone_fault_once = false;
@@ -334,7 +345,9 @@ void StickForegroundRun() { ++main_runs; }
 void StickForegroundDeviceMenuClosed() {
   IO.PDR1.BIT.B1=0; StickDisplayWrite(0xe1);
 }
-void StickInputPoll(unsigned long) {}
+void StickInputPoll(unsigned long) {
+  assert(!rtc_owned && "physical switches must return to digital GPIO before polling");
+}
 int StickInputWakeScanActive() { return pending_wake_scan; }
 int StickMenuRequested() {
   bool requested=menu_requested; menu_requested=false; return requested;

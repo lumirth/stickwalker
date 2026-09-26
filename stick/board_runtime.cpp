@@ -18,6 +18,8 @@
 #include <esp_timer.h>
 #ifdef PW_STICK_BENCH_CONTROL
 #include <esp_attr.h>
+#include <driver/rtc_io.h>
+#include <soc/rtc_io_reg.h>
 #endif
 
 extern "C" void StickPortBoot(void);
@@ -380,6 +382,21 @@ extern "C" void StickPortLoop(void) {
         Serial.printf("PW_STICK_FRAME_ROW y=%u %s\n", y, row);
       }
       Serial.println("PW_STICK_FRAME_END");
+    }
+    if (command == 'j' && !StickForegroundIsIr()) {
+      // Reproduce EXT1's ownership of our two switches without sleeping the
+      // USB PHY, then exercise the real sleep-setup restoration path.
+      const esp_err_t first = rtc_gpio_init(GPIO_NUM_11);
+      const esp_err_t second = rtc_gpio_init(GPIO_NUM_12);
+      const unsigned before =
+          (REG_GET_BIT(RTC_IO_TOUCH_PAD11_REG, RTC_IO_TOUCH_PAD11_MUX_SEL) ? 1u : 0u) |
+          (REG_GET_BIT(RTC_IO_TOUCH_PAD12_REG, RTC_IO_TOUCH_PAD12_MUX_SEL) ? 2u : 0u);
+      const bool restored = StickSleepBegin();
+      const unsigned after =
+          (REG_GET_BIT(RTC_IO_TOUCH_PAD11_REG, RTC_IO_TOUCH_PAD11_MUX_SEL) ? 1u : 0u) |
+          (REG_GET_BIT(RTC_IO_TOUCH_PAD12_REG, RTC_IO_TOUCH_PAD12_MUX_SEL) ? 2u : 0u);
+      Serial.printf("PW_STICK_BUTTON_MUX first=%d second=%d before=%u restored=%u after=%u\n",
+                    first, second, before, unsigned(restored), after);
     }
     if (command == 'i' && !StickForegroundIsIr()) {
       uint8_t pmic = 0;

@@ -1,6 +1,7 @@
 #include "power_sleep.h"
 
 #include <Arduino.h>
+#include <driver/gpio.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 #include <esp_timer.h>
@@ -36,6 +37,20 @@ void record_failure(int error) {
 #endif
 }
 
+bool restore_button_gpio() {
+  // EXT1 sleep preparation selects the RTC mux. Digital reads cannot sample
+  // these switches again until every sleep return hands both pads back.
+  bool ok = true;
+  for (auto pin : {GPIO_NUM_11, GPIO_NUM_12}) {
+    for (const esp_err_t error : {rtc_gpio_hold_dis(pin), rtc_gpio_deinit(pin),
+         gpio_set_direction(pin, GPIO_MODE_INPUT),
+         gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY)}) {
+      if (error != ESP_OK) { record_failure(error); ok = false; }
+    }
+  }
+  return ok;
+}
+
 }  // namespace
 
 bool StickSleepBegin(void) {
@@ -60,6 +75,7 @@ bool StickSleepBegin(void) {
 #endif
   ready = false;
   retry_begin_us = uint64_t(esp_timer_get_time()) + 1000000;
+  if (!restore_button_gpio()) return false;
   const uint64_t wake_pins = (1ULL << 11) | (1ULL << 12);
   // The front buttons are RTC capable. Keep their pull-ups supplied during
   // light sleep so a released switch has a defined HIGH level at the RTC
@@ -108,10 +124,18 @@ bool StickSleepUntil(uint64_t deadline_us) {
 #endif
   const esp_err_t result = esp_light_sleep_start();
   const uint64_t elapsed = uint64_t(esp_timer_get_time()) - now;
+  // Restore after successful and cancelled entries: pin preparation may have
+  // happened before the sleep controller rejected the opportunity.
+  const bool buttons_restored = restore_button_gpio();
 #ifdef PW_STICK_BENCH_CONTROL
   retained.phase = 2;
   retained.time_us = uint64_t(esp_timer_get_time());
 #endif
+  if (!buttons_restored) {
+    ready = false;
+    retry_begin_us = uint64_t(esp_timer_get_time()) + 1000000;
+    return false;
+  }
   if (result != ESP_OK) {
     last_error = result;
     last_gpio = (digitalRead(11) == LOW ? 1u : 0u) |

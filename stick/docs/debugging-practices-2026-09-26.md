@@ -86,3 +86,15 @@ the expected descriptor magic, runtime ready=1 and USB veto=1. It was followed
 by a fresh standalone boot. This does not identify why CPU1 was unavailable or
 qualify receiver timing under a debugger. Preserve the failed probe logs too.
 [Installed target configuration](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-data/packages/m5stack/tools/openocd-esp32/v0.12.0-esp32-20251215/share/openocd/scripts/target/esp32s3.cfg:17).
+
+## Verify the post-flash handoff
+
+A successful flash digest and `esptool run` exit do not prove a live production
+application. In the wake follow-up, the initial CPU0 snapshot lacked a valid
+application descriptor/state. Opening the existing Link with DTR/RTS false
+before open produced a fresh USB-UART boot, after which CPU0 reads confirmed
+the exact descriptor, ready=1 and advancing native RTC seconds. Treat that
+open as a reset-capable recovery action, not passive observation. After the
+final control-line handoff, verify liveness and leave that state running;
+do not finish with another unverified reset. See the
+[wake follow-up](wake-transition-and-runtime-estimate-2026-09-26.md).
