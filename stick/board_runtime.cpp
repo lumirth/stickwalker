@@ -16,6 +16,9 @@
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <esp_timer.h>
+#ifdef PW_STICK_BENCH_CONTROL
+#include <esp_attr.h>
+#endif
 
 extern "C" void StickPortBoot(void);
 #ifdef PW_STICK_BENCH_CONTROL
@@ -55,8 +58,22 @@ uint64_t last_menu_input_us = 0;
 constexpr uint64_t kDeviceMenuIdleUs = 90000000;
 constexpr unsigned kDeviceMenuRows = 5;
 bool usb_present = true;
+void refresh_usb_power() {
+  uint16_t millivolts;
+  // Unknown power must keep native USB usable. Retry at the next scheduled
+  // check; only a successful measurement can permit battery-mode sleep.
+  usb_present = !StickBoardVbusVoltage(&millivolts) || millivolts >= 4000;
+}
 #ifdef PW_STICK_BENCH_CONTROL
-uint64_t usb_sleep_trial_end_us = 0;
+uint64_t battery_trial_end_us = 0;
+bool battery_trial_armed = false;
+RTC_NOINIT_ATTR struct {
+  uint32_t magic;
+  unsigned start_reads, end_reads, start_seconds, end_seconds;
+  unsigned failures, completed;
+  uint64_t start_us, end_us;
+} retained_trial;
+constexpr uint32_t kTrialMagic = 0x50575431;
 #endif
 
 uint64_t sample_period_us() {
@@ -65,6 +82,21 @@ uint64_t sample_period_us() {
   return StickForegroundIsInactive() && !StickInputWakeScanActive() ?
       1000000 : 62500;
 }
+
+#ifdef PW_STICK_BENCH_CONTROL
+void begin_battery_trial(uint64_t now) {
+  unsigned successes, failures;
+  StickBoardAccelDiagnostic(&retained_trial.start_reads, &successes, &failures);
+  unsigned view, updates, frames, flags, idle, selection, pressed;
+  StickForegroundUiDiagnostic(&view, &updates, &frames,
+      &retained_trial.start_seconds, &flags, &idle, &selection, &pressed);
+  retained_trial.magic = kTrialMagic;
+  retained_trial.completed = 0;
+  retained_trial.start_us = now;
+  battery_trial_end_us = now + 5000000;
+  battery_trial_armed = false;
+}
+#endif
 
 void fatal(const char *reason) {
   Serial.printf("PW_STICK_FATAL %s\n", reason);
@@ -184,8 +216,21 @@ extern "C" void StickPortSetup(void) {
   StickBoardPower().setExtOutput(false);
   if (!StickSleepBegin())
     Serial.printf("PW_STICK_SLEEP_SETUP_FAILED retry_ms=1000\n");
+#ifdef PW_STICK_BENCH_CONTROL
+  if (retained_trial.magic == kTrialMagic)
+    Serial.printf("PW_STICK_POWER_TRIAL_PREVIOUS completed=%u start_us=%llu "
+                  "end_us=%llu start_reads=%u end_reads=%u failures=%u "
+                  "start_seconds=%u end_seconds=%u\n",
+                  retained_trial.completed,
+                  (unsigned long long)retained_trial.start_us,
+                  (unsigned long long)retained_trial.end_us,
+                  retained_trial.start_reads, retained_trial.end_reads,
+                  retained_trial.failures, retained_trial.start_seconds,
+                  retained_trial.end_seconds);
+  retained_trial = {};
+#endif
   const uint64_t now = uint64_t(esp_timer_get_time());
-  usb_present = StickBoardPower().getVBUSVoltage() >= 4000;
+  refresh_usb_power();
   next_vbus_check_us = now + 1000000;
   next_sample_us = now + sample_period_us();
   next_quarter_us = now + 250000;
@@ -215,6 +260,19 @@ extern "C" void StickPortLoop(void) {
 #endif
   const uint64_t now = uint64_t(esp_timer_get_time());
 #ifdef PW_STICK_BENCH_CONTROL
+  if (battery_trial_end_us && now >= battery_trial_end_us) {
+    battery_trial_end_us = 0;
+    // USB CDC may remain unavailable until the host resets/reconnects it.
+    // Retain the completed trial across that CPU reset without save writes.
+    unsigned successes;
+    StickBoardAccelDiagnostic(&retained_trial.end_reads, &successes,
+                              &retained_trial.failures);
+    unsigned view, updates, frames, flags, idle, selection, pressed;
+    StickForegroundUiDiagnostic(&view, &updates, &frames,
+        &retained_trial.end_seconds, &flags, &idle, &selection, &pressed);
+    retained_trial.end_us = now;
+    retained_trial.completed = 1;
+  }
   if (last_loop_entry_us && now - last_loop_entry_us > loop_gap_max_us)
     loop_gap_max_us = now - last_loop_entry_us;
   last_loop_entry_us = now;
@@ -396,27 +454,47 @@ extern "C" void StickPortLoop(void) {
                     unsigned(power.getExtOutput()),
                     unsigned(StickForegroundIsInactive()),
                     (unsigned long long)sample_period_us());
-      uint64_t count, sleep_us, timer_wakes, gpio_wakes, errors;
+      uint64_t count, sleep_us, timer_wakes, gpio_wakes, errors, rejections;
       int last_sleep_error;
       unsigned sleep_gpio, sleep_duration;
       StickSleepDiagnostic(&count, &sleep_us, &timer_wakes, &gpio_wakes,
-                           &errors, &last_sleep_error, &sleep_gpio,
+                           &errors, &rejections, &last_sleep_error, &sleep_gpio,
                            &sleep_duration);
       Serial.printf("PW_STICK_SLEEP count=%llu sleep_us=%llu timer=%llu "
                     "gpio=%llu errors=%llu last_error=%d last_gpio=%u "
-                    "duration=%u\n",
+                    "duration=%u rejections=%llu\n",
                     (unsigned long long)count,
                     (unsigned long long)sleep_us,
                     (unsigned long long)timer_wakes,
                     (unsigned long long)gpio_wakes,
                     (unsigned long long)errors,
                     last_sleep_error,
-                    sleep_gpio, sleep_duration);
+                    sleep_gpio, sleep_duration,
+                    (unsigned long long)rejections);
       unsigned accel_reads, accel_successes, accel_failures;
       StickBoardAccelDiagnostic(&accel_reads, &accel_successes,
                                 &accel_failures);
       Serial.printf("PW_STICK_ACCEL reads=%u successes=%u failures=%u\n",
                     accel_reads, accel_successes, accel_failures);
+    }
+    if (command == 'P' && !StickForegroundIsIr()) {
+      uint8_t gpio_out = 0, pwr_cfg = 0, accel_conf = 0;
+      uint8_t imu_power = 0, imu_power_conf = 0;
+      const bool pmic_ok =
+          m5::In_I2C.readRegister(0x6e, 0x11, &gpio_out, 1, 100000) &&
+          m5::In_I2C.readRegister(0x6e, 0x06, &pwr_cfg, 1, 100000);
+      const bool imu_ok =
+          m5::In_I2C.readRegister(0x68, 0x40, &accel_conf, 1, 100000) &&
+          m5::In_I2C.readRegister(0x68, 0x7d, &imu_power, 1, 100000) &&
+          m5::In_I2C.readRegister(0x68, 0x7c, &imu_power_conf, 1, 100000);
+      Serial.printf("PW_STICK_POWER_HW cpu_mhz=%u panel_awake=%u "
+                    "pwm_ready=%u sound_busy=%u pmic_ok=%u gpio_out=%02x "
+                    "pwr_cfg=%02x imu_ok=%u accel_conf=%02x imu_power=%02x "
+                    "imu_power_conf=%02x\n",
+                    unsigned(getCpuFrequencyMhz()), StickDisplayPanelIsReady(),
+                    StickBacklightSleepReady(), StickSoundIsBusy(),
+                    unsigned(pmic_ok), gpio_out, pwr_cfg, unsigned(imu_ok),
+                    accel_conf, imu_power, imu_power_conf);
     }
     if (command == 'o' && !StickForegroundIsIr()) {
       const u16 millivolts = StickBatteryMillivolts();
@@ -466,8 +544,9 @@ extern "C" void StickPortLoop(void) {
       Serial.println("PW_STICK_BENCH_SLEEP");
     }
     if (command == 'Y' && !StickForegroundIsIr()) {
-      usb_sleep_trial_end_us = uint64_t(esp_timer_get_time()) + 5000000;
-      Serial.println("PW_STICK_USB_SLEEP_TRIAL duration_ms=5000");
+      battery_trial_armed = true;
+      retained_trial = {};
+      Serial.println("PW_STICK_BATTERY_TRIAL_ARMED duration_ms=5000");
     }
     if (command == 'n' && !StickForegroundIsIr()) {
       StickForegroundBenchInactive();
@@ -655,17 +734,16 @@ extern "C" void StickPortLoop(void) {
 #endif
       ) {
     // USB Serial/JTAG disconnects during ESP32-S3 light sleep. Keep the
-    // charging/debug connection usable; the bench command Y runs a bounded
-    // five-second real-sleep trial to verify the same path on hardware.
+    // charging/debug connection usable. Bench Y only arms a retained trial;
+    // it starts after USB is removed and never overrides this veto.
     if (now >= next_vbus_check_us) {
-      usb_present = StickBoardPower().getVBUSVoltage() >= 4000;
+      refresh_usb_power();
       next_vbus_check_us = now + 1000000;
     }
-    const bool usb_sleep_allowed = !usb_present
 #ifdef PW_STICK_BENCH_CONTROL
-        || uint64_t(esp_timer_get_time()) < usb_sleep_trial_end_us
+    if (!usb_present && battery_trial_armed) begin_battery_trial(now);
 #endif
-        ;
+    const bool usb_sleep_allowed = !usb_present;
     if (usb_sleep_allowed) {
       uint64_t deadline = next_sample_us;
       const uint64_t display_deadline = StickDisplayNextDeadline();

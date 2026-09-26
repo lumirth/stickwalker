@@ -47,6 +47,43 @@ struct RetainedLight : lgfx::ILight {
 } light;
 bool screen_ready = false;
 
+bool startup_check(bool ok, const char *stage) {
+#ifdef PW_STICK_BENCH_CONTROL
+  if (!ok) Serial.printf("PW_STICK_BOARD_INIT_FAILED stage=%s sda=%u scl=%u\n",
+                         stage, unsigned(digitalRead(47)),
+                         unsigned(digitalRead(48)));
+#else
+  (void)stage;
+#endif
+  return ok;
+}
+
+bool begin_pmic() {
+  // First ID reads have failed after warm resets; the cause is unresolved.
+  // M5GFX already clears the bus on a failed transfer. Bound recovery by
+  // reinitializing the owned master and retrying, rather than inventing
+  // another bus-clear sequence or failing permanently on the first read.
+  for (unsigned attempt = 0; attempt < 4; ++attempt) {
+    if (attempt) {
+      m5::In_I2C.release();
+      delay(10);
+      if (!m5::In_I2C.begin(I2C_NUM_1, 47, 48)) continue;
+    }
+    if (pm1.begin()) {
+#ifdef PW_STICK_BENCH_CONTROL
+      if (attempt) Serial.printf("PW_STICK_PMIC_RECOVERED retries=%u\n", attempt);
+#endif
+      return true;
+    }
+#ifdef PW_STICK_BENCH_CONTROL
+    Serial.printf("PW_STICK_PMIC_READ_FAILED attempt=%u sda=%u scl=%u\n",
+                  attempt, unsigned(digitalRead(47)),
+                  unsigned(digitalRead(48)));
+#endif
+  }
+  return false;
+}
+
 }  // namespace
 
 bool StickBoardBegin(void) {
@@ -59,7 +96,8 @@ bool StickBoardBegin(void) {
   gpio_pullup_dis(GPIO_NUM_5);
   gpio_pulldown_dis(GPIO_NUM_5);
   using P = m5::M5PM1_Class;
-  if (!m5::In_I2C.begin(I2C_NUM_1, 47, 48) || !pm1.begin() ||
+  if (!startup_check(m5::In_I2C.begin(I2C_NUM_1, 47, 48), "i2c") ||
+      !startup_check(begin_pmic(), "pmic") ||
       // The original PM1 GPIO1 IRQ output is unused: L is polled through the
       // latched button register. With both button reset/off actions disabled,
       // that IRQ function also makes the PM1 flash its status LED repeatedly.
@@ -72,7 +110,7 @@ bool StickBoardBegin(void) {
       !pm1.setGPIOMode(P::gpio3, P::output) ||
       !pm1.setGPIOFunction(P::gpio0, P::gpio) ||
       !pm1.setGPIOMode(P::gpio0, P::input) ||
-      !pm1.setExtOutput(true)) return false;
+      !startup_check(pm1.setExtOutput(true), "external-supply")) return false;
   delay(1200);
 
   if (imu.WhoAmI() != 0x24) imu.setAddress(0x68);
@@ -116,7 +154,7 @@ bool StickBoardBegin(void) {
   screen_ready = screen.init();
   if (screen_ready) screen.setBrightness(40);
   StickPeripheralPowerInit();
-  return screen_ready;
+  return startup_check(screen_ready, "display-init");
 }
 
 bool StickBoardPeripheralSupply(bool on) {
@@ -148,6 +186,16 @@ lgfx::LGFX_Device *StickBoardScreen(void) {
 }
 
 m5::M5PM1_Class &StickBoardPower(void) { return pm1; }
+
+bool StickBoardVbusVoltage(uint16_t *millivolts) {
+  // M5PM1 VIN_L/H, as used by M5Unified getVBUSVoltage(). Preserve the
+  // transaction result instead of that convenience API's failure-as-zero.
+  uint8_t bytes[2];
+  if (!m5::In_I2C.readRegister(0x6e, 0x24, bytes, sizeof(bytes), 100000))
+    return false;
+  *millivolts = uint16_t(bytes[0]) | (uint16_t(bytes[1]) << 8);
+  return true;
+}
 
 bool StickBoardAccel(float *x, float *y, float *z) {
 #ifdef PW_STICK_BENCH_CONTROL

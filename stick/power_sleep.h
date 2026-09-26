@@ -11,7 +11,7 @@ bool StickSleepUntil(uint64_t deadline_us);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickSleepDiagnostic(uint64_t *count, uint64_t *sleep_us,
                          uint64_t *timer_wakes, uint64_t *gpio_wakes,
-                         uint64_t *errors, int *last_error,
+                         uint64_t *errors, uint64_t *rejections, int *last_error,
                          unsigned *last_gpio, unsigned *last_duration);
 #endif
 

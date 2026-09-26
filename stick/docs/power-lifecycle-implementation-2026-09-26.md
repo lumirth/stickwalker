@@ -1,7 +1,10 @@
 # Peripheral lifecycle and sleep implementation — 2026-09-26
 
-Status: implemented, built and host-verified candidate. Not flashed or measured
-on hardware. The user confirmed the design before these firmware edits.
+Original code-only milestone: implemented, built and host-verified candidate.
+Subsequent hardware work is recorded in
+[power hardware validation](power-hardware-validation-2026-09-26.md), including
+failed trials, fixes and final installation. No supply-current measurement has
+been made. The user confirmed the design before these firmware edits.
 
 ## Implemented changes
 
@@ -121,7 +124,9 @@ inconclusive. The final comparison above uses complete bytes located in the
 actual frozen production app. Unchanged instructions do not establish unchanged
 optical behavior when peripheral supplies and clocks change.
 
-No device access, flash, reset, or paired Pokémon storage access occurred.
+No device access, flash, reset, or paired Pokémon storage access occurred in
+that original code-only milestone. Subsequent hardware access is recorded in
+the linked hardware validation ledger.
 
 ## Remaining work and hardware boundary
 
@@ -138,7 +143,8 @@ establish press-onset/hold timing. The successful polling fallback remains
 enabled until that behavior can be validated.
 [M5PM1 datasheet, pp. 22–24](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/M5PM1_Datasheet_CN.pdf).
 
-The device is unavailable during this code-only block. Next validation needs
+At the original code-only milestone, the device was unavailable. Remaining
+qualification needs
 battery-powered peripheral/wake/sound checks, a complete faithful IR exchange,
 and whole-device supply-current/energy measurements. Sensor rate/filter choices
 also require acceleration evidence to validate walking accuracy and onset.

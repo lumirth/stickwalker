@@ -188,6 +188,8 @@ inline int rtc_gpio_pulldown_dis(gpio_num_t) { return 0; }
 #include <cstdint>
 typedef int esp_err_t;
 #define ESP_OK 0
+#define ESP_ERR_SLEEP_REJECT 259
+#define ESP_ERR_SLEEP_TOO_SHORT_SLEEP_DURATION 258
 #define ESP_PD_DOMAIN_RTC_PERIPH 0
 #define ESP_PD_OPTION_ON 1
 #define ESP_EXT1_WAKEUP_ANY_LOW 0
@@ -196,6 +198,7 @@ typedef int esp_err_t;
 extern uint64_t clock_us, timer_duration_us;
 extern unsigned completed_sleeps;
 extern bool sleep_start_failed;
+extern int sleep_reject_once;
 inline int esp_sleep_pd_config(int, int) { return 0; }
 inline int esp_sleep_enable_ext1_wakeup_io(uint64_t, int) { return 0; }
 inline int esp_sleep_enable_timer_wakeup(uint64_t duration) {
@@ -203,6 +206,7 @@ inline int esp_sleep_enable_timer_wakeup(uint64_t duration) {
 }
 inline int esp_light_sleep_start() {
   if (sleep_start_failed) { sleep_start_failed = false; return -2; }
+  if (sleep_reject_once) { int result=sleep_reject_once; sleep_reject_once=0; return result; }
   clock_us += timer_duration_us; ++completed_sleeps; return 0;
 }
 inline int esp_sleep_get_wakeup_cause() { return ESP_SLEEP_WAKEUP_TIMER; }
@@ -265,7 +269,9 @@ HARNESS = r"""
 uint64_t clock_us = 100000, timer_duration_us = 0;
 int serial_bytes = 0;
 bool sleep_init_failed = false, sleep_start_failed = false;
+int sleep_reject_once = 0;
 unsigned setup_attempts = 0, beep_advances = 0, cpu_mhz = 240;
+bool vbus_fault = false, vbus_fault_once = false;
 bool lit_case = false, moving_case = false, supply_fault_once = false;
 bool supply_on_fault_once = false, speaker_begin_fault_once = false;
 bool speaker_tone_fault_once = false;
@@ -299,6 +305,11 @@ void StickBoardDisplayReset(bool) {}
 bool StickBoardDisplayInitRegisters() { ++screen.init_calls; return StickBacklightInit(0); }
 lgfx::LGFX_Device *StickBoardScreen() { return &screen; }
 m5::M5PM1_Class &StickBoardPower() { return power; }
+bool StickBoardVbusVoltage(uint16_t *mv) {
+  if (vbus_fault) return false;
+  if (vbus_fault_once) { vbus_fault_once=false; return false; }
+  *mv=0; return true;
+}
 extern "C" {
 void StickPortSetup();
 void StickPortLoop();
@@ -346,9 +357,13 @@ int main(int argc, char **argv) {
   lit_case = argc > 1 && !strcmp(argv[1], "lit");
   moving_case = argc > 1 && !strcmp(argv[1], "moving");
   sleep_start_failed = argc > 1 && !strcmp(argv[1], "sleep-error");
+  sleep_reject_once = argc > 1 && !strcmp(argv[1], "sleep-reject") ? 259 :
+                      argc > 1 && !strcmp(argv[1], "sleep-short") ? 258 : 0;
   sleep_init_failed = error_case || persistent_error;
   supply_fault_once = argc>1 && !strcmp(argv[1], "supply-error");
   m5::codec_fault_once = argc>1 && !strcmp(argv[1], "codec-error");
+  vbus_fault = argc>1 && !strcmp(argv[1], "vbus-error");
+  vbus_fault_once = argc>1 && !strcmp(argv[1], "vbus-transient");
   StickPortSetup();
   assert(cpu_mhz == 80);
   if (serial_case) serial_bytes = 1;
@@ -550,9 +565,11 @@ def main():
         ], check=True)
         rows = {}
         for case in ("quiet", "serial", "init-error", "persistent-error",
-                     "sleep-error", "lit", "moving", "supply-error", "codec-error", "supply-on-error", "speaker-error"):
+                     "sleep-error", "sleep-reject", "sleep-short", "vbus-error", "vbus-transient", "lit", "moving", "supply-error", "codec-error", "supply-on-error", "speaker-error"):
             rows[case] = json.loads(subprocess.check_output([str(binary), case]))
         assert rows["quiet"]["sleeps"] > 0, "control must reach sleep"
+        assert rows["vbus-error"]["sleeps"] == 0, "unknown USB power must veto sleep"
+        assert rows["vbus-transient"]["sleeps"] > 0, "valid battery observation must clear unknown-power veto"
         assert not rows["supply-error"]["l3b_on"], "retry failed rail shutdown"
         assert not rows["codec-error"]["l3b_on"], "retry failed codec shutdown"
         assert rows["lit"]["sleeps"] > 0, "visible image must permit CPU sleep"
@@ -560,6 +577,9 @@ def main():
         assert rows["moving"]["main_runs"] >= 18, "keep motion sample cadence"
         assert rows["init-error"]["sleeps"] > 0, "retry transient setup failure"
         assert rows["sleep-error"]["sleeps"] > 0, "recover failed sleep entry"
+        for case in ("sleep-reject", "sleep-short"):
+            assert rows[case]["sleeps"] >= 9, "ordinary rejection must not impose a one-second sleep veto"
+            assert rows[case]["setup_attempts"] == 1, "ordinary rejection must not reset wake configuration"
         assert rows["persistent-error"]["setup_attempts"] <= 3, "bound retry rate"
         assert rows["quiet"]["lcd_sleep_calls"] > 0
         assert not rows["quiet"]["l3b_on"]
