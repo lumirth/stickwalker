@@ -272,6 +272,7 @@ bool sleep_init_failed = false, sleep_start_failed = false;
 int sleep_reject_once = 0;
 unsigned setup_attempts = 0, beep_advances = 0, cpu_mhz = 240;
 bool vbus_fault = false, vbus_fault_once = false;
+bool pending_wake_scan = false;
 bool lit_case = false, moving_case = false, supply_fault_once = false;
 bool supply_on_fault_once = false, speaker_begin_fault_once = false;
 bool speaker_tone_fault_once = false;
@@ -334,7 +335,7 @@ void StickForegroundDeviceMenuClosed() {
   IO.PDR1.BIT.B1=0; StickDisplayWrite(0xe1);
 }
 void StickInputPoll(unsigned long) {}
-int StickInputWakeScanActive() { return 0; }
+int StickInputWakeScanActive() { return pending_wake_scan; }
 int StickMenuRequested() {
   bool requested=menu_requested; menu_requested=false; return requested;
 }
@@ -366,6 +367,8 @@ int main(int argc, char **argv) {
   vbus_fault_once = argc>1 && !strcmp(argv[1], "vbus-transient");
   StickPortSetup();
   assert(cpu_mhz == 80);
+  // A gesture can already be queued before the runtime polls again.
+  pending_wake_scan = argc>1 && !strcmp(argv[1], "queued-wake");
   if (serial_case) serial_bytes = 1;
   const uint64_t end = clock_us + 1200000;
   unsigned guard = 0;
@@ -565,7 +568,7 @@ def main():
         ], check=True)
         rows = {}
         for case in ("quiet", "serial", "init-error", "persistent-error",
-                     "sleep-error", "sleep-reject", "sleep-short", "vbus-error", "vbus-transient", "lit", "moving", "supply-error", "codec-error", "supply-on-error", "speaker-error"):
+                     "sleep-error", "sleep-reject", "sleep-short", "queued-wake", "vbus-error", "vbus-transient", "lit", "moving", "supply-error", "codec-error", "supply-on-error", "speaker-error"):
             rows[case] = json.loads(subprocess.check_output([str(binary), case]))
         assert rows["quiet"]["sleeps"] > 0, "control must reach sleep"
         assert rows["vbus-error"]["sleeps"] == 0, "unknown USB power must veto sleep"
@@ -575,6 +578,7 @@ def main():
         assert rows["lit"]["sleeps"] > 0, "visible image must permit CPU sleep"
         assert rows["lit"]["l3b_on"], "visible LCD must retain its supply"
         assert rows["moving"]["main_runs"] >= 18, "keep motion sample cadence"
+        assert rows["queued-wake"]["main_runs"] >= 18, "queued wake must not wait for stale one-second deadline"
         assert rows["init-error"]["sleeps"] > 0, "retry transient setup failure"
         assert rows["sleep-error"]["sleeps"] > 0, "recover failed sleep entry"
         for case in ("sleep-reject", "sleep-short"):

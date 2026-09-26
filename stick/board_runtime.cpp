@@ -628,6 +628,11 @@ extern "C" void StickPortLoop(void) {
   // Resume at the current wall clock rather than replaying obsolete ticks.
   const uint64_t sample_period = sample_period_us();
   if (now > next_sample_us + sample_period) next_sample_us = now;
+  // A queued gesture or another foreground callback may have shortened the
+  // period before this loop began. Do not retain an inactive one-second
+  // deadline merely because the next poll observes the same short period.
+  if (StickInputWakeScanActive() && next_sample_us > now + sample_period)
+    next_sample_us = now + sample_period;
   if (now > next_input_us + 5000) next_input_us = now;
   if (now > next_beep_us + 8000) next_beep_us = now;
   if (now >= next_input_us) {
