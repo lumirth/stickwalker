@@ -92,10 +92,12 @@ Moving carry still processes at 16 Hz. No new battery-life number is claimed.
 M5Stack documents the PMIC IRQ output on ESP32 GPIO13, and its driver provides
 separate button, GPIO and system masks. An interrupt-assisted visible L input
 could avoid timer wake opportunities, then read/acknowledge the event over I2C.
-The PMIC's classified click events and minimum 125 ms configurable click delay
-must be distinguished from the raw pressed level and read-cleared latch at
-`0x48`. Button latency, release/hold handling, unrelated-event masking and the
-previous IRQ-mode LED behavior need verification before replacing this path.
+The single-click timing field offers a 125 ms minimum setting, but the
+documentation does not establish a universal 125 ms input or interrupt latency.
+Raw pressed level and read-cleared latch at `0x48` are separate. IRQ WAKEUP means
+power-on, and IRQ mode documents automatic LED flashing with the port's disabled
+reset/off actions. See [the subsequent primary-source timing review](pmic-button-timing-2026-09-27.md).
+Press/release timing and LED-off operation need verification before replacement.
 The current installation does not enable GPIO13 wake.
 
 [M5Stack IRQ wiring](https://docs.m5stack.com/en/arduino/m5sticks3/m5pm1),
