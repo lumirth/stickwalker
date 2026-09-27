@@ -106,32 +106,37 @@ int main(int argc,char **argv) {
 '''
 
 
+def input_headers():
+    headers = dict(HEADERS)
+    headers['Arduino.h'] = headers['Arduino.h'].replace(
+        'inline int digitalRead(int) { return 1; }',
+        'extern bool main_down, side_down;\n'
+        'inline int digitalRead(int pin) { return !(pin==11 ? main_down : side_down); }\n'
+        '#define INPUT_PULLUP 1\ninline void pinMode(int,int) {}')
+    headers['M5Unified.h'] = headers['M5Unified.h'].replace(
+        'unsigned transaction_depth = 0, unselected_commands = 0;',
+        'unsigned transaction_depth = 0, unselected_commands = 0, display_on_calls=0;')
+    headers['M5Unified.h'] = headers['M5Unified.h'].replace(
+        'if (command == 0x29) output_enabled = true;',
+        'if (command == 0x29) { output_enabled = true; ++display_on_calls; }')
+    headers['M5Unified.h'] = headers['M5Unified.h'].replace(
+        'uint8_t codec[256] = {};', 'uint8_t codec[256] = {}, pmic[256] = {};').replace(
+        '*value = address == 0x18 ? codec[reg] : 0; return true;',
+        '*value = address == 0x18 ? codec[reg] : pmic[reg]; return true;').replace(
+        '    if (address == 0x18) {',
+        '    if (address == 0x6e) pmic[reg]=value;\n    if (address == 0x18) {')
+    headers['M5Unified.h'] = headers['M5Unified.h'].replace(
+        '  bool writeRegister8(unsigned address',
+        '  bool writeRegister(unsigned address,unsigned reg,const uint8_t *value,unsigned,unsigned hz) {\n'
+        '    return writeRegister8(address,reg,*value,hz);\n  }\n'
+        '  bool writeRegister8(unsigned address')
+    return headers
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix='stickwalker-abandoned-wake-') as temp:
         folder = Path(temp)
-        headers = dict(HEADERS)
-        headers['Arduino.h'] = headers['Arduino.h'].replace(
-            'inline int digitalRead(int) { return 1; }',
-            'extern bool main_down, side_down;\n'
-            'inline int digitalRead(int pin) { return !(pin==11 ? main_down : side_down); }\n'
-            '#define INPUT_PULLUP 1\ninline void pinMode(int,int) {}')
-        headers['M5Unified.h'] = headers['M5Unified.h'].replace(
-            'unsigned transaction_depth = 0, unselected_commands = 0;',
-            'unsigned transaction_depth = 0, unselected_commands = 0, display_on_calls=0;')
-        headers['M5Unified.h'] = headers['M5Unified.h'].replace(
-            'if (command == 0x29) output_enabled = true;',
-            'if (command == 0x29) { output_enabled = true; ++display_on_calls; }')
-        headers['M5Unified.h'] = headers['M5Unified.h'].replace(
-            'uint8_t codec[256] = {};', 'uint8_t codec[256] = {}, pmic[256] = {};').replace(
-            '*value = address == 0x18 ? codec[reg] : 0; return true;',
-            '*value = address == 0x18 ? codec[reg] : pmic[reg]; return true;').replace(
-            '    if (address == 0x18) {',
-            '    if (address == 0x6e) pmic[reg]=value;\n    if (address == 0x18) {')
-        headers['M5Unified.h'] = headers['M5Unified.h'].replace(
-            '  bool writeRegister8(unsigned address',
-            '  bool writeRegister(unsigned address,unsigned reg,const uint8_t *value,unsigned,unsigned hz) {\n'
-            '    return writeRegister8(address,reg,*value,hz);\n  }\n'
-            '  bool writeRegister8(unsigned address')
+        headers = input_headers()
         for name, contents in headers.items():
             target = folder / name
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -189,7 +189,8 @@ instructions and requalify it with sealed traffic and complete exchanges.
   needs are in `stick/docs/power-source-research.md`.
 - The screen-off foreground now enters ESP32-S3 Light-sleep between the
   original 16 Hz walking samples or one-second inactive samples. M and R are
-  RTC GPIO wake sources; the PM1 side-key event is polled within 100 ms.
+  RTC GPIO wake sources in that initial implementation; the later M-only
+  screen-off policy below supersedes its dark-screen side-key polling.
   State, clock deadlines, and the original motion estimator stay in RAM.
   The receiver, sound playback, menus, and active gestures keep their normal
   timing. USB power suppresses automatic sleep because the USB Serial/JTAG
@@ -262,7 +263,10 @@ window; Center requires both buttons to remain pressed together for 20 ms
 after the second debounced press. Fleeting overlap while alternating directions
 produces direction taps. Once a direction has been emitted, a late second press
 cannot become Center until both buttons release. Short taps are queued for the
-next native input scan. The existing screen-wake gestures remain available.
+next native input scan. When the game screen is off, hold physical M for
+500 ms to wake, in every layout and orientation. L and R become usable after
+waking and releasing the keys; they cannot wake the dark screen or queue a
+later action. Open Stick Settings with the L gesture above after waking.
 
 In Stick settings, M moves to the next row, R changes that row, and L closes
 the menu. Settings include the four input layouts, either landscape rotation,
@@ -282,3 +286,12 @@ native image, border and Stick Settings and persists separately from native
 EEPROM. Native contrast continues to set backlight brightness. See the
 [display and settings notes](docs/device-settings-and-display.md) for the color
 pipeline, validation and physical calibration limits.
+
+## Current screen-off wake policy
+
+Physical M alone is the dark-screen EXT1 input. There is no PMIC L polling or
+100 ms side-key sleep cap in this mode; sleep ends at the next native work
+deadline or an M press. Moving/interactive 16 Hz and inactive/activity 1 Hz
+processing remain immediate, with original audio/IR ownership gaps. Deferred
+FIFO motion batching is declined. Visible game and device-overlay controls
+retain L responsiveness. See [implementation and verification](docs/m-only-wake-2026-09-27.md).

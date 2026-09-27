@@ -209,18 +209,23 @@ typedef int esp_err_t;
 #define ESP_EXT1_WAKEUP_ANY_LOW 0
 #define ESP_SLEEP_WAKEUP_TIMER 0
 #define ESP_SLEEP_WAKEUP_EXT1 1
-extern uint64_t clock_us, timer_duration_us;
+extern uint64_t clock_us, timer_duration_us, max_timer_us, wake_mask;
 extern unsigned completed_sleeps;
 extern bool sleep_start_failed;
 extern unsigned rtc_owned;
 extern int sleep_reject_once;
 inline int esp_sleep_pd_config(int, int) { return 0; }
-inline int esp_sleep_enable_ext1_wakeup_io(uint64_t, int) { return 0; }
+inline int esp_sleep_enable_ext1_wakeup_io(uint64_t pins, int) {
+  wake_mask |= pins; return 0;
+}
+inline int esp_sleep_disable_ext1_wakeup_io(uint64_t pins) {
+  wake_mask &= pins ? ~pins : 0; return 0;
+}
 inline int esp_sleep_enable_timer_wakeup(uint64_t duration) {
-  timer_duration_us = duration; return 0;
+  timer_duration_us = duration; if(duration>max_timer_us) max_timer_us=duration; return 0;
 }
 inline int esp_light_sleep_start() {
-  rtc_owned = 3; // EXT1 prepares the pads, including cancelled entries.
+  rtc_owned = unsigned(wake_mask >> 11); // EXT1 prepares selected pads even on cancellation.
   if (sleep_start_failed) { sleep_start_failed = false; return -2; }
   if (sleep_reject_once) { int result=sleep_reject_once; sleep_reject_once=0; return result; }
   clock_us += timer_duration_us; ++completed_sleeps; return 0;
@@ -287,7 +292,7 @@ HARNESS = r"""
 #include <cstdio>
 #include <cstring>
 #include <Preferences.h>
-uint64_t clock_us = 100000, timer_duration_us = 0;
+uint64_t clock_us = 100000, timer_duration_us = 0, max_timer_us = 0, wake_mask = 0;
 int serial_bytes = 0;
 bool sleep_init_failed = false, sleep_start_failed = false;
 int sleep_reject_once = 0;
@@ -299,7 +304,7 @@ bool lit_case = false, moving_case = false, supply_fault_once = false;
 bool supply_on_fault_once = false, speaker_begin_fault_once = false;
 bool speaker_tone_fault_once = false;
 bool ledc_timer_active = false, ledc_update_fault_once = false;
-bool menu_requested = false;
+bool menu_requested = false, menu_active = false;
 u8 input_layout = 0, input_orientation = 0, input_chord = 0;
 u8 menu_buttons = 0;
 unsigned completed_sleeps = 0;
@@ -360,10 +365,11 @@ void StickInputPoll(unsigned long) {
   assert(!rtc_owned && "physical switches must return to digital GPIO before polling");
 }
 int StickInputWakeScanActive() { return pending_wake_scan; }
+int StickInputMOnlyWake() { return !StickDisplayIsPowered() && !menu_active; }
 int StickMenuRequested() {
   bool requested=menu_requested; menu_requested=false; return requested;
 }
-void StickInputMenuMode(int) {}
+void StickInputMenuMode(int enabled) { menu_active=enabled; }
 u8 StickInputTakeMenuButtons() {
   u8 buttons=menu_buttons; menu_buttons=0; return buttons;
 }
@@ -405,6 +411,13 @@ int main(int argc, char **argv) {
               "\"lcd_sleep_calls\":%u,\"l3b_on\":%s,",
               setup_attempts, completed_sleeps, main_runs, serial_bytes, screen.brightness,
               screen.sleep_calls, power.levels[2] ? "true" : "false");
+  std::printf("\"max_sleep_timer_us\":%llu,\"wake_mask\":%llu,",
+              (unsigned long long)max_timer_us,(unsigned long long)wake_mask);
+  if (!lit_case && !pending_wake_scan && completed_sleeps) {
+    assert(wake_mask==(1ULL<<11));
+    if(!moving_case) assert(max_timer_us>500000);
+  }
+  if(lit_case) assert(wake_mask==((1ULL<<11)|(1ULL<<12)) && max_timer_us<=100000);
   if (argc>1 && (!strcmp(argv[1], "supply-on-error") ||
                   !strcmp(argv[1], "speaker-error"))) {
     supply_on_fault_once = !strcmp(argv[1], "supply-on-error");
@@ -557,6 +570,10 @@ int main(int argc, char **argv) {
   assert(screen.last_w==192 && screen.last_h==128);
   assert(screen.first_pixel==0xffff && StickDisplayBackground()==0xffff &&
          StickDisplayForeground()==0);
+  // Visible controls add R and restore bounded L polling. Closing Settings
+  // while the game is dark must remove R, not append M to an old EXT1 mask.
+  if (!vbus_fault && !sleep_init_failed && !pending_wake_scan)
+    assert(wake_mask==((1ULL<<11)|(1ULL<<12)));
   // An abandoned board overlay must relinquish the physical display without
   // waking a native screen whose own timeout has already expired.
   menu_requested=true;
@@ -566,6 +583,10 @@ int main(int argc, char **argv) {
   clock_us += 91000000;
   StickPortLoop(); StickDisplayPowerService();
   assert(!StickDisplayIsPowered() && !power.levels[2]);
+  until=clock_us+1100000;
+  while(clock_us<until) StickPortLoop();
+  if (!vbus_fault && !sleep_init_failed && !pending_wake_scan)
+    assert(wake_mask==(1ULL<<11));
   // Failed operations must not turn idle shutdown into a permanent lease.
   assert(StickBacklightInit(0));
   ledc_update_fault_once = true;
@@ -618,7 +639,7 @@ def main():
         assert rows["init-error"]["sleeps"] > 0, "retry transient setup failure"
         assert rows["sleep-error"]["sleeps"] > 0, "recover failed sleep entry"
         for case in ("sleep-reject", "sleep-short"):
-            assert rows[case]["sleeps"] >= 9, "ordinary rejection must not impose a one-second sleep veto"
+            assert rows[case]["sleeps"] == rows["quiet"]["sleeps"], "ordinary rejection must not impose a one-second sleep veto"
             assert rows[case]["setup_attempts"] == 1, "ordinary rejection must not reset wake configuration"
         assert rows["persistent-error"]["setup_attempts"] <= 3, "bound retry rate"
         assert rows["quiet"]["lcd_sleep_calls"] > 0

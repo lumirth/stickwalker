@@ -2,9 +2,9 @@
 """Exercise cold display restoration through bench-generated input holds.
 
 Runs awake on USB; never enables processor sleep or imports/erases a save.
-The M hold enters the physical-input polling path; Center enters the native
-scan path. These are software inputs, not verification of actual switches or
-panel appearance. Retain failure output and restore production afterward.
+The M hold enters the physical-input polling path. These are software inputs,
+not verification of actual switches or panel appearance. Dark L must be ignored; Settings is exercised after M wakes.
+Retain failure output and restore production afterward.
 """
 import argparse
 import json
@@ -46,12 +46,21 @@ def main():
             report['cases'].append(case)
             assert case['passed'], case
         for repeat in range(args.repeats):
-            for name, trigger in (('M hold', 'v'), ('Center hold', 'w'),
-                                  ('settings event', 'l')):
+            for name, trigger in (('M hold', 'v'), ('settings after M wake', 'l')):
                 link.command('zn', 1)
                 link.command('P', .15)
                 before = last(link.rows, 'PW_STICK_POWER_HW ')
                 assert 'panel_awake=0 ' in before and 'gpio_out=00 ' in before, before
+                if trigger == 'l':
+                    link.command('l', .3)
+                    link.command('Po', .1)
+                    dark = last(link.rows, 'PW_STICK_POWER_HW ')
+                    ignored = ('panel_awake=0 ' in dark and 'gpio_out=00 ' in dark
+                               and 'open=0 ' in last(link.rows, 'PW_STICK_DEVICE_MENU '))
+                    report['cases'].append({'repeat': repeat, 'input': 'dark L event',
+                                            'after': dark, 'passed': ignored})
+                    assert ignored, dark
+                    link.command('v', .85)  # Only M begins a physical wake.
                 link.collect(repeat * .037)
                 start = time.monotonic()
                 link.command(trigger, .9)

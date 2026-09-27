@@ -124,3 +124,11 @@ and audio hold should not be reworked merely because the rail can outlive a
 dark screen. Actual battery-terminal energy for stationary carry, moving carry
 and interactive use is still missing; the board has no documented current
 counter, and USB charging current does not substitute for battery-path current.
+
+## Subsequent policy decision
+
+Screen-off wake now uses physical M only, with no PMIC button polling or
+100 ms side-key timer cap. Visible controls retain the cap for L. Deferred FIFO
+motion batching is declined; preserve immediate native schedules and ownership
+gaps. This supersedes any batching recommendation above. See
+[the decision](../../docs/adr/0002-m-only-dark-wake.md).

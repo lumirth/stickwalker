@@ -22,6 +22,8 @@ u8 input_layout = 0;
 u8 input_orientation = 0;
 u8 chord_window_index = 0;
 bool menu_active = false;
+bool was_m_only_wake = false;
+bool discard_power_event = false;
 u8 sampled_raw = 0;
 u8 menu_candidate = 0, menu_stable = 0, menu_pending = 0;
 uint32_t menu_since_ms = 0, three_menu_since_ms = 0;
@@ -93,23 +95,65 @@ extern "C" void StickInputInit(void) {
 }
 
 extern "C" void StickInputPoll(unsigned long milliseconds) {
+  const bool main_pressed = digitalRead(11) == LOW
+#ifdef PW_STICK_BENCH_CONTROL
+                            || uint32_t(bench_main_until_ms - milliseconds) <
+                                   0x80000000u
+#endif
+                            ;
+  if (StickInputMOnlyWake()) {
+    if (!was_m_only_wake) {
+      controls.require_release();
+      previous_levels = menu_pending = 0;
+      three_menu_started = three_menu_sent = three_menu_requested = false;
+      power_event_requested = power_action_armed = false;
+      power_released_since_ms = front_wake_since_ms = 0;
+      front_wake_consuming = false;
+      discard_power_event = true;
+      was_m_only_wake = true;
+    }
+    // Do not poll the PMIC or deliver R/L while the game is dark. A retained
+    // L event is discarded on wake; it must not turn into a later menu press.
+    sampled_raw = main_pressed ? 1u : 0u;
+#ifdef PW_STICK_BENCH_CONTROL
+    main_edges += main_pressed && !(last_raw & 1u);
+    last_raw = sampled_raw;
+    bench_power_event = false;
+#endif
+    if (main_pressed) {
+      StickDisplayPrepareWake();
+      if (!front_wake_since_ms) front_wake_since_ms = uint32_t(milliseconds);
+      else if (uint32_t(milliseconds - front_wake_since_ms) >= 500) {
+        StickForegroundWakeDisplay();
+        controls.require_release();
+        front_wake_consuming = true;
+        front_wake_since_ms = 0;
+      }
+    } else {
+      front_wake_since_ms = 0;
+      StickDisplayCancelPreparedWake();
+    }
+    return;
+  }
+  was_m_only_wake = false;
   uint8_t power_state = 0;
   const bool power_read = power_button_ready && pm1_read(0x48, power_state);
   const bool power_pressed = power_read && (power_state & 1u);
   // BTN_Status bit 7 records a press until the register is read. A short
   // power-key tap can end between polls even when its event was captured.
-  const bool power_event = (power_read && (power_state & 0x80u))
+  const bool power_event = !discard_power_event && ((power_read && (power_state & 0x80u))
 #ifdef PW_STICK_BENCH_CONTROL
                            || bench_power_event
 #endif
-                           ;
+                           );
+  if (power_read) discard_power_event = false;
 #ifdef PW_STICK_BENCH_CONTROL
   bench_power_event = false;
 #endif
   // The PMIC may report several state/event changes during one physical tap.
   // Re-arm only after a quiet release, so it cannot open and close the menu
   // on the same gesture.
-  if (power_pressed || power_event) {
+  if (!power_read || power_pressed || power_event) {
     power_released_since_ms = 0;
   } else if (!power_released_since_ms) {
     power_released_since_ms = uint32_t(milliseconds);
@@ -119,22 +163,9 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
   const bool power_action = power_action_armed &&
                             (power_pressed || power_event);
   if (power_action) power_action_armed = false;
-  const bool main_pressed = digitalRead(11) == LOW
-#ifdef PW_STICK_BENCH_CONTROL
-                            || uint32_t(bench_main_until_ms - milliseconds) <
-                                   0x80000000u
-#endif
-                            ;
   const bool side_pressed = digitalRead(12) == LOW;
   sampled_raw = (main_pressed ? 1u : 0u) | (side_pressed ? 2u : 0u) |
                 (power_pressed ? 4u : 0u);
-  // Hardware restoration runs during the existing wake gesture. It neither
-  // lights the display nor changes native motion/input state before acceptance.
-  if (!StickDisplayIsPowered() && (main_pressed || power_action))
-    StickDisplayPrepareWake();
-  else if (!StickDisplayIsPowered() && !main_pressed && !side_pressed &&
-           !power_pressed)
-    StickDisplayCancelPreparedWake();
 #ifdef PW_STICK_BENCH_CONTROL
   const u8 raw = sampled_raw;
   main_edges += (raw & 1u) && !(last_raw & 1u);
@@ -171,22 +202,13 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
     return;
   }
   if (front_wake_consuming) {
-    if (!main_pressed && !side_pressed && !power_pressed)
+    if (!main_pressed && !side_pressed && !power_pressed &&
+        (!power_button_ready || power_read))
       front_wake_consuming = false;
+    // Feed quiet levels to release the debouncers after the wake gesture.
+    if (!front_wake_consuming)
+      controls.sample(uint32_t(milliseconds), false, false, false);
     return;
-  }
-  if (!StickDisplayIsPowered() && main_pressed && !side_pressed) {
-    if (!front_wake_since_ms) {
-      front_wake_since_ms = uint32_t(milliseconds);
-    } else if (uint32_t(milliseconds - front_wake_since_ms) >= 500) {
-      StickForegroundWakeDisplay();
-      controls.require_release();
-      front_wake_consuming = true;
-      front_wake_since_ms = 0;
-      return;
-    }
-  } else {
-    front_wake_since_ms = 0;
   }
   if (!input_profile && power_action) power_event_requested = true;
   if (input_profile && power_pressed) {
@@ -231,6 +253,7 @@ extern "C" u8 StickInputLevels(void) {
     return value;
   }
 #endif
+  if (StickInputMOnlyWake()) { previous_levels = 0; return 0; }
   const u8 value = controls.next_scan();
   if ((value & pw_stick::kCenter) &&
       !(previous_levels & pw_stick::kCenter))
@@ -250,7 +273,12 @@ extern "C" u8 StickInputLevels(void) {
   return value;
 }
 
+extern "C" int StickInputMOnlyWake(void) {
+  return !StickDisplayIsPowered() && !menu_active;
+}
+
 extern "C" int StickInputWakeScanActive(void) {
+  if (StickInputMOnlyWake()) return (sampled_raw & 1u) != 0;
   if (sampled_raw || !controls.idle() ||
       (power_button_ready && !power_action_armed)) return 1;
 #ifdef PW_STICK_BENCH_CONTROL

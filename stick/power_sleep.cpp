@@ -1,4 +1,5 @@
 #include "power_sleep.h"
+#include "input_bridge.h"
 
 #include <Arduino.h>
 #include <driver/gpio.h>
@@ -8,6 +9,7 @@
 
 namespace {
 bool ready = false;
+uint64_t configured_wake_pins = 0;
 uint64_t retry_begin_us = 0;
 uint64_t sleep_count = 0;
 uint64_t total_sleep_us = 0;
@@ -35,6 +37,24 @@ void record_failure(int error) {
   retained.failures = errors;
   retained.error = error;
 #endif
+}
+
+bool configure_button_wake() {
+  const uint64_t wake_pins = (1ULL << 11) |
+                            (StickInputMOnlyWake() ? 0 : (1ULL << 12));
+  if (configured_wake_pins == wake_pins) return true;
+  // enable_ext1_wakeup_io appends pins. Clear the old visible-screen mask
+  // before selecting M alone, or a dark-screen R press would still wake us.
+  esp_err_t error = esp_sleep_disable_ext1_wakeup_io(0);
+  if (error == ESP_OK)
+    error = esp_sleep_enable_ext1_wakeup_io(wake_pins, ESP_EXT1_WAKEUP_ANY_LOW);
+  if (error != ESP_OK) {
+    configured_wake_pins = 0;
+    record_failure(error);
+    return false;
+  }
+  configured_wake_pins = wake_pins;
+  return true;
 }
 
 bool restore_button_gpio() {
@@ -76,12 +96,9 @@ bool StickSleepBegin(void) {
   ready = false;
   retry_begin_us = uint64_t(esp_timer_get_time()) + 1000000;
   if (!restore_button_gpio()) return false;
-  const uint64_t wake_pins = (1ULL << 11) | (1ULL << 12);
   // The front buttons are RTC capable. Keep their pull-ups supplied during
   // light sleep so a released switch has a defined HIGH level at the RTC
-  // wake controller as well as at digitalRead(). The side PM1 button retains
-  // its press event; a 100 ms timer poll handles that input without changing
-  // the PM1 IRQ routing used by the established receiver build.
+  // wake controller as well as at digitalRead().
   for (auto pin : {GPIO_NUM_11, GPIO_NUM_12}) {
     const esp_err_t up = rtc_gpio_pullup_en(pin);
     const esp_err_t down = rtc_gpio_pulldown_dis(pin);
@@ -92,12 +109,12 @@ bool StickSleepBegin(void) {
   }
   const esp_err_t domain = esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH,
                                              ESP_PD_OPTION_ON);
-  const esp_err_t wake = esp_sleep_enable_ext1_wakeup_io(
-      wake_pins, ESP_EXT1_WAKEUP_ANY_LOW);
-  if (domain != ESP_OK || wake != ESP_OK) {
-    record_failure(domain != ESP_OK ? domain : wake);
+  if (domain != ESP_OK) {
+    record_failure(domain);
     return false;
   }
+  configured_wake_pins = 0;
+  if (!configure_button_wake()) return false;
   ready = true;
   return true;
 }
@@ -106,11 +123,17 @@ bool StickSleepUntil(uint64_t deadline_us) {
   const uint64_t now = uint64_t(esp_timer_get_time());
   if (!ready && (now < retry_begin_us || !StickSleepBegin())) return false;
   if (deadline_us <= now + 3000) return false;
-  // The side PM1 button is read from its latched register every 100 ms at
-  // most. Front buttons wake directly, without waiting for that timer.
+  if (!configure_button_wake()) {
+    ready = false;
+    retry_begin_us = now + 1000000;
+    return false;
+  }
+  const bool m_only = StickInputMOnlyWake();
+  // L remains responsive in the visible game/Settings. Dark operation has
+  // no side-button timer: wake only for M or the next native work deadline.
   uint64_t duration = deadline_us - now - 1000;
-  if (duration > 100000) duration = 100000;
-  if (digitalRead(11) == LOW || digitalRead(12) == LOW) return false;
+  if (!m_only && duration > 100000) duration = 100000;
+  if (digitalRead(11) == LOW || (!m_only && digitalRead(12) == LOW)) return false;
   const esp_err_t timer_result = esp_sleep_enable_timer_wakeup(duration);
   if (timer_result != ESP_OK) {
     record_failure(timer_result);

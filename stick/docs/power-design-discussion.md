@@ -269,6 +269,17 @@ then investigate lower-power sensing independently.
 [native step pacing](/Users/lu/Desktop/pw-release/pw/src/support/lib_common.c:625),
 [Bosch FIFO and ODR documentation](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi270-ds000.pdf).
 
+## Later decision: immediate motion and M-only dark wake
+
+The user subsequently declined deferred FIFO motion batching unless the
+original firmware used it. Keep immediate 1 Hz inactive/activity checks and
+16 Hz moving/interactive sampling, including the original audio/IR gaps. The
+batching discussion above records an earlier candidate, not an implementation
+mandate. Physical M alone begins the existing 500 ms screen-off wake; screen-off
+L/R do not poll, wake the CPU, prewarm the panel, or replay inputs after wake.
+Visible controls retain L responsiveness. See
+[the wake decision](../../docs/adr/0002-m-only-dark-wake.md).
+
 ## Proposed implementation sequence
 
 1. Complete idle LCD/audio/I2S/supply shutdown and fix the serial veto and
@@ -277,9 +288,9 @@ then investigate lower-power sensing independently.
    sleep between visible UI work with stable backlight PWM and immediate controls.
    Keep native rendering/game updates, skip identical physical transfers, and
    validate lower active clock settings outside the protected IR path.
-3. Introduce bounded FIFO motion batches with correct event ordering and explicit
-   native sound/IR ownership gaps. Start with existing sensor settings to isolate
-   scheduling correctness, then validate lower-power sensor configurations.
+3. Preserve immediate native motion processing and its ownership gaps. Evaluate
+   lower-power sensor configurations separately against walking accuracy; do not
+   implement deferred FIFO batching.
 4. Evaluate whole-device energy for representative heavier use, including idle-on
    screen tails. Compare against the month/two-week/one-week priorities with
    capacity headroom. The provisional six-to-eight-hour movement and 30–60-minute
@@ -308,9 +319,9 @@ issues; achieved lifetime requires subsequent hardware current/energy evidence.
    loss; no unconditional acceptance of a particular batching design is inferred.
    - Native sampling gaps settled: preserve gaps where the original leaves
      them, particularly sound/IR ownership. Ordinary menu/game sampling continues.
-     Batching must not add losses at wake or transitions, nor retrospectively
-     credit samples from native excluded intervals.
-   - Engineering work: batch duration, sensor configuration, retained Light-sleep
+     Deferred FIFO batching was subsequently declined; samples remain immediately
+     processed on the existing schedules.
+   - Engineering work: sensor configuration, retained Light-sleep
      and any necessary checkpoint-based deep sleep, assessed against the settled
      experience and energy constraints.
 
