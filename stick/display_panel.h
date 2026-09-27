@@ -17,6 +17,8 @@ void StickDisplayPanelSetContrastDelta(unsigned delta);
 int StickDisplayPresent(void);
 void StickDisplayPowerService(void);
 void StickDisplayPrepareWake(void);
+/* Abandoned physical gesture; never cancels a visible game or settings screen. */
+void StickDisplayCancelPreparedWake(void);
 int StickDisplayPanelIsReady(void);
 uint64_t StickDisplayNextDeadline(void);
 /* Call after an overlay or external drawing replaces the physical image. */

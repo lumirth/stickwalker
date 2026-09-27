@@ -36,6 +36,7 @@ int64_t can_sleep_us = 0;
 unsigned wake_stage = 0;
 int64_t wake_deadline_us = 0;
 int64_t prewarm_until_us = 0;
+bool reset_required = false;
 
 }  // namespace
 
@@ -96,8 +97,14 @@ extern "C" void StickDisplayPrepareWake(void) {
   if (!screen) return;
   prewarm_until_us = esp_timer_get_time() + 750000;
   if (panel_awake || wake_stage) return;
-  if (!StickPeripheralAcquire(StickPeripheral::Display)) return;
-  if (panel_generation != StickPeripheralGeneration()) {
+  if (!StickPeripheralAcquire(StickPeripheral::Display)) {
+    // Acquire records ownership before the PMIC write. A failed request must
+    // not leave a deferred rail-on claim after the gesture is abandoned.
+    StickPeripheralRelease(StickPeripheral::Display);
+    return;
+  }
+  if (reset_required || panel_generation != StickPeripheralGeneration()) {
+    reset_required = true;
     StickBoardDisplayReset(false);
     wake_stage = 1;
     wake_deadline_us = esp_timer_get_time() + 8000;
@@ -108,6 +115,26 @@ extern "C" void StickDisplayPrepareWake(void) {
     wake_stage = 3;
     wake_deadline_us = esp_timer_get_time() + 130000;
   }
+}
+
+extern "C" void StickDisplayCancelPreparedWake(void) {
+  if (backlight_on) return;
+  prewarm_until_us = 0;
+  if (wake_stage == 1 || wake_stage == 2) {
+    // Reset preparation has not issued Sleep-out. Abort now, and remember
+    // that reset lost controller state even if audio keeps the rail powered.
+    StickBoardDisplayReset(false);
+    reset_required = true;
+    wake_stage = 0;
+    StickBoardScreen()->getPanel()->releaseBus();
+    StickBacklightSuspend();
+    panel_awake = false;
+    StickPeripheralRelease(StickPeripheral::Display);
+    return;
+  }
+  // A started Sleep-out must finish its 130 ms wait before Sleep-in. The
+  // service below will skip Display-on once this preparation lease is gone.
+  StickDisplayPowerService();
 }
 
 extern "C" void StickDisplayPowerService(void) {
@@ -129,24 +156,30 @@ extern "C" void StickDisplayPowerService(void) {
       wake_stage = 3;
       wake_deadline_us = esp_timer_get_time() + 130000;
     } else {
-      // writeCommand forwards bytes without selecting the panel. Match the
-      // driver's sleep/wakeup transactions so these commands reach the LCD.
-      screen->startWrite();
-      screen->writeCommand(0x38);  // IDMOFF
-      screen->writeCommand(0x29);  // DISPON
-      screen->endWrite();
-      if (panel_generation != StickPeripheralGeneration()) {
-        screen->setSwapBytes(true);
-        screen->invertDisplay(screen->getPanel()->getInvert());
-        screen->setColorDepth(16);
-        screen->setRotation(orientation);
-        screen->fillScreen(StickDisplayBackground());
-        panel_generation = StickPeripheralGeneration();
-        image_valid = false;
+      if (!backlight_on && now >= prewarm_until_us) {
+        wake_stage = 0;
+        panel_awake = true;  // Sleep-out completed; Sleep-in is now legal.
+      } else {
+        // writeCommand forwards bytes without selecting the panel. Match the
+        // driver's sleep/wakeup transactions so these commands reach the LCD.
+        screen->startWrite();
+        screen->writeCommand(0x38);  // IDMOFF
+        screen->writeCommand(0x29);  // DISPON
+        screen->endWrite();
+        if (reset_required || panel_generation != StickPeripheralGeneration()) {
+          screen->setSwapBytes(true);
+          screen->invertDisplay(screen->getPanel()->getInvert());
+          screen->setColorDepth(16);
+          screen->setRotation(orientation);
+          screen->fillScreen(StickDisplayBackground());
+          panel_generation = StickPeripheralGeneration();
+          reset_required = false;
+          image_valid = false;
+        }
+        wake_stage = 0;
+        panel_awake = true;
+        screen->setBrightness(backlight_on ? backlight_level : 0);
       }
-      wake_stage = 0;
-      panel_awake = true;
-      screen->setBrightness(backlight_on ? backlight_level : 0);
     }
   }
   if (!wake_stage && !backlight_on && panel_awake &&

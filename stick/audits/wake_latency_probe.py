@@ -22,13 +22,29 @@ def main():
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--lcd-readback', action='store_true',
                         help='Require the ST7789P3 output-on and sleep-out bits')
+    parser.add_argument('--abandoned-taps', type=int, default=0,
+                        help='Check software-generated 40 ms M taps before valid holds')
     args = parser.parse_args()
     assert 1 <= args.repeats <= 20
+    assert 0 <= args.abandoned_taps <= 20
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report = {'passed': False, 'cases': [], 'software_inputs': True}
     link = Link(args.port)
     try:
         link.collect(2)
+        for repeat in range(args.abandoned_taps):
+            link.command('zn', 1)
+            link.command('P', .1)
+            before = last(link.rows, 'PW_STICK_POWER_HW ')
+            assert 'panel_awake=0 ' in before and 'gpio_out=00 ' in before, before
+            link.command('V', .2)
+            link.command('P', .1)
+            after = last(link.rows, 'PW_STICK_POWER_HW ')
+            case = {'repeat': repeat, 'input': 'abandoned M tap',
+                    'before': before, 'after': after}
+            case['passed'] = 'panel_awake=0 ' in after and 'gpio_out=00 ' in after
+            report['cases'].append(case)
+            assert case['passed'], case
         for repeat in range(args.repeats):
             for name, trigger in (('M hold', 'v'), ('Center hold', 'w'),
                                   ('settings event', 'l')):

@@ -132,6 +132,9 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
   // lights the display nor changes native motion/input state before acceptance.
   if (!StickDisplayIsPowered() && (main_pressed || power_action))
     StickDisplayPrepareWake();
+  else if (!StickDisplayIsPowered() && !main_pressed && !side_pressed &&
+           !power_pressed)
+    StickDisplayCancelPreparedWake();
 #ifdef PW_STICK_BENCH_CONTROL
   const u8 raw = sampled_raw;
   main_edges += (raw & 1u) && !(last_raw & 1u);

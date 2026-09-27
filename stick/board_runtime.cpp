@@ -654,6 +654,10 @@ extern "C" void StickPortLoop(void) {
       StickInputBenchMainHold(650);
       Serial.println("PW_STICK_BENCH_MAIN_HOLD");
     }
+    if (command == 'V' && !StickForegroundIsIr()) {
+      StickInputBenchMainHold(40);  // Abandon preparation before wake acceptance.
+      Serial.println("PW_STICK_BENCH_MAIN_TAP");
+    }
     if (command == 'l' && !StickForegroundIsIr()) {
       StickInputBenchPowerEvent();
       Serial.println("PW_STICK_BENCH_POWER_EVENT");

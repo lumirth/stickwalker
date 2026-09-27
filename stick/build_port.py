@@ -65,7 +65,7 @@ def build(verbose: bool, bench_control: bool) -> None:
     flags += " ".join(f"-I{path}" for path in includes)
     command = [
         str(CLI), "--config-file", str(CONFIG), "compile",
-        "--fqbn", "m5stack:esp32:m5stack_sticks3",
+        "--fqbn", "m5stack:esp32:m5stack_sticks3:PSRAM=opi",
         "--output-dir", str(OUTPUT),
         "--build-property", f"compiler.c.extra_flags={flags}",
         "--build-property", f"compiler.cpp.extra_flags={flags}",
