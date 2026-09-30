@@ -72,3 +72,22 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Stickwalker runtime
+
+The Stick build uses M5Stack's ESP32 board package **3.3.9**,
+[M5Unified 0.2.21](https://github.com/m5stack/M5Unified/tree/0.2.21) and
+[M5GFX 0.2.29](https://github.com/m5stack/M5GFX/tree/0.2.29).
+The two M5 libraries use MIT; their full notices are retained in
+[`stick/licenses/`](../stick/licenses/). The Arduino ESP32 core contains
+LGPL-2.1-or-later material, and its underlying ESP-IDF, precompiled libraries
+and components retain their own terms. These runtime libraries are downloaded
+separately and are outside this project's CC0 dedication. See the pinned
+[M5 board package](https://github.com/m5stack/arduino-esp32) and
+[ESP-IDF license](https://github.com/espressif/esp-idf/blob/v5.5/LICENSE).
+
+The candidate firmware archive is a local qualification artifact. Before
+public binary distribution, assemble the linked runtime's applicable notices,
+corresponding source and relinking materials; the source archive alone does not
+contain the Arduino/ESP-IDF dependency sources or application object files.
+[Release qualification](../stick/docs/release.md) tracks this packaging gate.

@@ -64,11 +64,11 @@ are different, so these are scale estimates. `SLPIN` stops the converter,
 oscillator, and scanning while retaining display RAM. See pp. 34 and 143 of the
 [ST7789P3 datasheet](https://files.waveshare.com/wiki/ESP32-S3-GEEK/ST7789P3.pdf).
 
-Sources: [display bus](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/display_bus.cpp:23),
-[panel adapter](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/display_panel.cpp:52),
-[original display shutdown](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/src/application/pw_nt7508.c:430),
-[ST7789 initialization](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5GFX/src/lgfx/v1/panel/Panel_ST7789.hpp:79),
-[LCD sleep method](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5GFX/src/lgfx/v1/panel/Panel_LCD.cpp:101).
+Sources: [display bus](../display_bus.cpp),
+[panel adapter](../display_panel.cpp),
+[original display shutdown](../../src/application/pw_nt7508.c),
+[ST7789 initialization](https://github.com/m5stack/M5GFX/blob/0.2.29/src/lgfx/v1/panel/Panel_ST7789.hpp#L79),
+[LCD sleep method](https://github.com/m5stack/M5GFX/blob/0.2.29/src/lgfx/v1/panel/Panel_LCD.cpp#L101).
 
 ### 2. Shared peripheral power stays on — major confirmed defect
 
@@ -86,7 +86,7 @@ loads below; it is not an additional current to add on top of those loads.
 [M5Stack power switching documentation](https://docs.m5stack.com/en/arduino/m5sticks3/m5pm1),
 [StickS3 schematic, sheets 2–3](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/K150_Stick_S3_PRJ_V0.6_20251111_2025_11_17_16_10_24.pdf).
 
-Source: [peripheral rail initialization](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_hal.cpp:59).
+Source: [peripheral rail initialization](../board_hal.cpp).
 
 ### 3. The codec is never suspended after a sound — major confirmed defect
 
@@ -108,10 +108,10 @@ Espressif's codec driver performs a multi-register suspend sequence separately
 from disabling the amplifier; the port does neither codec suspend nor rail
 removal. [Espressif ES8311 driver](https://github.com/espressif/esp-adf/blob/release/v2.x/components/esp_codec_dev/device/es8311/es8311.c).
 
-Sources: [codec/amp power](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/sound_bridge.cpp:52),
-[output stop](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/sound_bridge.cpp:83),
-[score completion](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/sound_bridge.cpp:147),
-[IR quiescence and hold expiry](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/sound_bridge.cpp:227).
+Sources: [codec/amp power](../sound_bridge.cpp),
+[output stop](../sound_bridge.cpp),
+[score completion](../sound_bridge.cpp),
+[IR quiescence and hold expiry](../sound_bridge.cpp).
 
 ### 4. Silent I2S output survives normal score completion — confirmed defect
 
@@ -131,13 +131,13 @@ gates the ESP's digital clocks, so this is not a claim of 345 wakeups/s during
 sleep. It adds unnecessary work and keeps the codec clocked during awake
 intervals. IR entry closes I2S but still does not suspend the codec.
 
-Sources: [audio setup](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/sound_bridge.cpp:94),
-[normal completion](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/sound_bridge.cpp:147),
-[IR teardown](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/sound_bridge.cpp:227),
-local speaker [idle path](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5Unified/src/utility/Speaker_Class.cpp:599),
-[task exit](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5Unified/src/utility/Speaker_Class.cpp:997),
-[end method](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5Unified/src/utility/Speaker_Class.cpp:1069),
-[stop method](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5Unified/src/utility/Speaker_Class.cpp:1105).
+Sources: [audio setup](../sound_bridge.cpp),
+[normal completion](../sound_bridge.cpp),
+[IR teardown](../sound_bridge.cpp),
+local speaker [idle path](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/Speaker_Class.cpp#L599),
+[task exit](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/Speaker_Class.cpp#L997),
+[end method](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/Speaker_Class.cpp#L1069),
+[stop method](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/Speaker_Class.cpp#L1105).
 [Espressif I2S transport and power management](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/peripherals/i2s.html).
 
 ### 5. The unused microphone is continuously powered — small confirmed load
@@ -166,10 +166,10 @@ Rate/filter changes need to preserve the original motion algorithm's scale,
 timing, and bandwidth rather than substituting the hardware step counter.
 [BMI270 datasheet, pp. 11, 26, 100](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi270-ds000.pdf).
 
-Sources: [sensor initialization](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_hal.cpp:50),
-[BMA150 seam](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/accel_bridge.cpp:38),
-local BMI270 [startup](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5Unified/src/utility/imu/BMI270_Class.cpp:48)
-and [power configuration](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5Unified/src/utility/imu/BMI270_Class.cpp:89).
+Sources: [sensor initialization](../board_hal.cpp),
+[BMA150 seam](../accel_bridge.cpp),
+local BMI270 [startup](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/imu/BMI270_Class.cpp#L48)
+and [power configuration](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/imu/BMI270_Class.cpp#L89).
 
 ## CPU and wake overhead
 
@@ -193,12 +193,12 @@ but does not automatically place the processor in a low-power state. Explicit
 manual Light-sleep still works with that configuration. If it is vetoed,
 the program spends the day running its normal 1 ms loop and 5 ms input polls.
 
-Sources: [sample cadence](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:54),
-[CPU setup](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:140),
-[input polling](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:503),
-[sleep policy](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:597),
-[sleep duration cap](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/power_sleep.cpp:45),
-[SDK configuration](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-data/packages/m5stack/tools/esp32s3-libs/3.3.9/qio_opi/include/sdkconfig.h:821).
+Sources: [sample cadence](../board_runtime.cpp),
+[CPU setup](../board_runtime.cpp),
+[input polling](../board_runtime.cpp),
+[sleep policy](../board_runtime.cpp),
+[sleep duration cap](../power_sleep.cpp),
+SDK configuration (local evidence: `bench/.tools/arduino-data/packages/m5stack/tools/esp32s3-libs/3.3.9/qio_opi/include/sdkconfig.h`).
 
 ### 8. More retained state than necessary — smaller remaining opportunities
 
@@ -227,11 +227,11 @@ Sources: [sample cadence](/Users/lu/Desktop/stick-s3-capability-investigation/pw
 
 [ESP-IDF retained domains and flash behavior](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/system/sleep_modes.html),
 [RMT power management](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/peripherals/rmt.html).
-Sources: [RTC retention](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/power_sleep.cpp:35),
-[TX resource initialization](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/ir_tx.cpp:25),
-[RX cleanup](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/ir_transport.cpp:382),
-[PWM duty implementation](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5GFX/src/lgfx/v1/platforms/esp32/Light_PWM.cpp:120),
-[PMIC idle-sleep disable](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5Unified/src/utility/power/M5PM1_Class.cpp:66).
+Sources: [RTC retention](../power_sleep.cpp),
+[TX resource initialization](../ir_tx.cpp),
+[RX cleanup](../ir_transport.cpp),
+[PWM duty implementation](https://github.com/m5stack/M5GFX/blob/0.2.29/src/lgfx/v1/platforms/esp32/Light_PWM.cpp#L120),
+[PMIC idle-sleep disable](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/power/M5PM1_Class.cpp#L66).
 
 ## Conditions that can remove CPU sleep entirely
 
@@ -246,11 +246,11 @@ weak serial event hook does not consume it; the port implements no handler.
 This is a plausible additional failure mode after using a host serial tool,
 but there is no evidence that it occurred on this particular battery run.
 
-Sources: [serial initialization](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:141),
-[bench-only receive loop](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:210),
-[production sleep veto](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:597),
-[USB queued-byte count](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-data/packages/m5stack/hardware/esp32/3.3.9/cores/esp32/HWCDC.cpp:683),
-[weak serial hook](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-data/packages/m5stack/hardware/esp32/3.3.9/cores/esp32/HardwareSerial.cpp:89).
+Sources: [serial initialization](../board_runtime.cpp),
+[bench-only receive loop](../board_runtime.cpp),
+[production sleep veto](../board_runtime.cpp),
+USB queued-byte count (local evidence: `bench/.tools/arduino-data/packages/m5stack/hardware/esp32/3.3.9/cores/esp32/HWCDC.cpp`),
+weak serial hook (local evidence: `bench/.tools/arduino-data/packages/m5stack/hardware/esp32/3.3.9/cores/esp32/HardwareSerial.cpp`).
 
 ### 10. Sleep failure is silently tolerated — confirmed robustness defect
 
@@ -261,10 +261,10 @@ from production. A dark screen therefore provides no evidence that sleep
 actually works. The code needs recovery and a usable failure indication.
 
 This is an identified failure path, not a claim that initialization failed on
-the user's device. Sources: [ignored setup result](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:154),
-[runtime fallback](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:617),
-[driver initialization](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/power_sleep.cpp:22),
-[driver error path](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/power_sleep.cpp:61).
+the user's device. Sources: [ignored setup result](../board_runtime.cpp),
+[runtime fallback](../board_runtime.cpp),
+[driver initialization](../power_sleep.cpp),
+[driver error path](../power_sleep.cpp).
 
 ### 11. Settings, held inputs, sound, and Connect keep the CPU awake
 
@@ -282,12 +282,12 @@ the user's device. Sources: [ignored setup result](/Users/lu/Desktop/stick-s3-ca
   normally happens on external power and is not itself battery-only drain;
   unplugging is detected within the background VBUS polling path.
 
-Sources: [overlay rendering](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:100),
-[IR foreground](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:467),
-[overlay controls](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:519),
-[sound and sleep policy](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:579),
-[PMIC re-arm](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/input_bridge.cpp:109),
-[gesture wake condition](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/input_bridge.cpp:243).
+Sources: [overlay rendering](../board_runtime.cpp),
+[IR foreground](../board_runtime.cpp),
+[overlay controls](../board_runtime.cpp),
+[sound and sleep policy](../board_runtime.cpp),
+[PMIC re-arm](../input_bridge.cpp),
+[gesture wake condition](../input_bridge.cpp).
 
 ## Checked contributors that do not explain the persistent drain
 
@@ -349,7 +349,7 @@ credible primary explanations for the present sub-day behavior.
 ## Reproduction without the device
 
 Run `python3 stick/audits/idle_power_trace.py` from the port root. The
-[probe source](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/audits/idle_power_trace.py)
+[probe source](../audits/idle_power_trace.py)
 compiles the
 actual production runtime, virtual display bus, panel adapter, sound adapter,
 and sleep scheduler unchanged against small hardware/foreground stubs.

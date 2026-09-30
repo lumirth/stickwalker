@@ -17,7 +17,7 @@ and achieved lifetime remain open. See [the implementation record](power-lifecyc
   hardware setting. Aggressively shortened screen availability is not a way to
   obtain a favorable battery claim.
 - The existing device and placement are the working hardware.
-- This discussion follows the [battery audit](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/docs/battery-life-audit-2026-09-26.md).
+- This discussion follows the [battery audit](battery-life-audit-2026-09-26.md).
 
 ## Refresh: three different operations
 
@@ -36,12 +36,12 @@ and achieved lifetime remain open. See [the implementation record](power-lifecyc
    scan rate. The ST7789P3 normal-mode table offers rates down to 39 Hz, with
    visual quality and actual savings still to establish.
 
-Sources: [native RTC refresh](/Users/lu/Desktop/pw-release/pw/src/application/pw_rtc.c:207),
-[native render dispatch](/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c:587),
-[port presentation gate](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:127),
-[port frame expansion](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/display_panel.cpp:68),
-[original fallback initialization](/Users/lu/Desktop/pw-release/pw/src/application/pw_nt7508.c:970),
-[local TFT initialization](/Users/lu/Desktop/stick-s3-capability-investigation/bench/.tools/arduino-user/libraries/M5GFX/src/lgfx/v1/panel/Panel_ST7789.hpp:66),
+Sources: native RTC refresh (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_rtc.c`),
+native render dispatch (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c`),
+[port presentation gate](../board_runtime.cpp),
+[port frame expansion](../display_panel.cpp),
+original fallback initialization (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_nt7508.c`),
+[local TFT initialization](https://github.com/m5stack/M5GFX/blob/0.2.29/src/lgfx/v1/panel/Panel_ST7789.hpp#L66),
 [NT7508 datasheet, pp. 39, 46, 48–49](https://www.orientdisplay.com/wp-content/uploads/2022/08/NT7508_V1.0.pdf),
 [ST7789P3 datasheet, pp. 244–245](https://files.waveshare.com/wiki/ESP32-S3-GEEK/ST7789P3.pdf).
 
@@ -51,8 +51,8 @@ Settings overlay had no inactivity timeout. The new candidate closes that
 additional overlay after 90 seconds without an input, returning to the native
 screen state without waking an expired display. Ten brief checks can therefore
 cost many minutes of lit-screen operation, beyond the time spent pressing buttons.
-[Native timeout constants](/Users/lu/Desktop/pw-release/pw/include/application/pw_power.h:6),
-[button timeout reset](/Users/lu/Desktop/pw-release/pw/src/application/pw_player_input.c:87).
+Native timeout constants (local evidence: `/Users/lu/Desktop/pw-release/pw/include/application/pw_power.h`),
+button timeout reset (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_player_input.c`).
 
 These values are native countdown policy rather than unconditional wall-clock
 cutoffs. A held level does not refresh the countdown repeatedly; a new edge
@@ -63,9 +63,9 @@ the display countdown. The original has no progressive dimming stage.
 Wake recognition is also native behavior: the center hold takes eight native
 input scans before entering interactive mode. Power saving should not add a
 second deliberate hold or change that gesture's meaning.
-[Native display shutdown](/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c:583),
-[native sound foreground](/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c:628),
-[native center hold](/Users/lu/Desktop/pw-release/pw/src/application/pw_player_input.c:95).
+Native display shutdown (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c`),
+native sound foreground (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c`),
+native center hold (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_player_input.c`).
 
 The user clarified that fidelity means faithfully recreating the experience,
 not adherence to exact numbers on different chips. Source timings provide a
@@ -78,7 +78,7 @@ An existing visual deviation also needs to remain explicit: virtual connection
 bank changes are retained, but the port does not upload them during IR reception.
 The physical connection animation therefore freezes. Restoring it requires
 safe presentation scheduling around the receiver and reply deadlines.
-[IR foreground branch](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:467).
+[IR foreground branch](../board_runtime.cpp).
 
 ## Candidate improvements
 
@@ -107,7 +107,7 @@ remain continuously awake. ESP-IDF supports continuing backlight PWM during
 Light-sleep using a compatible clock and keep-alive configuration, at some
 extra sleep current. It is not safe simply to remove the display predicate:
 the existing PWM configuration stops output during sleep.
-[Current sleep policy](/Users/lu/Desktop/stick-s3-capability-investigation/pw-stick-s3/stick/board_runtime.cpp:597),
+[Current sleep policy](../board_runtime.cpp),
 [LEDC clock and sleep behavior](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/peripherals/ledc.html).
 
 The ULP coprocessor is not an automatic replacement for the main sensor reader.
@@ -130,9 +130,9 @@ interaction gap. See [the motion ownership decision](../../docs/adr/0001-preserv
 BMI270 hardware rates do not include exactly 16 Hz, so blindly feeding all
 FIFO records changes the estimator's temporal scale. Low-power filtering
 also needs validation against the required signal bandwidth.
-[Native MainTick](/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c:553),
-[native motion processing](/Users/lu/Desktop/pw-release/pw/src/application/pw_pedometer.c:59),
-[native RTC dispatch](/Users/lu/Desktop/pw-release/pw/src/application/pw_rtc.c:22),
+Native MainTick (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c`),
+native motion processing (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_pedometer.c`),
+native RTC dispatch (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_rtc.c`),
 [BMI270 FIFO and sensor-time documentation](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi270-ds000.pdf).
 
 ## Battery budgets
@@ -264,9 +264,9 @@ before metadata and safety margin: about 2.9 seconds at the current 100 Hz or
 would confound sensor-input changes with scheduling changes. A conservative
 candidate would first keep the existing sensor mode and use short batches,
 then investigate lower-power sensing independently.
-[Native capture/input/FFT order](/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c:558),
-[native input ring reset](/Users/lu/Desktop/pw-release/pw/src/application/pw_player_input.c:87),
-[native step pacing](/Users/lu/Desktop/pw-release/pw/src/support/lib_common.c:625),
+Native capture/input/FFT order (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_main.c`),
+native input ring reset (local evidence: `/Users/lu/Desktop/pw-release/pw/src/application/pw_player_input.c`),
+native step pacing (local evidence: `/Users/lu/Desktop/pw-release/pw/src/support/lib_common.c`),
 [Bosch FIFO and ODR documentation](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi270-ds000.pdf).
 
 ## Later decision: immediate motion and M-only dark wake

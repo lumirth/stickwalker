@@ -1,0 +1,18 @@
+{
+  "reference_app_sha256": "5e29d017a468958a07f74da98e4d60602f1e8a28530a742ee5f1bd81631b6c43",
+  "reference_commit": "d7298fb",
+  "functions": {
+    "measure_ir_gate": {
+      "bytes": 247,
+      "sha256": "27287860503e81b64e854db6b8df96c791ef399b2bb49eece6b673ee70c8c21d"
+    },
+    "aligned_next": {
+      "bytes": 95,
+      "sha256": "b15e5c4bdc7d67cc228e7812ece6d65995b7d8cf8dabe4dee8de44dc6e711744"
+    },
+    "run_gate_segment": {
+      "bytes": 499,
+      "sha256": "b5d17417963997781a73b50e74229c584083193cd8a456650a8e489c0b2f7bbd"
+    }
+  }
+}

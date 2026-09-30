@@ -109,8 +109,7 @@ int main(int argc,char **argv) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--hgss', type=Path,
-                        default=Path('/Users/lu/Downloads/PokemonHGSS_Source_Code/pokemon_gs 2'))
+    parser.add_argument('--hgss', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     report = {'passed': False, 'cases': []}
@@ -136,8 +135,13 @@ def main():
         (folder / 'native.c').write_text(NATIVE.replace(
             'SOUND_BYTES', ','.join(str(x) for x in archive)))
         (folder / 'trace.cpp').write_text(HARNESS)
+        import json
+        sys.path.insert(0, str(ROOT))
+        from tools.assets import generate
+        generated, _ = generate(ROOT, json.loads((ROOT / 'config/artwork.json').read_text()))
+        (folder / 'rom_assets.h').write_bytes(generated)
         flags = ['-DPW_STICK_S3', f'-I{folder}', f'-I{ROOT / "include"}',
-                 f'-I{ROOT / "stick"}', f'-I{ROOT}', f'-I{ROOT / "build/6.02.02"}']
+                 f'-I{ROOT / "stick"}', f'-I{ROOT}']
         objects = []
         for i, source in enumerate([folder / 'native.c',
                 ROOT / 'src/application/pw_buzzer.c',
