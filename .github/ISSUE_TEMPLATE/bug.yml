@@ -11,12 +11,12 @@ body:
   - type: textarea
     id: setup
     attributes:
-      label: Firmware and setup
-      description: Include the commit or app hash, USB or battery power, and input layout/rotation. For IR, include the peer/game, distance and orientation.
+      label: Version and setup
+      description: Which release or custom build are you using? Is USB connected? For button problems, include the layout and rotation; for connection problems, include the game, distance and alignment.
     validations:
       required: true
   - type: textarea
     id: evidence
     attributes:
-      label: Relevant logs and trials
-      description: Include failed attempts and say whether inputs were physical or generated. Keep flash backups, EEPROM images, ROMs and extracted artwork local.
+      label: Screenshots or logs
+      description: Attach anything that helps explain the problem, if available. Keep full flash and EEPROM backups private because they contain your game data.

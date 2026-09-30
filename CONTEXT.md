@@ -16,6 +16,6 @@ changing the scheduler or interpreting validation results.
 | Interactive use | Viewing or controlling the UI, including idle-on time after the last action. |
 | Native screen availability | The original rules for waking, remaining visible and turning the display off, with foreground-specific exceptions. |
 | Motion processing equivalence | Agreement in native motion/game results from the same chronological samples, external events and initial state. This detects scheduling regressions. |
-| Motion accuracy | Agreement between detected steps and actual walking, affected by sensor input and the estimator. Processing equivalence alone does not establish it. |
+| Motion accuracy | Agreement between detected steps and actual walking, measured on hardware and affected by sensor input, carrying position and the estimator. |
 | Native sampling gap | An interval where sound or IR owns foreground execution and shared state, suspending native motion sampling. Ordinary menus and games continue sampling. |
 | IR session | A native protocol exchange with its peer, retaining foreground ownership and timing requirements. |

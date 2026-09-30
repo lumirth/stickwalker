@@ -22,7 +22,7 @@ Renesas HEW device-register template. It identifies itself as **H8/38602 Series
 Include File, Ver 2.1**, with the marker **HEW_2006.10.05**. It provides the
 memory-mapped register declarations used by the firmware.
 
-This vendor template is outside the project's CC0 dedication. Its existing
+This vendor template is outside the project's MIT license. Its existing
 identification is retained in the file, and automated formatting and line-ending
 conversion exclude it. The retained file contains no standalone license grant;
 the project adds no license grant over Renesas's material.
@@ -81,13 +81,21 @@ The Stick build uses M5Stack's ESP32 board package **3.3.9**,
 The two M5 libraries use MIT; their full notices are retained in
 [`stick/licenses/`](../stick/licenses/). The Arduino ESP32 core contains
 LGPL-2.1-or-later material, and its underlying ESP-IDF, precompiled libraries
-and components retain their own terms. These runtime libraries are downloaded
-separately and are outside this project's CC0 dedication. See the pinned
-[M5 board package](https://github.com/m5stack/arduino-esp32) and
-[ESP-IDF license](https://github.com/espressif/esp-idf/blob/v5.5/LICENSE).
+and components retain their own terms. These components retain their own licenses alongside Stickwalker's MIT license.
 
-The candidate firmware archive is a local qualification artifact. Before
-public binary distribution, assemble the linked runtime's applicable notices,
-corresponding source and relinking materials; the source archive alone does not
-contain the Arduino/ESP-IDF dependency sources or application object files.
-[Release qualification](../stick/docs/release.md) tracks this packaging gate.
+Each firmware release includes a runtime archive with the exact application
+objects, Arduino core archive, linked SDK libraries, linker scripts, dependency
+sources and their original notices. Its relinking recipe reproduces the release
+ELF and supports replacing the Arduino core. See the [relinking guide](../stick/docs/relink.md).
+
+The runtime uses ESP-IDF **v5.5.4** at
+`735507283d5b2f9fb363a1901172dbd9e847945d`, including its pinned submodules, plus
+LittleFS **1.22.1** and ESP Diagnostics **1.2.1**. The source inventory in
+[`stick/runtime-sources.json`](../stick/runtime-sources.json) records the archive
+origins, hashes and submodule revisions. The SDK's linked Espressif radio
+libraries retain their included binary-library licenses. GCC runtime and Newlib
+notices are included with the firmware and runtime archives.
+
+Earlier versions of the reconstruction remain under their original CC0 terms.
+The [placeholder artwork](../assets/placeholders/LICENSE.md) also retains its
+explicit CC0 dedication.

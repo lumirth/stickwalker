@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -39,10 +40,9 @@ def source_inputs() -> list[Path]:
     ]
     paths += [
         p
-        for p in (ROOT / "stick").rglob("*")
-        if p.is_file()
-        and p.suffix in {".c", ".cpp", ".h"}
-        and (p.parent == ROOT / "stick" or p.parent == ROOT / "stick/compat")
+        for folder in (ROOT / "stick", ROOT / "stick/compat")
+        for p in folder.iterdir()
+        if p.is_file() and p.suffix in {".c", ".cpp", ".h"}
     ]
     return sorted(
         paths
@@ -77,17 +77,13 @@ def stage(sketch: Path, artwork: str) -> dict:
     manifest = read_json(ROOT / "config/artwork.json")
     selected = assets.resolved_inputs(ROOT, manifest)
     if artwork == "placeholders":
-        selected = {
-            a["name"]: ROOT / "assets/placeholders" / a["file"] for a in manifest
-        }
+        selected = {a["name"]: ROOT / "assets/placeholders" / a["file"] for a in manifest}
     lines = ["/* Generated from editable artwork files. */"]
     for asset in manifest:
         data = assets.encode(selected[asset["name"]], asset)
         lines += [f"/* {asset['name']} */", "{"]
         for offset in range(0, len(data), 12):
-            lines.append(
-                "  " + ", ".join(f"0x{v:02X}" for v in data[offset : offset + 12]) + ","
-            )
+            lines.append("  " + ", ".join(f"0x{v:02X}" for v in data[offset : offset + 12]) + ",")
         lines.append("},")
     generated = ("\n".join(lines) + "\n").encode("ascii")
     (sketch / "rom_assets.h").write_bytes(generated)
@@ -156,11 +152,41 @@ def build(args) -> None:
             "--warnings",
             "all",
         ]
-        if args.verbose:
+        if args.verbose or args.retain_build:
             command.append("--verbose")
         build_path = Path(temp) / "objects"
         command += ["--build-path", str(build_path)]
-        subprocess.run(command + [str(sketch)], check=True, cwd=ROOT)
+        if args.retain_build:
+            result = subprocess.run(
+                command + [str(sketch)],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            (output / "compile.log").write_text(result.stdout)
+            if result.returncode:
+                print(result.stdout)
+                result.check_returncode()
+            link = next(
+                shlex.split(line)
+                for line in result.stdout.splitlines()
+                if "-Wl,--start-group" in line and "-o" in line
+            )
+            retained = output / "relink-build"
+            if retained.exists():
+                shutil.rmtree(retained)
+            shutil.copytree(build_path, retained)
+            write_json(
+                output / "link-command.json",
+                {
+                    "arguments": link,
+                    "build_path": str(build_path),
+                },
+            )
+            print("Saved compiler output and relinking inputs.")
+        else:
+            subprocess.run(command + [str(sketch)], check=True, cwd=ROOT)
         shutil.copy2(build_path / "boot_app0.bin", output / "boot_app0.bin")
         manifest.update(
             {
@@ -171,16 +197,12 @@ def build(args) -> None:
                 "bench_control": args.bench_control,
                 "outputs": {
                     p.name: digest(p)
-                    for p in sorted(
-                        [*output.glob("PwStick.ino.*"), output / "boot_app0.bin"]
-                    )
+                    for p in sorted([*output.glob("PwStick.ino.*"), output / "boot_app0.bin"])
                     if p.suffix in {".bin", ".elf"}
                 },
             }
         )
-        if manifest["source_sha256"] != {
-            p: digest(ROOT / p) for p in manifest["source_sha256"]
-        }:
+        if manifest["source_sha256"] != {p: digest(ROOT / p) for p in manifest["source_sha256"]}:
             raise InputError("Inputs changed during compilation; build again.")
         write_json(output / "build-manifest.json", manifest)
         print(f"Build and input hashes: {output / 'build-manifest.json'}")
@@ -191,10 +213,13 @@ def main() -> int:
     parser.add_argument("--arduino-cli", default="arduino-cli")
     parser.add_argument("--config-file", type=Path)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "stick/.build/output")
-    parser.add_argument(
-        "--artwork", choices=("placeholders", "local"), default="placeholders"
-    )
+    parser.add_argument("--artwork", choices=("placeholders", "local"), default="placeholders")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--retain-build",
+        action="store_true",
+        help="Keep objects and the link command for release relinking materials.",
+    )
     parser.add_argument("--bench-control", action="store_true")
     args = parser.parse_args()
     try:

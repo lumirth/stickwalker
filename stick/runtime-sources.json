@@ -1,0 +1,72 @@
+{
+  "archives": {
+    "m5stack-3.3.9.zip": {
+      "url": "https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/arduino/m5stack-3.3.9.zip",
+      "sha256": "9886efac307c644f753404005bfe47b0060113718dd17ccfb680f36e662e8e44"
+    },
+    "M5Unified-0.2.21.tar.gz": {
+      "url": "https://codeload.github.com/m5stack/M5Unified/tar.gz/refs/tags/0.2.21",
+      "sha256": "b6a7b6bceacc2116777b602b2878e16da93a378234c2cc2794b7b54528e60aeb"
+    },
+    "M5GFX-0.2.29.tar.gz": {
+      "url": "https://codeload.github.com/m5stack/M5GFX/tar.gz/refs/tags/0.2.29",
+      "sha256": "584149c51d71fc21f9a3a1b7d333cb3d764b96a8dce17f094f3a29b682569406"
+    },
+    "esp32-arduino-lib-builder-43a8f6d.tar.gz": {
+      "url": "https://codeload.github.com/espressif/esp32-arduino-lib-builder/tar.gz/43a8f6d",
+      "sha256": "86f011ce9225a2a1b0ee083fbcd7ba03efbf86a62fcf079f70292acbb1154bea"
+    },
+    "littlefs-1.22.1.zip": {
+      "url": "https://components.espressif.com/api/downloads/?object_type=component&object_id=7ad657c8-2200-4d57-9310-8867b5732840",
+      "sha256": "9e620085e0b249e5ea44316e7d536601bda442e4ee0632406ca09b90f625ea42"
+    },
+    "esp_diagnostics-1.2.1.zip": {
+      "url": "https://components.espressif.com/api/downloads/?object_type=component&object_id=d97d18d4-2295-4d36-8d22-c7988b3f9f55",
+      "sha256": "46605d9df899b01c295b603559a69edd8055deeb85db47dafa77881d23ef701c"
+    },
+    "esp-idf-735507283d.tar.gz": {
+      "url": "https://github.com/espressif/esp-idf/tree/735507283d5b2f9fb363a1901172dbd9e847945d",
+      "sha256": "4ee24a42068abb9e9ae212a94d958ec11c463e09aa8a44fe8126b133057a746c"
+    }
+  },
+  "esp_idf_commit": "735507283d5b2f9fb363a1901172dbd9e847945d",
+  "esp_idf_submodules": {
+    "components/bootloader/subproject/components/micro-ecc/micro-ecc": "24c60e243580c7868f4334a1ba3123481fe1aa48",
+    "components/bt/controller/lib_esp32": "a348e3fbc75411acd88357af9e1d6a76621c449e",
+    "components/bt/controller/lib_esp32c2/esp32c2-bt-lib": "1b0f5aac0fcf91ea042c781e6da10a528ca0da03",
+    "components/bt/controller/lib_esp32c3_family": "ebd6043a8e3c3bbde45ee483895303b9c1229ab5",
+    "components/bt/controller/lib_esp32c5/esp32c5-bt-lib": "1a570a59b6d694b8829c82555f445d88bf26f295",
+    "components/bt/controller/lib_esp32c6/esp32c6-bt-lib": "9d05fc931ae771de52de7e4b4c7090f5b3ec0ec4",
+    "components/bt/controller/lib_esp32h2/esp32h2-bt-lib": "126dbfeec7e7291458ce6ff8f9297e46f8946733",
+    "components/bt/esp_ble_mesh/lib/lib": "e44762384ed104a0ebc78f134eeba5f3ab648ddc",
+    "components/bt/host/nimble/nimble": "5c1a43ca3d205c3d5183e57dedce335fb6a81155",
+    "components/cmock/CMock": "eeecc49ce8af123cf8ad40efdb9673e37b56230f",
+    "components/cmock/CMock/vendor/c_exception": "71b47be7c950f1bf5f7e5303779fa99a16224bb6",
+    "components/cmock/CMock/vendor/unity": "cf949f45ca6d172a177b00da21310607b97bc7a7",
+    "components/esp_coex/lib": "ee5cd79583c02f23e43e62931ffb55f5a4992d0f",
+    "components/esp_phy/lib": "3d57415af6e4c92eff2c4c3463e20a51d7340aba",
+    "components/esp_wifi/lib": "b87cce81803b85c3639fb14bac6c24cff6d0fbad",
+    "components/heap/tlsf": "2867f6883a12920b1969ff9624c0ab0e4185c2ce",
+    "components/json/cJSON": "c859b25da02955fef659d658b8f324b5cde87be3",
+    "components/lwip/lwip": "fd432e4ee2cfb7f7f1c7eb7227e0173412e7b84e",
+    "components/mbedtls/mbedtls": "ffb280bb63c78bfec1e1ab55040671768c85c923",
+    "components/mqtt/esp-mqtt": "6af4446a48ea7fa54948edc4e62277ed70abb6e1",
+    "components/openthread/lib": "2e2d91a382ad6387ce77551c6adbb1514db12472",
+    "components/openthread/openthread": "a12ff0d0f54fd41954b45047fcdd08f302731c5f",
+    "components/openthread/openthread/third_party/mbedtls/repo": "e185d7fd85499c8ce5ca2a54f5cf8fe7dbe3f8df",
+    "components/openthread/openthread/third_party/mbedtls/repo/framework": "457996474728cb8e968ed21953b72f74d2f536b2",
+    "components/protobuf-c/protobuf-c": "abc67a11c6db271bedbb9f58be85d6f4e2ea8389",
+    "components/spiffs/spiffs": "0dbb3f71c5f6fae3747a9d935372773762baf852",
+    "components/unity/unity": "bf560290f6020737eafaa8b5cbd2177c3956c03f"
+  },
+  "sdk_archive": {
+    "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.9/esp32s3-libs-3.3.9.zip",
+    "sha256": "34684fecef49e92e9fb11784ab5f0892328d3678ad8e8445a2bbf2cddf6a4fb6"
+  },
+  "notices": {
+    "Arduino-LGPL-2.1.txt": {
+      "url": "https://raw.githubusercontent.com/espressif/arduino-esp32/3.3.9/LICENSE.md",
+      "sha256": "62e54861b30e953735dc187f036917c588665dbe3c5dd88449e34317608bbf5e"
+    }
+  }
+}

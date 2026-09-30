@@ -8,14 +8,15 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.common import InputError, digest, read_json, write_json
 from stick.build_port import CORE, FQBN, LIBRARIES, source_inputs
+from tools.common import InputError, digest, read_json, write_json
 
 REQUIRED = (
     "PwStick.ino.bin",
@@ -33,15 +34,45 @@ DIAGNOSTICS = (
 )
 
 
+def validate_runtime(folder: Path, build: dict) -> dict:
+    runtime = read_json(folder / "runtime-manifest.json")
+    if not runtime.get("relink_verified") or (
+        runtime.get("elf_sha256"),
+        runtime.get("app_sha256"),
+    ) != (build["outputs"]["PwStick.ino.elf"], build["outputs"]["PwStick.ino.bin"]):
+        raise InputError("Runtime kit does not belong to this verified build.")
+    files = runtime.get("files", {})
+    inventory = {
+        p.relative_to(folder).as_posix()
+        for p in folder.rglob("*")
+        if p.is_file() and p.name != "runtime-manifest.json"
+    }
+    required = {
+        "relink.py",
+        "link.json",
+        "sources.json",
+        "objects/core/core.a",
+        "sdk/flags/ld_libs",
+        "licenses/Arduino-LGPL-2.1.txt",
+    }
+    if set(files) != inventory or not required <= inventory:
+        raise InputError("Runtime kit input inventory is incomplete or changed.")
+    for name, expected in files.items():
+        if digest(folder / name) != expected:
+            raise InputError(f"Runtime kit changed: {name}")
+    sources = read_json(folder / "sources.json")
+    if sources != read_json(ROOT / "stick/runtime-sources.json"):
+        raise InputError("Runtime dependency inventory does not match this release.")
+    for name, row in sources["archives"].items():
+        if digest(folder / "sources" / name) != row["sha256"]:
+            raise InputError(f"Runtime dependency source changed: {name}")
+    return runtime
+
+
 def validate_build(folder: Path) -> dict:
     manifest = read_json(folder / "build-manifest.json")
-    if (
-        manifest.get("bench_control") is not False
-        or manifest.get("artwork") != "placeholders"
-    ):
-        raise InputError(
-            "Release firmware must be production mode with placeholder artwork."
-        )
+    if manifest.get("bench_control") is not False or manifest.get("artwork") != "placeholders":
+        raise InputError("Release firmware must be production mode with placeholder artwork.")
     if (manifest.get("fqbn"), manifest.get("core"), manifest.get("libraries")) != (
         FQBN,
         CORE,
@@ -50,13 +81,10 @@ def validate_build(folder: Path) -> dict:
         raise InputError("Build does not use the release board/core/library versions.")
     expected = {p.relative_to(ROOT).as_posix() for p in source_inputs()}
     expected.update(
-        f"assets/placeholders/{a['file']}"
-        for a in read_json(ROOT / "config/artwork.json")
+        f"assets/placeholders/{a['file']}" for a in read_json(ROOT / "config/artwork.json")
     )
     if set(manifest.get("source_sha256", {})) != expected:
-        raise InputError(
-            "Build input inventory is incomplete or contains local artwork."
-        )
+        raise InputError("Build input inventory is incomplete or contains local artwork.")
     for name, sha in manifest["source_sha256"].items():
         if digest(ROOT / name) != sha:
             raise InputError(f"Build is stale: {name} changed; rebuild.")
@@ -78,13 +106,8 @@ def validate_build(folder: Path) -> dict:
         raise InputError("Missing or stale IR timing verification.")
     for name, expected in expected_functions.items():
         row = timing["functions"][name]
-        if (
-            row.get("bytes") != expected["bytes"]
-            or row.get("sha256") != expected["sha256"]
-        ):
-            raise InputError(
-                f"IR timing changed: {name}; physical requalification is required."
-            )
+        if row.get("bytes") != expected["bytes"] or row.get("sha256") != expected["sha256"]:
+            raise InputError(f"IR timing changed: {name}; physical requalification is required.")
     return manifest
 
 
@@ -93,16 +116,14 @@ def package(args) -> None:
         return subprocess.check_output(["git", "-C", str(ROOT), *parts])
 
     if git("status", "--porcelain", "--untracked-files=normal").strip():
-        raise InputError(
-            "Commit the intended source and remove untracked release inputs first."
-        )
+        raise InputError("Commit the intended source and remove untracked release inputs first.")
     commit = git("rev-parse", "HEAD").decode().strip()
     manifest = validate_build(args.build_dir.resolve())
+    runtime_folder = args.runtime_dir.resolve()
+    validate_runtime(runtime_folder, manifest)
     output = args.output_dir.resolve()
     if output.exists() and any(output.iterdir()):
-        raise InputError(
-            "Output directory must be new or empty; preserve prior candidates."
-        )
+        raise InputError("Output directory must be new or empty; preserve prior candidates.")
     output.mkdir(parents=True, exist_ok=True)
     prefix = f"stickwalker-{commit[:12]}"
     source = output / f"{prefix}-source.tar.gz"
@@ -120,6 +141,9 @@ def package(args) -> None:
             stdout=stream,
             check=True,
         )
+    runtime = output / f"{prefix}-runtime.tar.gz"
+    with tarfile.open(runtime, "w:gz") as archive:
+        archive.add(runtime_folder, arcname=f"{prefix}-runtime")
     with tempfile.TemporaryDirectory(prefix="stickwalker-package-") as temp:
         kit = Path(temp)
         for name in (*REQUIRED, "ir-timing.json"):
@@ -129,6 +153,8 @@ def package(args) -> None:
                 "git_commit": commit,
                 "hardware_qualified": False,
                 "qualification": "See RELEASE.md; qualify these exact output hashes.",
+                "runtime_archive": runtime.name,
+                "runtime_sha256": digest(runtime),
             }
         )
         write_json(kit / "build-manifest.json", manifest)
@@ -136,6 +162,8 @@ def package(args) -> None:
             ("LICENSE", "LICENSE"),
             ("stick/docs/install.md", "INSTALL.md"),
             ("stick/docs/release.md", "RELEASE.md"),
+            ("stick/docs/playing.md", "PLAYING.md"),
+            ("stick/docs/controls.md", "CONTROLS.md"),
             ("docs/third-party.md", "THIRD-PARTY.md"),
         ):
             text = (ROOT / original).read_text()
@@ -150,6 +178,8 @@ def package(args) -> None:
                 bundled = {
                     "stick/docs/install.md": "INSTALL.md",
                     "stick/docs/release.md": "RELEASE.md",
+                    "stick/docs/playing.md": "PLAYING.md",
+                    "stick/docs/controls.md": "CONTROLS.md",
                     "docs/third-party.md": "THIRD-PARTY.md",
                     "LICENSE": "LICENSE",
                 }
@@ -168,6 +198,13 @@ def package(args) -> None:
                 destination = kit / "licenses" / original.relative_to(licenses)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(original, destination)
+        for original in (runtime_folder / "licenses").rglob("*"):
+            if original.is_file():
+                destination = (
+                    kit / "licenses/runtime" / original.relative_to(runtime_folder / "licenses")
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(original, destination)
         (kit / "SHA256SUMS").write_text(
             "".join(
                 f"{digest(p)}  {p.relative_to(kit).as_posix()}\n"
@@ -176,14 +213,12 @@ def package(args) -> None:
             )
         )
         firmware = output / f"{prefix}-firmware.zip"
-        with zipfile.ZipFile(
-            firmware, "w", compression=zipfile.ZIP_DEFLATED
-        ) as archive:
+        with zipfile.ZipFile(firmware, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(kit.rglob("*")):
                 if path.is_file():
                     archive.write(path, path.relative_to(kit).as_posix())
     (output / "SHA256SUMS").write_text(
-        f"{digest(source)}  {source.name}\n{digest(firmware)}  {firmware.name}\n"
+        "".join(f"{digest(p)}  {p.name}\n" for p in (source, firmware, runtime))
     )
     print(f"Candidate prepared at {output}; hardware qualification remains open.")
 
@@ -191,6 +226,7 @@ def package(args) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, required=True)
+    parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     try:

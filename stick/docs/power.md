@@ -1,8 +1,9 @@
 # Power and foreground ownership
 
 The port preserves the native game's display availability and motion-processing
-schedule while sleeping the ESP32-S3 between work deadlines. USB power vetoes
-Light-sleep, so USB observations cannot establish battery current or sleep entry.
+schedule while sleeping the ESP32-S3 between work deadlines. Battery operation
+allows Light-sleep; USB power keeps the processor awake for development and
+diagnostics.
 
 ## Motion and input
 
@@ -36,12 +37,13 @@ been qualified as a replacement for polling.
 
 ## Battery evidence
 
-Battery percentage is estimated from voltage. No discharge test or whole-device
-current measurement establishes runtime. The [hardware records](history/power-and-wake.md) establish lifecycle and
-scheduling results, not an advertised lifetime.
+Battery percentage is estimated from voltage. The
+[hardware records](history/power-and-wake.md) cover sleep, wake and scheduling.
+To characterize battery life, measure current and discharge under a stated
+use profile.
 
 Measure stationary carry, moving carry and lit interaction at the battery path,
 including PMIC, conversions, IMU, display/audio rails, IR boost and retained RAM.
 Include the screen's idle-on time and transient peaks in the use profile.
-The [release checklist](release.md#qualify-the-candidate) separates battery,
+The [release checklist](release.md#device-checks-for-a-stable-release) separates battery,
 walking, control and infrared qualification.

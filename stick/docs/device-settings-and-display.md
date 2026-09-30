@@ -29,8 +29,8 @@ native rendering cadence. Its RGB565 palette is:
 
 RGB565 gives green six bits and red/blue five. The intermediate channels expand
 to (173,174,173) and (82,81,82) with M5GFX, within one 8-bit level of neutral.
-These are digital colors; panel luminance and the original LCD's optical curve
-have not been measured.
+These values describe the digital palette. An optical comparison would measure
+panel luminance against the original LCD.
 
 Keep `setSwapBytes(true)` after panel reinitialization: M5GFX's
 `create_pc(uint16_t*, bool)` path otherwise interprets intermediate buffer words

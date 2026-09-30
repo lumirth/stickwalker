@@ -6,8 +6,8 @@ for game, storage and protocol work.
 
 ## Report a problem
 
-Include your M5StickS3 firmware commit or app hash, what you did, what happened,
-and whether USB was connected. For input problems, include layout and rotation.
+Include the release version (or commit for a custom build), what you did, what
+you expected and what happened. Say whether USB was connected. For input problems, include layout and rotation.
 For infrared problems, include the peer/game, distance, orientation and both
 successful and failed attempts. State whether inputs were physical or generated.
 A short reproduction and relevant logs help more than a full flash dump.
@@ -38,5 +38,4 @@ Identify third-party material and retain its notices. Do not submit leaked or
 confidential source, ROM dumps, extracted retail artwork or proprietary compiler
 binaries. See [third-party notices](docs/third-party.md) for existing exceptions.
 
-Unless otherwise agreed, contributions apply the project's [CC0 terms](LICENSE)
-to the copyright and related rights held by their authors.
+Contributions are accepted under the project's [MIT license](LICENSE).

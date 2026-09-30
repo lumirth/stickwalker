@@ -30,7 +30,9 @@ In two-key layouts, M+R window selects 80, 120 or 160 ms between the two presses
 80 ms is the default. Three-key layouts show Center: M instead.
 The game's Contrast setting adjusts backlight brightness.
 
-Settings are saved separately from your game data. The battery percentage
-comes from a voltage reading and is approximate. It does not predict remaining
-runtime. USB power keeps the processor awake; battery operation allows it to
-sleep between game tasks.
+Your layout, rotation and appearance are remembered across restarts, separately
+from your Pokémon and game progress. Settings also shows battery voltage and an
+estimated charge percentage.
+
+Unplug USB to carry the Stick. It sleeps between game tasks while continuing
+to track walking; hold M for half a second when you want to check your Pokémon.
