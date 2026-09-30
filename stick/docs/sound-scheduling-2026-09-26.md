@@ -14,7 +14,7 @@ and `sound_bridge.cpp`. Scores come from the authoritative HGSS
 `phc_sounddata.c` through the existing `sound_bytes()` extractor. Hardware is
 stubbed, but the score walker, duration arithmetic and adapter calls are real.
 
-    python3 stick/audits/sound_score_trace.py --output stick/.build/sound-scheduling-2026-09-26/final.json
+    python3 stick/audits/sound_score_trace.py --hgss /path/to/local/hgss-source --output stick/.build/sound-scheduling-2026-09-26/final.json
 
 The first regression run failed 102 of 176 timing cases. For a warm move cue
 after an 80 ms stall, its only tone had duration **0 µs**. An 80 ms stalled
