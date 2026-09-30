@@ -9,8 +9,9 @@
 void ScratchReset(void);
 /* Reserve consecutive bytes and advance the cursor by byteCount. Callers
  * provide initialization and alignment. Crossing the 1,024-byte allocation
- * window sleeps after advancing the cursor; waking returns the requested
- * pointer. Large artwork transfers directly use the 1,536-byte backing store.
+ * window advances the cursor, then sleeps on H8 or traps on the Stick. An H8
+ * wake returns the requested pointer. Large artwork transfers directly use
+ * the 1,536-byte backing store.
  */
 void *ScratchAlloc(u16 byteCount);
 

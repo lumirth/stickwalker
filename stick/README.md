@@ -1,25 +1,45 @@
-# Stickwalker development
+# Developing Stickwalker
 
-Stickwalker runs the reconstructed Pokéwalker application on M5StickS3.
-Start with the [project README](../README.md) for controls and installation.
+Run the [host checks](docs/build.md#host-checks) before changing the port, then
+[build the firmware](docs/build.md). These steps need no board or ROM. Physical
+behavior has separate [qualification checks](docs/release.md).
 
-- [Build and host checks](docs/build.md)
-- [Installation and updates](docs/install.md)
-- [Release qualification](docs/release.md)
-- [Hardware validation history](docs/validation-history.md)
-- [Source guide](../docs/source.md)
-- [Native motion ownership](../docs/adr/0001-preserve-native-motion-ownership.md)
-- [M-only screen-off wake](../docs/adr/0002-m-only-dark-wake.md)
+## Find the code
 
-`src/` and `include/` contain the reconstructed application with guarded Stick
-compatibility seams. `stick/` provides the display, input, infrared, motion,
-storage, clock, audio and power adapters. `src/support/ir.c` owns packet and
-session behavior; optical acquisition and decoding belong to `ir_transport.cpp`
-and `ir_rx_core.cpp`. Preserve native motion processing and its audio/IR ownership
-intervals when changing the scheduler.
+The reconstructed application in `src/` and `include/` owns game rules, records,
+and protocol sessions. The adapters here connect that application to M5StickS3.
 
-A production build omits `PW_STICK_BENCH_CONTROL`. Diagnostic builds can exercise
-and change game state through serial commands; keep their output separate from
-release firmware. The scripts in `audits/` distinguish host simulation from
-on-device measurements. Historical logs, flash backups and received game data
-stay in ignored `stick/.build/` and are never release inputs.
+| Change | Start here |
+| --- | --- |
+| Scheduling, Settings overlay, foreground ownership | [board_runtime.cpp](board_runtime.cpp) |
+| Button acquisition and native control mapping | [input_bridge.cpp](input_bridge.cpp), [controls.cpp](controls.cpp) |
+| Panel, palette, rotation and backlight | [display_panel.cpp](display_panel.cpp), [display_bus.cpp](display_bus.cpp) |
+| Optical capture, receive decoding and transmission | [ir_transport.cpp](ir_transport.cpp), [ir_rx_core.cpp](ir_rx_core.cpp), [ir_gate.h](ir_gate.h) |
+| Motion samples | [accel_bridge.cpp](accel_bridge.cpp) |
+| Audio scheduling and codec supply | [sound_bridge.cpp](sound_bridge.cpp) |
+| Game-data persistence and recovery | [eeprom_backend.cpp](eeprom_backend.cpp) |
+| Board supplies, PMIC setup and processor sleep | [board_hal.cpp](board_hal.cpp), [power_sleep.cpp](power_sleep.cpp) |
+
+The [source guide](../docs/source.md) follows the native application across
+modules. [CONTEXT.md](../CONTEXT.md) defines motion, display and power terms.
+The [power guide](docs/power.md), [settings/display implementation](docs/device-settings-and-display.md)
+and [debugging guide](docs/debugging.md) describe the current adapter contracts.
+
+## Change and validate
+
+Keep protocol/session behavior in `src/support/ir.c`; optical acquisition and
+decoding belong in the Stick adapters. Preserve [immediate motion processing
+and its ownership gaps](../docs/adr/0001-preserve-native-motion-ownership.md),
+and the [M-only screen-off wake policy](../docs/adr/0002-m-only-dark-wake.md).
+Changes to the optical sampler need the [machine-code timing check](docs/release.md#prepare-the-artifacts).
+
+`PW_STICK_BENCH_CONTROL` enables state-changing serial diagnostics. Build it with
+`--bench-control` and keep those images separate from production candidates.
+The scripts in `audits/` state whether they use host simulation, saved inputs or
+a physical board. Logs, flash backups and received data belong in ignored
+`stick/.build/`.
+
+Read the [validation summary](docs/validation-history.md) before making hardware
+claims. The [evidence archive](docs/history/README.md) preserves dated findings,
+including failed trials and superseded designs. For patches and reports, follow
+[Contributing](../CONTRIBUTING.md).

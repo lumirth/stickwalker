@@ -2,7 +2,7 @@
 
 Use Python 3.11 or later, [uv](https://docs.astral.sh/uv/), and
 [Arduino CLI](https://arduino.github.io/arduino-cli/latest/installation/).
-Release preparation was tested with Arduino CLI 1.5.1 on macOS arm64.
+The build was tested with Arduino CLI 1.5.1 on macOS arm64.
 
 Install the tested board core and libraries in your Arduino environment:
 
@@ -23,8 +23,8 @@ uv run python stick/build_port.py
 
 The builder checks those exact core/library versions and selects
 `m5stack:esp32:m5stack_sticks3:PSRAM=opi`. It generates resident artwork directly
-from the included placeholders and compiles production firmware. It requires
-neither a sibling bench checkout nor the H8 toolchain/build outputs.
+from the included placeholders and compiles production firmware without an
+H8 compiler.
 
 Output is `stick/.build/output/`: `PwStick.ino.bin` is the application;
 `PwStick.ino.elf` retains symbols for debugging. Bootloader and partition binaries
@@ -60,24 +60,5 @@ and five transmitter/input/power/codec lifecycle regressions. It needs no board,
 ROM, console-source checkout or Renesas compiler. Saved optical replay and native
 HGSS score audits are separate optional checks with local evidence inputs.
 
-## Preparing a release candidate
-
-Commit the intended source and run checks, then build and package it:
-
-```sh
-uv run python stick/check.py
-uv run python stick/build_port.py --output-dir stick/.build/candidate
-uv run python stick/check_timing.py --elf stick/.build/candidate/PwStick.ino.elf --tool-prefix /path/to/xtensa-esp32s3-elf- --output stick/.build/candidate/ir-timing.json
-uv run python stick/package_release.py --build-dir stick/.build/candidate --output-dir stick/.build/release
-```
-
-Find the `xtensa-esp32s3-elf-` tools in your Arduino data directory under
-`packages/m5stack/tools/esp-x32/2601/bin/`. The timing check compares the three
-optical sampler functions with the frozen production image and binds its report
-to the candidate ELF hash.
-
-Packaging accepts a clean committed source tree, production firmware and
-placeholder artwork only. It verifies recorded source/output hashes and checks
-that diagnostic markers are absent. It creates a source archive, a firmware
-archive and checksums. Hardware qualification of those exact bytes remains a
-separate [release gate](release.md).
+For distributable archives and optical timing verification, follow
+[release preparation](release.md).

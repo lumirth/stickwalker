@@ -1,6 +1,7 @@
 # Build configuration
 
-These files describe the H8 build and the tools used around it. `configure.py`
+`artwork.json` is shared by both targets. The remaining files describe the H8
+build and the tools used around it. `configure.py`
 reads them to generate `build.ninja`; the build utilities also record their
 contents with the produced firmware.
 

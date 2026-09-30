@@ -1,4 +1,6 @@
-# Building
+# Building the H8 reconstruction
+
+For M5StickS3, use the [Stickwalker build guide](../stick/docs/build.md).
 
 Compiler import and artwork extraction are separate, one-time setup operations.
 Compilation converts the extracted files and runs the imported tools. Its final

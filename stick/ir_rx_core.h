@@ -28,7 +28,8 @@ struct WireBurst {
   }
 };
 
-// Decode an already bounded optical burst. Each bin is the measured GPIO5
+// Decode an already bounded optical burst on the foreground task only.
+// Static workspace makes calls non-reentrant. Each bin is the measured GPIO5
 // threshold-crossing delay for one 3x baud gate, or 255 for no crossing.
 // Acquisition and phase fitting consult UART geometry only, never expected
 // payload bytes, checksums, or protocol commands. The caller owns the ring,

@@ -1,9 +1,7 @@
-# PMIC L button: raw state, click timing and interrupts
+# PMIC button input
 
-Online primary-source review prompted by the user's question about the 125 ms
-figure. This corrects the previous implication that every L input or proposed
-button interrupt necessarily has a known 125 ms delay. No firmware, PMIC
-configuration or paired storage was changed during this review.
+The PMIC exposes raw button state separately from classified-click timing.
+This source review establishes their documented meanings, not physical latency.
 
 ## What the timing field establishes
 
@@ -13,7 +11,7 @@ driver calls it click delay. Its timing origin is unspecified: the examined
 sources do not establish debounce time, required hold duration, or a fixed
 post-release wait. The declared register default is `0x2A`, whose SINGLE field
 selects 250 ms, so 125 ms is the minimum available selection, not evidence of
-the currently installed setting. [English datasheet, printed pp.23–24](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/M5PM1_Datasheet_EN.pdf#page=25),
+the currently installed setting. [English datasheet, printed pp.23-24](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/M5PM1_Datasheet_EN.pdf#page=25),
 [official register definitions](https://github.com/m5stack/M5PM1/blob/be9a5456c007c333e7ac963f33bfde1ffa5d82ee/src/M5PM1.h).
 
 ## Separate raw interface
@@ -43,7 +41,7 @@ single-click, double-click and power-on; the WAKEUP bit is tied to retained
 power-on state, not documented as an ordinary running-device L-down edge.
 The single-click IRQ replaces the disabled reset action. There is no documented
 raw L edge IRQ in the examined register definitions. [StickS3 wiring](https://docs.m5stack.com/en/arduino/m5sticks3/m5pm1),
-[English datasheet, printed pp.21–23](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/M5PM1_Datasheet_EN.pdf#page=23).
+[English datasheet, printed pp.21-23](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/M5PM1_Datasheet_EN.pdf#page=23).
 
 The datasheet additionally specifies automatic LED flashing with a GPIO IRQ
 function enabled: 200 ms for disabled button reset, 100 ms for disabled

@@ -33,12 +33,10 @@ uint8_t codec_image[sizeof(kSuspendRegisters)] = {};
 constexpr uint8_t kPiezoCycle[16] = {
     255, 255, 255, 255, 255, 255, 255, 255,
       0,   0,   0,   0,   0,   0,   0,   0};
-// Start the score only after the whole output path has settled. The amplifier
-// alone is faster, but the diagnostic ADC's cold transient obscures our
-// 52 ms cue at 65 ms. The complete on-board acoustic check passes at 200 ms;
-// this is a conservative preparation interval, not a measured DAC minimum.
-// Warm repeats need no delay.
-// This is preparation time, not an extension or replacement of native notes.
+// Prepare the cold output path for 200 ms before starting the score. The
+// on-board acoustic check passes there; at 65 ms, ADC startup obscures the
+// 52 ms cue. This conservative interval is not a measured DAC minimum.
+// Warm repeats skip preparation; native note durations stay unchanged.
 constexpr int64_t kOutputStartupUs = 200000;
 constexpr int64_t kAmplifierHoldUs = 500000;
 #ifdef PW_STICK_BENCH_CONTROL

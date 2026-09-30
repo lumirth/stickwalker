@@ -3,8 +3,7 @@
 namespace pw_stick {
 
 namespace {
-// Reject a switch bounce or fleeting overlap without delaying a deliberate
-// Center press enough to spoil the original timed games.
+// Require sustained overlap so alternating direction taps do not emit Center.
 constexpr uint32_t kChordHoldMs = 20;
 }
 

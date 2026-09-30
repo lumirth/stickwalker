@@ -153,7 +153,7 @@ void draw_battery_readout() {
   screen->setTextSize(1);
   screen->setCursor(10, 28);
   if (percent < 0) {
-    screen->print("Battery unavailable");
+    screen->print("Battery reading unavailable");
   } else {
     screen->printf("Battery %u.%02u V  ~%d%%  %s", unsigned(millivolts / 1000),
                    unsigned((millivolts % 1000) / 10), percent,
@@ -191,7 +191,7 @@ void draw_device_menu() {
   if (StickInputProfile())
     screen->printf("  Center: M");
   else
-    screen->printf("%c Chord window: %u ms", device_menu_row == 3 ? '>' : ' ',
+    screen->printf("%c M+R window: %u ms", device_menu_row == 3 ? '>' : ' ',
                  80 + StickInputChordWindowIndex() * 40);
   screen->setCursor(10, 94);
   screen->printf("%c Test speaker", device_menu_row == 4 ? '>' : ' ');
@@ -227,9 +227,9 @@ void close_device_menu(bool wake_game) {
 extern "C" void StickPortSetup(void) {
   Serial.begin(115200);
   setCpuFrequencyMhz(240);
-  if (!StickBoardBegin()) { fatal("Board init failed"); return; }
-  if (!StickDisplayPanelInit()) { fatal("Display buffer failed"); return; }
-  if (!StickEepromMount()) { fatal("EEPROM mount failed"); return; }
+  if (!StickBoardBegin()) { fatal("Board startup failed"); return; }
+  if (!StickDisplayPanelInit()) { fatal("Display startup failed"); return; }
+  if (!StickEepromMount()) { fatal("Game storage unavailable"); return; }
   StickEepromDefer(1);
   StickPortBoot();
   StickEepromDefer(0);
@@ -705,8 +705,7 @@ extern "C" void StickPortLoop(void) {
 
   StickDisplayPowerService();
   StickPeripheralPowerService();
-  // Apply the native settings' idle-availability scale to our additional
-  // board overlay too. Leaving it open must not leave the backlight on all day.
+  // The board overlay uses the native settings' inactivity interval.
   if (device_menu_open && now - last_menu_input_us >= kDeviceMenuIdleUs)
     close_device_menu(false);
   if (device_menu_open && device_menu_draw_pending) draw_device_menu();

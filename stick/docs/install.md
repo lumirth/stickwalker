@@ -1,9 +1,14 @@
 # Installing and updating Stickwalker
 
-Use the M5StickS3 USB-C port with a data cable. Identify its serial port with
-`uvx --from esptool==5.1.0 esptool --help` and your operating system's serial-device
-listing. The commands below use `PORT` as a placeholder for that path, and run
-from the firmware output directory. Esptool connects to and resets the board.
+Start with the [firmware build](build.md) or unpacked candidate firmware archive.
+Use the M5StickS3 USB-C port with a data cable. On macOS, the serial port usually
+appears as `/dev/cu.usbmodem*`; on Linux, `/dev/ttyACM*`; on Windows, check the
+COM port in Device Manager. Compare the device list before and after connecting
+if several ports are present.
+
+Replace `PORT` in the commands below with that port. Run them from the firmware
+output directory. [uv](https://docs.astral.sh/uv/) runs the pinned esptool version;
+esptool connects to and resets the board.
 
 ## Back up before writing
 
@@ -28,7 +33,8 @@ the installed partition table with the new build before an update:
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT read-flash 0x8000 0xC00 /path/to/installed-partitions.bin
 ```
 
-Compare those bytes with `PwStick.ino.partitions.bin`. Proceed with the app-only
+Compare those bytes with `PwStick.ino.partitions.bin`, for example with `cmp`
+on macOS/Linux or `fc /b` on Windows. Proceed with the app-only
 update only if they match and the existing installation runs from app0:
 
 ```sh

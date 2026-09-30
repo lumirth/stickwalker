@@ -1,0 +1,15 @@
+name: Change proposal
+description: Suggest a change to Stickwalker.
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What would this help you do?
+      description: Describe the use case and any current obstacle.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include an example or tradeoff if you have one.

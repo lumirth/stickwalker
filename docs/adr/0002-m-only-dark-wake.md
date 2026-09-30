@@ -1,6 +1,6 @@
 # M-only wake while the game screen is off
 
-The user chose physical M as the sole button that begins a dark-screen wake,
+Physical M is the sole button that begins a screen-off wake,
 independently of layout and orientation. Hold M for the existing 500 ms gesture;
 L and R resume their configured roles after wake and release. A held R or L
 must not prevent M from waking. An abandoned M press cancels panel preparation.
@@ -23,13 +23,11 @@ veto sleep and retry at a bounded rate.
 
 Motion processing remains immediate at the existing 1 Hz inactive/activity
 and 16 Hz moving/interactive schedules, with native audio/IR ownership gaps.
-No sensor mode, ODR, FFT, estimator, protocol, or EEPROM format change is part
-of this decision. Deferred FIFO motion batching is declined.
+The sensor mode, ODR, FFT, estimator, protocol and EEPROM format remain unchanged.
 
 Host validation covers actual adapter branches and simulated electrical API
 calls. USB bench probes exercise generated gestures, rail/panel readback, and
 production boot. Neither proves physical-switch wake or whole-device current;
-USB continues to veto Light-sleep. No improved lifetime is claimed from timer
-counts alone.
+USB continues to veto Light-sleep. Timer counts alone do not establish battery lifetime.
 
 [ESP-IDF sleep API](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/system/sleep_modes.html)

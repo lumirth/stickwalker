@@ -1,0 +1,22 @@
+name: Bug report
+description: Report unexpected behavior in Stickwalker.
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: What happened?
+      description: Describe the steps, expected result and observed result.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Firmware and setup
+      description: Include the commit or app hash, USB or battery power, and input layout/rotation. For IR, include the peer/game, distance and orientation.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Relevant logs and trials
+      description: Include failed attempts and say whether inputs were physical or generated. Keep flash backups, EEPROM images, ROMs and extracted artwork local.

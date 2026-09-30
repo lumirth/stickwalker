@@ -1,6 +1,6 @@
 # Artwork inputs
 
-The build reads six NCG images and a BMP font sheet. Each file comes from
+The H8 build reads six NCG images and a BMP font sheet. Each file comes from
 `assets/local/` when present, with original artwork in `assets/placeholders/`
 filling any missing entry. The build reports the placeholders it uses.
 
@@ -26,6 +26,10 @@ directory are preserved. Keep a copy of edited artwork before extracting again.
 | `ir-signal.ncg` | 8 × 8 | Infrared activity indicator |
 | `font.bmp` | 108 × 8 | 36 adjacent 3 × 8 glyphs: `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ` |
 | `grayscale.ncl` | 16 palette entries | Editor palette; the first four entries show the firmware shades |
+
+For Stickwalker, the default build always uses placeholders. After extracting
+or editing local images, select them with `--artwork local`; missing entries
+fall back to placeholders. See the [Stick build guide](../stick/docs/build.md).
 
 ## Editing
 

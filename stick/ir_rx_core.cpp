@@ -175,8 +175,7 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
                        uint8_t pulse_cutoff) {
   out = WireBurst{};
   if (!bins || !gate_count || gate_count > kMaxBurstGates) return false;
-  // The previous automatic buffers made this function's machine stack frame
-  // 11,088 bytes, overflowing the 8,192-byte Arduino loop task.
+  // Foreground-only decoding uses static buffers to fit the 8 KiB loop stack.
   static uint16_t strong[kMaxStrongGates];
   unsigned strong_count = 0;
   for (size_t gate = 0; gate < gate_count; ++gate) {

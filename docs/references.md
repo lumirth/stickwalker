@@ -247,3 +247,36 @@ and data inspection.
 - An interoperability project illustrating how HGSS's Pokéwalker protocol
   can operate through another infrared transport.
   [RtcPwalker](https://github.com/francesco265/RtcPwalker).
+
+## Acknowledgments
+
+UnrealPowerz's [pw_firm](https://github.com/UnrealPowerz/pw_firm/tree/main/)
+inspired the matching reconstruction. h4lfheart's
+[PocketWalker](https://github.com/h4lfheart/PocketWalker) inspired the initial
+Pokéwalker work. Dmitry Grinberg's hardware and firmware research laid much of
+the groundwork.
+
+The [Pokéwalker Hacking community](https://discord.gg/ymbTMsS), including
+mamba2410, zenithknight, mriancamp, porocyon and its other contributors, provided
+research, tools and a place to compare findings. The projects and authors linked
+above also contributed to the reconstruction's technical foundations.
+
+## Stick hardware and runtime
+
+The port uses M5Unified 0.2.21, M5GFX 0.2.29 and ESP-IDF 5.5 interfaces from
+the pinned M5Stack board core. These sources support the adapter contracts
+and debugging procedures, rather than measurements of this firmware's runtime.
+
+| Subject | Primary sources |
+| --- | --- |
+| Board wiring, supplies and battery | [M5StickS3 specification](https://docs.m5stack.com/en/core/StickS3), [schematic](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/K150_Stick_S3_PRJ_V0.6_20251111_2025_11_17_16_10_24.pdf), [M5PM1 power configuration](https://docs.m5stack.com/en/arduino/m5sticks3/m5pm1) |
+| PMIC register and button behavior | [M5PM1 V1.9 datasheet](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/M5PM1_Datasheet_EN.pdf), [M5Unified PMIC driver](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/power/M5PM1_Class.cpp) |
+| Motion sensor | [BMI270 datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi270-ds000.pdf) |
+| Display and buffer interpretation | [StickS3 display specification](https://docs.m5stack.com/en/accessory/display/Display_1.14_For_StickS3), [ST7789P3 datasheet](https://files.waveshare.com/wiki/ESP32-S3-GEEK/ST7789P3.pdf), [M5GFX ST7789 driver](https://github.com/m5stack/M5GFX/blob/0.2.29/src/lgfx/v1/panel/Panel_ST7789.hpp) |
+| Codec startup and word format | [ES8311 datasheet](https://www.lcdwiki.com/res/PublicFile/ES8311_DS.pdf), [Espressif codec initialization](https://github.com/espressif/esp-adf/blob/release/v2.x/components/esp_codec_dev/device/es8311/es8311.c) |
+| Sleep and RTC GPIO ownership | [ESP-IDF sleep modes](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/system/sleep_modes.html), [sleep errors](https://github.com/espressif/esp-idf/blob/v5.5/components/esp_hw_support/include/esp_sleep.h) |
+| USB transport during sleep | [ESP-IDF USB Serial/JTAG console](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/usb-serial-jtag-console.html) |
+| Debugger effects and failures | [JTAG setup](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/jtag-debugging/index.html), [breakpoints and watchpoints](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/jtag-debugging/tips-and-quirks.html), [watchdogs](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/system/wdts.html), [panic handling](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/fatal-errors.html) |
+| Crash records | [Reset reasons](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/system/misc_system_api.html#reset-reason), [retention attributes](https://github.com/espressif/esp-idf/blob/v5.5/components/esp_common/include/esp_attr.h), [core dumps](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/core_dump.html) |
+| Failed PMIC transactions | [ESP-IDF I2C probe guidance](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/peripherals/i2c.html#i2c-master-probe), [M5Unified bus wrapper](https://github.com/m5stack/M5Unified/blob/0.2.21/src/utility/I2C_Class.cpp), [M5GFX backend](https://github.com/m5stack/M5GFX/blob/0.2.29/src/lgfx/v1/platforms/esp32/common.cpp) |
+| Current measurement | [Espressif measurement guidance](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/current-consumption-measurement-modules.html) |

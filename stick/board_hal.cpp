@@ -59,10 +59,8 @@ bool startup_check(bool ok, const char *stage) {
 }
 
 bool begin_pmic() {
-  // First ID reads have failed after warm resets; the cause is unresolved.
-  // M5GFX already clears the bus on a failed transfer. Bound recovery by
-  // reinitializing the owned master and retrying, rather than inventing
-  // another bus-clear sequence or failing permanently on the first read.
+  // Warm resets can fail the first ID read; the cause is unresolved.
+  // M5GFX clears failed transfers, so retry by reinitializing its owned master.
   for (unsigned attempt = 0; attempt < 4; ++attempt) {
     if (attempt) {
       m5::In_I2C.release();

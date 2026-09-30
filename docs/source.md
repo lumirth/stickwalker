@@ -1,8 +1,21 @@
-# Source
+# Reading the application source
 
-The firmware runs on the H8/38606 in normal mode: 8-bit bytes, 16-bit integers
+The original target runs on the H8/38606 in normal mode: 8-bit bytes, 16-bit integers
 and pointers, and 32-bit longs. It uses C90 with CH38 extensions for interrupts,
 sections, bitfield order and machine instructions.
+
+## Choose the target
+
+For Stickwalker adapter changes, start with the [Stick development guide](../stick/README.md).
+The application paths below are shared, but compiler widths, register access
+and startup are target-specific. `PW_STICK_S3` guards the port's compatibility
+seams; C++ adapters use the platform ABI. Preserve explicit widths and byte order
+in serialized records rather than relying on host structure layout.
+
+H8 link-order and retail-matching requirements below apply to the original
+target. A shared application change needs both matching checks and Stick host
+regressions; an adapter-only change needs the Stick checks and relevant hardware
+qualification.
 
 ## Modules and reading paths
 
@@ -193,8 +206,8 @@ Names express meaning and useful units. Comments explain relationships and
 constraints that the code alone cannot make clear. Keep ordinary coordinates,
 indices and numeric tables simple when their meaning is already clear.
 
-Changes must preserve full retail identity under both supported compiler
-suites. Integer promotions, signed shifts, access widths, volatile reads,
+H8 application changes must preserve full retail identity under both supported
+compiler suites. Integer promotions, signed shifts, access widths, volatile reads,
 bitfield order, alignment, expression grouping and local lifetimes matter.
 Call order also preserves shared random-number consumption and workspace
 ownership. Run the [formatter, linter and complete builds](build.md).

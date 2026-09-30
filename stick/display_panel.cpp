@@ -20,7 +20,6 @@ constexpr unsigned kNativeHeight = 64;
 constexpr unsigned kScale = 2;
 constexpr unsigned kPanelWidth = kNativeWidth * kScale;
 constexpr unsigned kPanelHeight = kNativeHeight * kScale;
-// Retain Dark as the default until the user saves an appearance choice.
 bool dark_appearance = true;
 
 uint8_t native_pixels[kNativeWidth * kNativeHeight];
