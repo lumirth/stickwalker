@@ -54,7 +54,7 @@ python3 stick/audits/m_only_wake_trace.py
 python3 stick/audits/idle_power_trace.py
 python3 stick/audits/abandoned_wake_trace.py
 python3 stick/audits/codec_startup_trace.py --output /tmp/codec.json
-python3 stick/audits/sound_score_trace.py --output /tmp/sound.json
+python3 stick/audits/sound_score_trace.py --hgss /path/to/local/hgss-source --output /tmp/sound.json
 ```
 
 Build diagnostic and production sequentially with `stick/build_port.py`, using

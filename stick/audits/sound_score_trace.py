@@ -135,7 +135,6 @@ def main():
         (folder / 'native.c').write_text(NATIVE.replace(
             'SOUND_BYTES', ','.join(str(x) for x in archive)))
         (folder / 'trace.cpp').write_text(HARNESS)
-        import json
         sys.path.insert(0, str(ROOT))
         from tools.assets import generate
         generated, _ = generate(ROOT, json.loads((ROOT / 'config/artwork.json').read_text()))
