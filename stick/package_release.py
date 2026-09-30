@@ -154,7 +154,7 @@ def package(args) -> None:
                     "LICENSE": "LICENSE",
                 }
                 destination = bundled.get(
-                    rel, f"https://github.com/lumirth/pw-stick-s3/blob/{commit}/{rel}"
+                    rel, f"https://github.com/lumirth/stickwalker/blob/{commit}/{rel}"
                 )
                 if anchor:
                     destination += "#" + anchor

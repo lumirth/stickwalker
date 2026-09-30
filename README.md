@@ -1,44 +1,53 @@
 # Stickwalker
 
-Play the Pokéwalker application on an **M5StickS3**. Stickwalker brings its
-walking progression, menus, minigames and infrared transfers to the Stick's
-screen, buttons, motion sensor and speaker.
+Stickwalker is the firmware that turns an **M5Stack Stick S3** into a recreation
+of the **Pokéwalker**, the walking accessory for Pokémon HeartGold and SoulSilver.
 
-This is a release candidate. Earlier firmware completed a walk-start transfer
-with a real HeartGold Game Card and repeated transfers with a 3DS test peer.
-The candidate still needs physical qualification; walking calibration and
-battery runtime are unmeasured. See the [validation summary](stick/docs/validation-history.md).
-The supported board is M5StickS3.
+The goal is a fully functioning Pokéwalker: take a Pokémon for walks, earn
+Watts, play minigames, and transfer Pokémon to and from the games over infrared.
 
-## Get started
+## Try it
 
-[Build Stickwalker](stick/docs/build.md), then [install it](stick/docs/install.md).
-The default build includes original placeholder artwork and needs no ROM or
-Renesas compiler. You can use [your own resident artwork](assets/README.md)
-for a local build. Course artwork and game data arrive through the game's
-normal infrared transfer.
+You'll need a Stick S3, a USB-C data cable and a computer. There is no published
+firmware release yet. To try the current version, [build the firmware](stick/docs/build.md),
+then follow the [installation guide](stick/docs/install.md). That guide also
+covers backing up your Stick and updating an existing installation.
 
-M acts as Left, R as Right, and M+R as Center. Press M and R together and hold
-both for at least 20 ms. L opens Stick Settings, where you can change the
-layout, rotation, appearance, and test the speaker.
+The default build uses placeholder artwork for the built-in pictures and font.
+Pokémon and course artwork arrive from the game during transfer. You can also
+[use artwork from your own Pokéwalker firmware](assets/README.md) in a local build.
 
-When the screen is off, **hold M for 500 ms to wake**, then release the buttons
-before navigating. See [controls and settings](stick/docs/controls.md) for the
-other layouts and the Center timing adjustment.
+## Use your Stick as a Pokéwalker
 
-## Work on Stickwalker
+By default, M acts as Left, R as Right, and pressing M+R together acts as Center.
+L opens Stick Settings, where you can change the button layout, screen rotation
+and appearance, or test the speaker.
 
-Start with the [development guide](stick/README.md) to find the hardware
-adapters and run checks. [Contributing](CONTRIBUTING.md) explains how to report a
-problem or propose a change. The [H8 reconstruction](docs/h8-reconstruction.md)
-is also available for studying and reproducing the original firmware.
+Hold M for half a second to wake the screen, then release the buttons before
+navigating. The [controls guide](stick/docs/controls.md) explains the other
+layouts and how to adjust the M+R timing.
+
+## Development status
+
+Stickwalker is being prepared for release. Earlier firmware has connected
+successfully to a real HeartGold Game Card. The current candidate still needs
+physical testing, including walking accuracy, battery runtime and retail
+SoulSilver transfers. See [what has been validated](stick/docs/validation-history.md)
+before deciding whether to try it with your game.
+
+## Help and contribute
+
+[Report a problem or propose a change](CONTRIBUTING.md). If you want to work on
+the firmware, start with the [development guide](stick/README.md).
+The [original firmware reconstruction](docs/h8-reconstruction.md) is available
+for studying how the Pokéwalker works.
 
 ## Credits and license
 
-Stickwalker adapts the reconstructed Pokéwalker firmware. See the
-[research references and acknowledgments](docs/references.md) for the work behind it.
-Original project material is dedicated under [CC0 1.0](LICENSE), with
-[third-party exceptions and notices](docs/third-party.md). Retail firmware,
+Stickwalker builds on a reconstruction of the original Pokéwalker firmware.
+See the [research references and acknowledgments](docs/references.md) for the
+work behind it. Original project material is dedicated under [CC0 1.0](LICENSE),
+with [third-party exceptions and notices](docs/third-party.md). Retail firmware,
 extracted artwork, console data and proprietary compiler binaries are not distributed.
 
 This is an unofficial project, unaffiliated with Nintendo, The Pokémon Company,

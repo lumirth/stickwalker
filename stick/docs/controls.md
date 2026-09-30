@@ -1,9 +1,11 @@
 # Controls and settings
 
-Stickwalker's default layout uses the two front buttons, M and R, for the
-Pokéwalker's three controls. M+R supplies Center: press the second button within
-the selected window and hold both for at least 20 ms. If Center is hard to
-trigger, increase the window in Stick Settings.
+Use the Stick's buttons to navigate the Pokéwalker screens. The default layout
+uses M for Left and R for Right. For Center, press M and R together.
+
+If Center is hard to trigger, increase the M+R window in Stick Settings. This
+gives you more time to press the second button. Keep both pressed together for
+at least 20 ms.
 
 | Layout | Left | Center | Right | Open Stick Settings |
 | --- | --- | --- | --- | --- |
@@ -14,7 +16,7 @@ trigger, increase the window in Stick Settings.
 
 ## Wake the screen
 
-With the screen off, hold physical M for 500 ms in any layout or rotation.
+With the screen off, hold M for half a second in any layout or rotation.
 Release all buttons before navigating. L and R work again once the screen is
 awake. A short M tap does not complete the wake gesture.
 

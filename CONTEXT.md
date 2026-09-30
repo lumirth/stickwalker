@@ -1,6 +1,7 @@
 # Stickwalker terms
 
-The reconstructed Pokéwalker application owns game and protocol behavior.
+Stickwalker is firmware for recreating a Pokéwalker on the M5Stack Stick S3.
+The reconstructed firmware owns game and protocol behavior.
 The Stick adapters provide hardware services. Use these distinctions when
 changing the scheduler or interpreting validation results.
 

@@ -17,10 +17,10 @@ Keep them local; share only the diagnostic details needed to reproduce the issue
 
 ## Propose a change
 
-Describe the behavior the patch changes and why. Keep hardware adaptation in
-`stick/` where possible; the reconstructed application remains the authority
-for game and protocol behavior. Preserve explicit wire/EEPROM widths, byte order
-and foreground ownership.
+Describe how the patch changes the Stick's behavior as a Pokéwalker and why.
+Keep Stick-specific hardware code in `stick/`. Game rules and exchanges with
+HeartGold/SoulSilver belong in the reconstructed firmware under `src/`. Preserve
+wire/EEPROM widths, byte order and foreground ownership.
 
 Run `uv run python stick/check.py` for Stick changes. Build the target when
 changing adapters or shared application code, and identify any physical checks

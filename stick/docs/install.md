@@ -1,5 +1,8 @@
 # Installing and updating Stickwalker
 
+Installing Stickwalker replaces the firmware currently on your Stick S3.
+Back it up first so you can restore it if needed.
+
 Start with the [firmware build](build.md) or unpacked candidate firmware archive.
 Use the M5StickS3 USB-C port with a data cable. On macOS, the serial port usually
 appears as `/dev/cu.usbmodem*`; on Linux, `/dev/ttyACM*`; on Windows, check the

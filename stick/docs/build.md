@@ -1,5 +1,16 @@
 # Building Stickwalker
 
+This creates the firmware you will install on your Stick S3. Download the source
+from [the repository](https://github.com/lumirth/stickwalker) and unpack it, or
+clone it with Git:
+
+```sh
+git clone https://github.com/lumirth/stickwalker.git
+cd stickwalker
+```
+
+Open a terminal in that folder. Run the following commands on your computer.
+
 Use Python 3.11 or later, [uv](https://docs.astral.sh/uv/), and
 [Arduino CLI](https://arduino.github.io/arduino-cli/latest/installation/).
 The build was tested with Arduino CLI 1.5.1 on macOS arm64.
@@ -14,7 +25,7 @@ arduino-cli lib install 'M5GFX@0.2.29'
 arduino-cli lib install --no-deps 'M5Unified@0.2.21'
 ```
 
-From the repository root:
+Build the firmware:
 
 ```sh
 uv sync --locked
