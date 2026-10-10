@@ -16,7 +16,6 @@ void WalkStartCommit(void);
 void RtcDayRollover(void);
 RuntimeState g_state;
 PresentationState g_ui;
-Workspace g_work;
 static u8 image[65536];
 static _Alignas(8) u8 scratch[4096];
 static u16 used;
