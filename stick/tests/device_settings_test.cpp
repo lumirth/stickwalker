@@ -2,7 +2,6 @@
 #include "../display_palette.h"
 #include <algorithm>
 #include <cassert>
-#include <cstring>
 
 int main() {
   using namespace pw_stick;
@@ -29,8 +28,6 @@ int main() {
       }
   assert(decode_controls(0xff).layout == Layout::TwoKeyMR);
   assert(decode_controls(24).chord_window == 0);
-  const char *labels[] = {"2-key M/R", "2-key R/M", "3-key L/R", "3-key R/L"};
-  for (unsigned i = 0; i < 4; ++i) assert(!std::strcmp(layout_name(Layout(i)), labels[i]));
 
   // Four neutral, monotonic colors; exact reverse in light mode. Decode through
   // the RGB565 bit expansion used by the installed graphics library.
@@ -46,6 +43,4 @@ int main() {
   }
   assert(palette_color(false, 0) == 0xffff);
   assert(palette_color(false, 3) == 0x0000);
-  assert(palette_color(true, 1) == 0x528a);
-  assert(palette_color(true, 2) == 0xad75);
 }

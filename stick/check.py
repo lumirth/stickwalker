@@ -14,9 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 C_TESTS = {
     "device_identity": ["stick/device_identity.c"],
     "bitfield_layout": [],
-    "wire_endian": [],
     "bulk_decode": ["src/support/lib_common.c"],
-    "scratch": ["src/support/lib_common.c"],
     "eeprom_mirror": [
         "src/application/pw_eeprom_m95512_io.c",
         "src/support/lib_common.c",

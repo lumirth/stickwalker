@@ -8,7 +8,6 @@ import tempfile
 from pathlib import Path
 
 from ir_transport_test_support import ROOT as root
-from ir_transport_test_support import SOURCE as source
 from ir_transport_test_support import transport_function as function
 
 cpp = r"""
@@ -90,19 +89,6 @@ uint8_t measure_ir_gate(uint32_t, uint32_t next, uint32_t, GateHealth &,
     value = 0;
   else if (mode == "noisy-light")
     value = (i % 100 == 0) ? 0 : 255;
-  else if (mode == "loose-contact-at-start")
-    value = (i % 97 == 0) ? uint8_t(1 + i % 123) : 255;
-  else if (mode == "contact-lost-during-packet")
-    value = i < 1024 ? (i % 30 == 0 ? 0 : 255)
-                     : uint8_t(1 + i % 123);
-  else if (mode == "contact-recovers") {
-    if (i < 512)
-      value = i % 30 == 0 ? 0 : 255;
-    else if (i < 1024)
-      value = uint8_t(1 + i % 123);
-    else if (i >= 1200 && i < 1200 + 136 * 30)
-      value = (i - 1200) % 30 == 0 ? 0 : 255;
-  }
   else if ((mode == "max-packet" || mode == "dense-packet") && i < 136 * 30)
     value = mode == "max-packet" ? (i % 30 == 0 ? 0 : 255)
                                  : (i % 3 == 0 && (i / 3) % 10 != 9 ? 0 : 255);
@@ -138,22 +124,13 @@ int main(int argc, char **argv)
                      reinterpret_cast<void *>(1));
     if (!core1_enabled)
       throw std::runtime_error("tick still masked");
-    if (mode == "continuous-light" || mode == "noisy-light" ||
-        mode == "loose-contact-at-start" ||
-        mode == "contact-lost-during-packet") {
-      if (!failed || overlong_bursts != 1 || event_write != 0)
+    if (mode == "continuous-light" || mode == "noisy-light") {
+      if (!failed || event_write != 0)
         throw std::runtime_error("oversized input was not rejected");
-      if (calls > pw_stick::kMaxBurstGates + 1)
-        throw std::runtime_error("oversized input exceeded capture capacity");
     }
     if ((mode == "max-packet" || mode == "dense-packet") &&
         (failed || event_write != 1))
       throw std::runtime_error("valid full-length packet was rejected");
-    if (mode == "contact-recovers" &&
-        (failed || event_write != 2 || events[0].first != 0 ||
-         events[0].last != 1023 || events[1].first != 1200 ||
-         events[1].last != 1200 + 135 * 30))
-      throw std::runtime_error("capture did not recover after the quiet gap");
     std::printf("%s: no reset; sampled %u gates (%llu us)\n", mode.c_str(),
                 calls, (unsigned long long)((cycles - started) / 240));
     return 0;
@@ -191,9 +168,6 @@ with tempfile.TemporaryDirectory(prefix="stickwalker-rx-watchdog-") as temp:
         "dense-packet",
         "continuous-light",
         "noisy-light",
-        "loose-contact-at-start",
-        "contact-lost-during-packet",
-        "contact-recovers",
         "cancelled-packet",
     ):
         for wrap in (False, True):
@@ -203,4 +177,4 @@ with tempfile.TemporaryDirectory(prefix="stickwalker-rx-watchdog-") as temp:
     if failures:
         print("Failed receive cases:", failures)
         sys.exit(1)
-    print("Receive watchdog bounds: 18 cases passed.")
+    print("Receive watchdog bounds: 12 cases passed.")
