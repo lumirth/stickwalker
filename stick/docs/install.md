@@ -98,11 +98,16 @@ Turn the Stick off and disconnect USB while fitting it:
 G5 and GND are adjacent on the header. Identify the leads using the
 [BPV10NF package drawing](https://www.vishay.com/docs/81503/bpv10nf.pdf#page=4),
 especially if they have already been trimmed. Connect the bare photodiode
-directly between those two pins. Keep the leads from touching each other or neighboring pins,
-and secure the connections for carrying the Stick.
+directly between those two pins. Keep the leads from touching each other or
+neighboring pins. Use a connector or mount that holds both contacts firmly;
+the connection needs to stay steady while you carry the Stick and during transfers.
 
 Point the photodiode's rounded face and the Stick's infrared transmitter toward
 the Game Card's infrared window or the other walker's infrared window. Both
 need a clear line of sight. If a transfer times out, check the two connections
 and polarity, then adjust alignment and separation while keeping the devices
 still.
+
+If transfers work intermittently or report a disrupted connection, turn the
+Stick off, disconnect USB and reseat the photodiode. Once both contacts are
+secure, turn it on and retry the transfer.
