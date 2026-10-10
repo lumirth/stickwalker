@@ -11,3 +11,5 @@ __pycache__/
 /stick/.build/
 /assets/local/
 /.ruff_cache/
+
+/stick/simulation/target/

@@ -1,0 +1,14 @@
+[package]
+name = "stickwalker-e2e"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+esp32s3 = { path = "../.build/simulator/esp32sim/esp32s3" }
+esp-soc = { path = "../.build/simulator/esp32sim/esp-soc" }
+esp-periph = { path = "../.build/simulator/esp32sim/esp-periph" }
+
+[[bin]]
+name = "stickwalker-e2e"
+path = "main.rs"

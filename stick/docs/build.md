@@ -58,24 +58,23 @@ Use `--output-dir` to keep builds in separate directories. Add `--bench-control`
 for a diagnostic build with serial commands and tracing. Release builds use the
 default production mode.
 
-## Host checks
+## Firmware E2E checks
 
-Install a C/C++ compiler with AddressSanitizer and UndefinedBehaviorSanitizer
-(Apple Clang on macOS, or GCC/Clang on Linux), then run:
+Install Rust 1.98.1 and Tesseract, then run:
 
 ```sh
 uv run python stick/check.py
 ```
 
-This runs the Python utility tests, sanitizer-backed C/C++ tests, and
-regressions for peer play, transmission, input, power and codec startup.
-They run on your computer with simulated peripherals. The optional optical
-replay and HGSS score audits use locally retained recordings and score data.
+This builds production firmware and boots it on a simulated Stick S3. It checks
+Settings navigation, rotation and appearance changes, persistence after restart,
+and Connect recovery and retry with the receiver held low or high. The runner
+reads the rendered display and decodes the transmitted infrared waveform.
 
-The peer regressions cover identity provisioning and save migration, first and
-repeat encounters, day rollover, reboot, walk return, reset and interrupted
-walk-transfer recovery. They exercise the native protocol with a simulated
-EEPROM and optical transport.
+Each run saves screenshots, console output, signal recordings, flash and a
+result record under `stick/.build/e2e-results/`. The record identifies the
+application and simulator used. See the [simulation guide](../simulation/README.md)
+for setup, retained builds and scenario commands.
 
 For distributable archives and optical timing verification, follow
 [release preparation](release.md).

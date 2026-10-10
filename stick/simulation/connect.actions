@@ -1,0 +1,36 @@
+run 6000
+gpio 5 0
+press M
+press R
+run 500
+release M
+release R
+run 10
+screen connect.png
+run 2000
+screen result.png
+run 4000
+press L
+run 100
+release L
+run 100
+screen settings-after.png
+optical first.optical
+# Retry with the input held high: wait for the ordinary no-reply result.
+gpio 5 1
+press L
+run 100
+release L
+run 200
+press M
+press R
+run 300
+release M
+release R
+run 10000
+press L
+run 100
+release L
+run 200
+screen settings-retry.png
+optical retry.optical
