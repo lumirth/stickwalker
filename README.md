@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/stickwalker-logo.svg" alt="Stickwalker handheld with a Pineco on its screen" width="480">
+</p>
+
 # Stickwalker
 
 Stickwalker is firmware that turns an M5Stack Stick S3 into a recreation of the
