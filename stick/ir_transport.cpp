@@ -108,6 +108,12 @@ int64_t last_peer_pulse_us = 0;
 TaskHandle_t worker_handle = nullptr;
 TaskHandle_t protocol_handle = nullptr;
 
+bool worker_parked() {
+  return !worker_handle ||
+      (__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE) &&
+       eTaskGetState(worker_handle) == eSuspended);
+}
+
 void core1_tick(bool enabled) {
   systimer_ll_enable_alarm_int(&SYSTIMER, SYSTIMER_ALARM_OS_TICK_CORE1,
                                enabled);
@@ -139,6 +145,12 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
        ++gate) {
     if (session_idle_abort && !in_packet &&
         gate - last_service_gate >= kGateHz / 10) break;
+    if (in_packet && gate - first_low >= pw_stick::kMaxBurstGates) {
+      // Continuous light can keep a burst open. Reject it at the capture
+      // limit so both cores resume their interrupts before the watchdog.
+      __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+      break;
+    }
     const uint32_t t0 = next;
     fraction += 4;
     next += 694;
@@ -275,8 +287,7 @@ finish:
   if (bundle) dedic_gpio_del_bundle(bundle);
   if (protocol_handle) xTaskNotifyGive(protocol_handle);
   __atomic_store_n(&worker_done, true, __ATOMIC_RELEASE);
-  // Deleting the current worker queues its TCB for the small IDLE0 stack to
-  // free. Defer that cleanup to the protocol task, which has more stack.
+  // The protocol task waits for eSuspended before freeing this task's stack.
   vTaskSuspend(nullptr);
 }
 
@@ -303,6 +314,10 @@ extern "C" void StickIrInitPins(void) {
 }
 
 extern "C" void StickIrConfigure(void) {
+  if (worker_handle) {
+    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+    return;
+  }
   const bool clock_ok = setCpuFrequencyMhz(240);
   __atomic_store_n(&failed, !clock_ok || !pw_stick::prepare_ir_tx(),
                     __ATOMIC_RELEASE);
@@ -313,6 +328,10 @@ extern "C" void StickIrPassiveDiagnostic(int enabled) {
 }
 
 extern "C" void StickIrStart(void) {
+  if (worker_handle) {
+    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+    return;
+  }
   if (__atomic_load_n(&failed, __ATOMIC_ACQUIRE)) return;
   pw_stick::reset_rx_timing();
   StickSoundQuiesceForIr();
@@ -383,11 +402,8 @@ extern "C" void StickIrStart(void) {
 extern "C" void StickIrStop(void) {
   __atomic_store_n(&stop_requested, true, __ATOMIC_RELEASE);
   const int64_t deadline = esp_timer_get_time() + 500000;
-  while (worker_handle && !__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE) &&
-         esp_timer_get_time() < deadline)
+  while (!worker_parked() && esp_timer_get_time() < deadline)
     delay(1);
-  if (worker_handle && !__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE))
-    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
 #ifdef PW_STICK_BENCH_CONTROL
   if (trace_enabled())
     Serial.printf("PW_STICK_WORKER_STOP handle=%p done=%u heap_ok=%u\n",
@@ -395,9 +411,12 @@ extern "C" void StickIrStop(void) {
                   unsigned(__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE)),
                   unsigned(heap_caps_check_integrity_all(false)));
 #endif
-  const bool worker_stopped = !worker_handle ||
-      __atomic_load_n(&worker_done, __ATOMIC_ACQUIRE);
-  if (worker_handle && worker_stopped)
+  if (!worker_parked()) {
+    // Keep the live task and its resources for the next stop attempt.
+    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+    return;
+  }
+  if (worker_handle)
     vTaskDelete(worker_handle);
   worker_handle = nullptr;
   __atomic_store_n(&running, false, __ATOMIC_RELEASE);
@@ -408,8 +427,7 @@ extern "C" void StickIrStop(void) {
   if (!pw_stick::suspend_ir_tx())
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
   StickBoardPower().setExtOutput(false);
-  // Keep the sampling clock running until the worker has stopped.
-  if (worker_stopped) setCpuFrequencyMhz(80);
+  setCpuFrequencyMhz(80);
 #ifdef PW_STICK_BENCH_CONTROL
   if (trace_enabled()) {
   unsigned histogram[8] = {};

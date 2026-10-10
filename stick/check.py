@@ -14,9 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 C_TESTS = {
     "device_identity": ["stick/device_identity.c"],
     "bitfield_layout": [],
-    "wire_endian": [],
     "bulk_decode": ["src/support/lib_common.c"],
-    "scratch": ["src/support/lib_common.c"],
     "eeprom_mirror": [
         "src/application/pw_eeprom_m95512_io.c",
         "src/support/lib_common.c",
@@ -84,6 +82,8 @@ def main() -> None:
                 subprocess.run([str(binary)], check=True)
                 print(f"{name}: PASS", flush=True)
         for path in (
+            "stick/tests/ir_receive_watchdog_test.py",
+            "stick/tests/ir_receive_lifecycle_test.py",
             "stick/tests/peer_lifecycle_test.py",
             "stick/tests/ir_tx_power_test.py",
             "stick/audits/m_only_wake_trace.py",

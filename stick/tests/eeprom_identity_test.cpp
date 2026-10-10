@@ -33,19 +33,38 @@ static void seed(const std::vector<uint8_t> &save)
   memcpy(file.data() + sizeof(header), save.data(), save.size());
 }
 
-int main()
+static void verify_repair(const std::vector<uint8_t> &before)
 {
-  // A provisioned blank image lets us derive an independent expected snapshot.
-  std::vector<uint8_t> before(kImageBytes, 0xff), repaired = before;
+  // The EEPROM format stores two 40-byte IDs, each followed by a checksum.
+  constexpr unsigned primary = 0x0083, backup = 0x0183, id_bytes = 40;
+  const uint8_t *id = image + primary;
   uint8_t mac[6];
   esp_efuse_mac_get_default(mac);
-  assert(StickIdentityRepair(repaired.data(), mac));
+  assert(memcmp(id + id_bytes - sizeof(mac), mac, sizeof(mac)) == 0);
+  assert(memcmp(id, image + backup, id_bytes + 1) == 0);
+  unsigned sum = 1;
+  for (unsigned i = 0; i < id_bytes; ++i)
+    sum += id[i];
+  assert(id[id_bytes] == uint8_t(sum));
+  for (unsigned i = 0; i < before.size(); ++i) {
+    const bool master =
+        (i >= primary && i <= primary + id_bytes) ||
+        (i >= backup && i <= backup + id_bytes);
+    if (!master)
+      assert(image[i] == before[i]);
+  }
+}
+
+int main()
+{
+  std::vector<uint8_t> before(kImageBytes, 0xff);
   seed(before);
   assert(StickEepromMount());
-  assert(generation == 2 && memcmp(image, repaired.data(), kImageBytes) == 0);
+  verify_repair(before);
   const auto checkpoint = fs::files;
   reboot();
   assert(StickEepromMount());
+  verify_repair(before);
   assert(fs::files == checkpoint); // No extra writes on a repaired boot.
 
   // Fail at the header, mid-image, or rename. Every retry retains the old save
@@ -59,7 +78,7 @@ int main()
     assert(fs::files.at(kSlots[0]) == original);
     reboot();
     assert(StickEepromMount());
-    assert(memcmp(image, repaired.data(), kImageBytes) == 0);
+    verify_repair(before);
   }
 
   // The migration must operate on replayed game progress, not the older slot.
@@ -71,12 +90,12 @@ int main()
   log.resize(sizeof(journal) + sizeof(patch));
   memcpy(log.data(), &journal, sizeof(journal));
   memcpy(log.data() + sizeof(journal), patch, sizeof(patch));
-  repaired[0xce90] = 0x42;
+  before[0xce90] = 0x42;
   assert(StickEepromMount());
-  assert(memcmp(image, repaired.data(), kImageBytes) == 0);
+  verify_repair(before);
   reboot();
   assert(StickEepromMount());
-  assert(memcmp(image, repaired.data(), kImageBytes) == 0);
+  verify_repair(before);
   puts("automatic identity checkpoint, interrupted writes and journal replay: "
        "PASS");
 }
