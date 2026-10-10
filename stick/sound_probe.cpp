@@ -1,5 +1,5 @@
 #ifdef PW_STICK_BENCH_CONTROL
-// Local self-test only. Keep aggregate energy; never retain microphone audio.
+// The self-test reports aggregate energy measurements.
 #include "foreground_bridge.h"
 #include "sound_bridge.h"
 #include "board_hal.h"
@@ -16,7 +16,8 @@
 #include <cstring>
 
 namespace {
-// Diagnostic spectrum only: samples live in bounded RAM and are cleared below.
+// Clear the temporary sample buffer after calculating the diagnostic
+// spectrum.
 unsigned peak_bin(const int16_t *samples, unsigned count) {
   if (count < 512) return 0;
   static float real[512], imaginary[512];

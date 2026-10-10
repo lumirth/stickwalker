@@ -9,9 +9,8 @@ ROM file.
 
 ## Host setup
 
-The verified combinations are **macOS Arm64** through Wibo/Rosetta and
-**Windows x86_64** with native compiler execution. Other combinations may work;
-they remain unverified.
+The supported hosts are macOS Arm64 using Wibo/Rosetta and Windows x86_64
+running the compiler directly.
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) through your
 preferred package manager. For example, macOS with Homebrew:

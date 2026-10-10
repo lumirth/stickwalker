@@ -1,8 +1,8 @@
 # Device and software validation
 
-The reconstruction, Stick adapters and physical board have been checked at
-several levels. These records identify the firmware and setup used for each
-result; the current release's qualification record identifies its own tests.
+These records cover device trials and host tests during development. Each
+release also includes a qualification record listing its firmware hashes and
+completed tests.
 
 | Area | Evidence and results |
 | --- | --- |
@@ -11,7 +11,8 @@ result; the current release's qualification record identifies its own tests.
 | Sound | Sixteen native scores passed 176 host timing cases. A board trial passed 24/24 acoustic cases across cold starts and warm repeats. See [audio trials](history/audio.md). |
 | Power and wake | Battery-only trials exercised sleep returns, advancing RTC, panel restoration and RTC GPIO handoff. Generated gestures exercised the M-only wake policy. See [power and wake trials](history/power-and-wake.md). |
 | Production installation | The September 27 readback verified the installed application, preserved paired storage and advancing RTC after resume. |
-| Host regressions | Checks cover utility recovery, layouts/chords, wire and EEPROM boundaries, scratch pointers, RTC events, display commands, decoding and adapter lifecycle faults. |
+| Host regressions | Checks cover utilities, controls, wire formats, EEPROM recovery, identity repair, peer encounters and day rollover, RTC events, display commands, decoding and peripheral failures. |
+| October 10 identity repair | Host tests repaired three retained device saves and preserved every byte outside the identity fields and their checksums. Simulated checkpoint failures recovered on reboot; peer lifecycle tests passed for both status roles. |
 
 ## Optical failures under repeated testing
 
@@ -39,7 +40,7 @@ from this image. This establishes continuity of acquisition code across builds.
 The [release checklist](release.md#device-checks-for-a-stable-release) calls for
 physical controls, repeated retail transfers with both games, walking
 comparisons, battery measurements and interrupted-write recovery on the exact
-candidate. These extend the results above into a stable release test record.
+candidate.
 
 The [evidence archive](history/README.md) retains image identities, measurements,
 failed probes and test methods. Raw traces and private flash snapshots are kept

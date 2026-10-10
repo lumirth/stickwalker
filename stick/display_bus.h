@@ -7,9 +7,9 @@
 extern "C" {
 #endif
 
-/* Only the H8 register fields the original NT7508 drawing module uses. The
- * assignments preserve its command/data mode and ready polling; bytes are
- * handed to the virtual NT7508 by StickDisplayWrite. */
+/* The NT7508 drawing code uses these H8 register fields for command/data
+ * selection and ready polling. StickDisplayWrite sends the resulting bytes to
+ * the emulated display. */
 typedef struct {
   struct { u8 B0, B1; } BIT;
 } StickPdr1;

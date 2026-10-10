@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 namespace pw_stick {
-// Match green to the normalized 5-bit red/blue level, not to their raw code.
-// Decoded channels differ by at most one 8-bit level at the chosen shades.
+// Normalize the six-bit green channel to the five-bit red and blue channels.
+// The resulting eight-bit values differ by at most one level.
 constexpr uint16_t neutral_gray(unsigned red_blue) {
   const unsigned green = (red_blue * 63 + 15) / 31;
   return uint16_t((red_blue << 11) | (green << 5) | red_blue);

@@ -20,25 +20,23 @@ struct WireBurst {
   int16_t origin_twice = 0;
   uint8_t fit_pass = 0;
 
-  // Framing alone determines physical acceptability. The native protocol
-  // checks CONNECT value, checksum, command, length, and session state.
+  // The decoder checks UART framing. The native protocol checks CONNECT,
+  // checksum, command, length and session state.
   bool credible_uart() const {
     return length && stops == length &&
            (starts == length || (length >= 8 && starts + 1 == length));
   }
 };
 
-// Decode an already bounded optical burst on the foreground task only.
-// Static workspace makes calls non-reentrant. Each bin is the measured GPIO5
-// threshold-crossing delay for one 3x baud gate, or 255 for no crossing.
-// Acquisition and phase fitting consult UART geometry only, never expected
-// payload bytes, checksums, or protocol commands. The caller owns the ring,
-// optical-gap detection, and timestamps.
+// Decode one bounded optical burst on the foreground task. Each bin is the
+// GPIO5 threshold-crossing delay for a 3x-baud gate, or 255 for no crossing.
+// Static workspace makes calls non-reentrant. The caller supplies the ring,
+// burst boundaries and timestamps.
 bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
                        uint8_t pulse_cutoff = 124);
 
-// The optical peer's baud estimate is retained only within one IR session.
-// A credible long burst supplies the estimate; protocol bytes do not.
+// Keep the baud estimate from a credible long burst for the rest of this IR
+// session.
 void reset_rx_timing();
 
 }  // namespace pw_stick

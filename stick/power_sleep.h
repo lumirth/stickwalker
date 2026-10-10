@@ -3,8 +3,7 @@
 
 #include <stdint.h>
 
-// Retained-state ESP32 light sleep. The caller owns the application clock and
-// supplies the next deadline; this layer only suspends the CPU between work.
+// Suspend the CPU in Light-sleep until the caller's next work deadline.
 bool StickSleepBegin(void);
 bool StickSleepUntil(uint64_t deadline_us);
 

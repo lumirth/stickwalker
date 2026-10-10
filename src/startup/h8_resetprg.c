@@ -1,6 +1,7 @@
 #include "types.h"
 #ifdef PW_STICK_S3
 #include "stick_wire_endian.h"
+#include "device_identity.h"
 #endif
 #include "startup/iodefine.h"
 #include "project.h"
@@ -377,6 +378,10 @@ void CommitStagedWalk(void)
     cursor.w.destination = (cursor.w.destination + page);
     remaining++;
   }
+#ifdef PW_STICK_S3
+  /* Also covers boot replay of a transfer staged by older firmware. */
+  StickIdentitySyncOwnRecord();
+#endif
 }
 
 #define PW_TRAINER_NAME_COPY_BYTES STATUS_NAME_BYTES

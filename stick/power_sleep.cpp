@@ -129,8 +129,8 @@ bool StickSleepUntil(uint64_t deadline_us) {
     return false;
   }
   const bool m_only = StickInputMOnlyWake();
-  // L remains responsive in the visible game/Settings. Dark operation has
-  // no side-button timer: wake only for M or the next native work deadline.
+  // Cap visible-screen sleep for L polling. With the screen off, wake for M
+  // or the next game deadline.
   uint64_t duration = deadline_us - now - 1000;
   if (!m_only && duration > 100000) duration = 100000;
   if (digitalRead(11) == LOW || (!m_only && digitalRead(12) == LOW)) return false;
@@ -169,10 +169,9 @@ bool StickSleepUntil(uint64_t deadline_us) {
     retained.gpio = last_gpio;
     retained.duration = duration;
 #endif
-    // A wake source becoming pending, or entry overhead consuming a short
-    // interval, cancels this opportunity. Neither invalidates the wake
-    // configuration. Return to scheduled work instead of vetoing sleep for
-    // a second after every such race.
+    // A pending wake source or insufficient entry time cancels this sleep
+    // attempt. Return to scheduled work and keep the valid wake
+    // configuration.
     if (result == ESP_ERR_SLEEP_REJECT ||
         result == ESP_ERR_SLEEP_TOO_SHORT_SLEEP_DURATION) {
       ++rejections;
@@ -182,8 +181,8 @@ bool StickSleepUntil(uint64_t deadline_us) {
       return false;
     }
     record_failure(result);
-    // Reinstall wake configuration after an unexpected sleep failure rather
-    // than retrying a broken configuration every millisecond forever.
+    // Reinstall the wake configuration after an unexpected sleep failure and
+    // delay the next attempt.
     ready = false;
     retry_begin_us = uint64_t(esp_timer_get_time()) + 1000000;
     return false;

@@ -26,14 +26,14 @@ unsigned StickForegroundUiFrame(void) { return g_state.uiFrame; }
 void StickForegroundRun(void) {
   if (g_task) g_task();
 #ifdef PW_STICK_BENCH_CONTROL
-  /* The bench command represents one button request, not a latched input. */
+  /* Consume each bench button request once. */
   if (g_task == IrProtocolTick) g_state.events.byte &= EVENT_CLEAR(EVENT_IR_REQUEST);
 #endif
 }
 void StickForegroundRequestIr(void) {
 #ifdef PW_STICK_BENCH_CONTROL
-  /* This is the same source entry used by the registered walker's Connect
-   * menu. The event shortcut is only consumed by the unregistered home. */
+  /* Enter the registered walker's Connect menu directly. Unregistered walkers
+   * use the home-screen event. */
   TryBeginIr();
 #else
   g_state.events.byte |= EVENT_IR_REQUEST;

@@ -12,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 C_TESTS = {
+    "device_identity": ["stick/device_identity.c"],
     "bitfield_layout": [],
     "wire_endian": [],
     "bulk_decode": ["src/support/lib_common.c"],
@@ -83,6 +84,7 @@ def main() -> None:
                 subprocess.run([str(binary)], check=True)
                 print(f"{name}: PASS", flush=True)
         for path in (
+            "stick/tests/peer_lifecycle_test.py",
             "stick/tests/ir_tx_power_test.py",
             "stick/audits/m_only_wake_trace.py",
             "stick/audits/idle_power_trace.py",

@@ -1,11 +1,14 @@
-# Preserve native motion ownership gaps
+# Process motion samples on the original schedule
 
-Process each eligible motion sample immediately on the existing inactive/activity
-and moving/interactive schedules. Preserve the native FFT window and suspend
-sampling while sound or IR owns foreground execution and shared workspace.
-Ordinary menus and games continue sampling.
+Stickwalker processes each acceleration sample as it arrives, using the
+Pokéwalker's inactive and walking schedules and its 64-sample FFT window.
+Sound and infrared pause sampling while they use the shared working memory.
+Menus and games continue sampling.
 
-These ownership gaps are part of the original application's behavior. Deferred
-FIFO batching would introduce a new scheduler and require chronological replay
-of input and ownership events; it is outside this design.
-See the [screen-off wake policy](0002-m-only-dark-wake.md).
+This preserves the order in which the original program receives movement and
+input. Buffering samples for later processing would also require replaying
+button events and task changes in that order. The port therefore keeps
+immediate processing.
+
+See the [screen-off wake policy](0002-m-only-dark-wake.md) for how buttons affect
+this schedule.

@@ -18,7 +18,7 @@ at least 20 ms.
 
 With the screen off, hold M for half a second in any layout or rotation.
 Release all buttons before navigating. L and R work again once the screen is
-awake. A short M tap does not complete the wake gesture.
+awake.
 
 ## Change settings
 

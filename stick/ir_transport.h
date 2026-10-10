@@ -7,17 +7,12 @@
 extern "C" {
 #endif
 
-/* Hardware boundary for the original src/support/ir.c state machine.
- * The physical receiver delivers complete raw 115200-baud UART/SIR bursts
- * in arrival order, closed by a payload-blind optical/UART gap.
- * The native protocol remains responsible for XOR 0xAA, packet boundaries,
- * checksums, commands, and session state. The TX entry points accept logical
- * bytes and apply the transport XOR before emitting SIR.
- *
- * SendFrame returns only after the final wire stop bit. The adapter owns the
- * bounded burst queue. It must never accept self-echo
- * from a local transmission. A queue overflow or physical transport fault is
- * sticky until StickIrStart and is reported by StickIrFailed. */
+/* Receive complete raw 115200-baud UART/SIR bursts in arrival order. Optical
+ * gaps delimit bursts; src/support/ir.c decodes the XOR 0xAA bytes and checks
+ * packets and session state. TX accepts logical bytes, applies XOR and emits
+ * SIR. SendFrame waits for the final stop bit. Local transmission suppresses
+ * self-echo. Queue overflow and transport faults set StickIrFailed until
+ * StickIrStart clears it. */
 void StickIrInitPins(void);
 void StickIrConfigure(void);
 void StickIrStart(void);
@@ -27,10 +22,10 @@ u16 StickIrTicks(void);
 void StickIrDelayTicks(u16 ticks);
 void StickIrSendByte(u8 logical);
 void StickIrSendFrame(const u8 *logical, u8 length);
-/* Take at most one complete burst. wire has capacity bytes; length includes
- * every byte and lastObservationTick is the last optical observation on the
- * 32768-Hz, wrapping native Timer W scale. A burst larger than capacity sets
- * the sticky failure flag instead of silently truncating. */
+/* Read one complete burst into wire, which has capacity bytes. length
+ * receives the byte count; lastObservationTick receives the final optical
+ * observation on the wrapping 32768 Hz Timer W clock. An oversized burst sets
+ * the failure flag. */
 int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
                      u16 *lastObservationTick);
 int StickIrFailed(void);

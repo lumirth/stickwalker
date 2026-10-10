@@ -195,8 +195,7 @@ These projects and manuals informed contributor setup and build tooling.
 
 ## Historical development context
 
-The coding references informed this project's choice of conventions. The
-Pokéwalker team's original house style remains unknown.
+These references informed the reconstruction's coding conventions.
 
 - Contemporary Japanese embedded-development guidance consulted when
   choosing consistent naming, type, and coding policies.
@@ -264,8 +263,7 @@ above also contributed to the reconstruction's technical foundations.
 ## Stick hardware and runtime
 
 The port uses M5Unified 0.2.21, M5GFX 0.2.29 and ESP-IDF 5.5 interfaces from
-the pinned M5Stack board core. These sources support the adapter contracts
-and debugging procedures, rather than measurements of this firmware's runtime.
+the pinned M5Stack board core. These references describe their hardware and APIs.
 
 | Subject | Primary sources |
 | --- | --- |

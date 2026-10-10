@@ -8,8 +8,7 @@ sections, bitfield order and machine instructions.
 
 For Stickwalker adapter changes, start with the [Stick development guide](../stick/README.md).
 The application paths below are shared, but compiler widths, register access
-and startup are target-specific. `PW_STICK_S3` guards the port's compatibility
-seams; C++ adapters use the platform ABI. Preserve explicit widths and byte order
+and startup are target-specific. `PW_STICK_S3` selects the port's hardware and compiler adaptations; C++ adapters use the platform ABI. Preserve explicit widths and byte order
 in serialized records rather than relying on host structure layout.
 
 H8 link-order and retail-matching requirements below apply to the original
@@ -212,8 +211,7 @@ bitfield order, alignment, expression grouping and local lifetimes matter.
 Call order also preserves shared random-number consumption and workspace
 ownership. Run the [formatter, linter and complete builds](build.md).
 
-The target assumptions are visible in scalar and layout declarations, drivers,
-interrupts and build configuration. One narrow return constraint remains:
+One CH38-specific return convention needs care when porting:
 `EepromWriteByte` passes the last sampled event byte through the CH38 return
 register without an ordinary C return expression. Its callers consistently
 forward or inspect the whole event byte, including its clock and UI flags.
@@ -229,6 +227,3 @@ assumptions. The qualified suites are CH38 6.02.01 and 6.02.02.
 - Preserved fields keep their observed initialization and transfer behavior
   where their meaning remains unresolved, including the event-item prefix,
   leading walk/peer words and the separately cleared Pokemon appearance bit.
-
-Byte identity proves the executable result. Field meanings and the frequency
-with which a physical device encounters a path require separate evidence.

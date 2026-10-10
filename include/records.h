@@ -68,8 +68,7 @@ typedef char DeviceStatusFirmware
 typedef char
     DeviceStatusTime[offsetof(DeviceStatus, rtcSeconds) == 96 ? 1 : -1];
 
-/* Species, held item and moves retain their serialized little-endian bytes.
- * The meanings of reserved members remain unresolved. */
+/* Species, held item and moves retain their serialized little-endian bytes. */
 typedef struct {
   u16 idLe;
   u16 heldItemLe;
@@ -89,9 +88,8 @@ typedef char PokemonMoves[offsetof(Pokemon, movesLe) == 4 ? 1 : -1];
 typedef char PokemonLevel[offsetof(Pokemon, level) == 12 ? 1 : -1];
 typedef char PokemonTrailingByte[offsetof(Pokemon, preserved0F) == 15 ? 1 : -1];
 
-/* The little-endian ID occupies the first two bytes. Reward paths replace it
- * while carrying the trailing bytes through inventory writes. Their meaning
- * is unresolved; the item import and display paths consume the ID. */
+/* Reward paths replace the two-byte little-endian item ID and preserve the
+ * trailing bytes. Import and display read the ID. */
 typedef struct {
   u16 idLe;
   u8 preserved[2];
@@ -151,8 +149,8 @@ typedef struct {
   u8 preserved;
 } EncounterRule;
 
-/* The bonus-item transfer preserves these six bytes through native 32-bit
- * and 16-bit copies. Their meaning remains unresolved. */
+/* Bonus-item transfers copy all six bytes through native 32-bit and 16-bit
+ * assignments. */
 typedef union {
   u8 bytes[6];
   struct {

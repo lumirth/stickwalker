@@ -20,8 +20,8 @@ extern "C" void StickMotionSample(s8 *x, s8 *y, s8 *z) {
   static s8 last_x = 0, last_y = 0, last_z = 0;
   float ax = 0, ay = 0, az = 0;
   if (!x || !y || !z) return;
-  // A missed BMI270 data-ready poll must not inject a synthetic (0,0,0)
-  // movement into the original activity and step estimator.
+  // Keep the previous sample between fresh BMI270 readings; a zero sample
+  // would introduce artificial movement.
   if (StickBoardAccel(&ax, &ay, &az)) {
     last_x = high_byte(ax);
     last_y = high_byte(ay);

@@ -81,7 +81,7 @@ The Stick build uses M5Stack's ESP32 board package **3.3.9**,
 The two M5 libraries use MIT; their full notices are retained in
 [`stick/licenses/`](../stick/licenses/). The Arduino ESP32 core contains
 LGPL-2.1-or-later material, and its underlying ESP-IDF, precompiled libraries
-and components retain their own terms. These components retain their own licenses alongside Stickwalker's MIT license.
+and components have their own licenses.
 
 Each firmware release includes a runtime archive with the exact application
 objects, Arduino core archive, linked SDK libraries, linker scripts, dependency

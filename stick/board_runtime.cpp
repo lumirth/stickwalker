@@ -84,8 +84,8 @@ constexpr unsigned kDeviceMenuRows = 5;
 bool usb_present = true;
 void refresh_usb_power() {
   uint16_t millivolts;
-  // Unknown power must keep native USB usable. Retry at the next scheduled
-  // check; only a successful measurement can permit battery-mode sleep.
+  // Keep the CPU awake after a failed power read so USB stays available.
+  // Retry at the next scheduled check.
   usb_present = !StickBoardVbusVoltage(&millivolts) || millivolts >= 4000;
 }
 #ifdef PW_STICK_BENCH_CONTROL
@@ -235,8 +235,8 @@ extern "C" void StickPortSetup(void) {
   StickEepromDefer(0);
   StickDisplayPanelSetOrientation(StickInputOrientation());
   present_game_if_changed(true);
-  // The external 5 V rail feeds the board IR hardware, not the bare GPIO5
-  // photodiode. It is restored by StickIrConfigure when a session starts.
+  // The board's infrared hardware uses the external 5 V rail.
+  // StickIrConfigure restores it at the start of a session.
   StickBoardPower().setExtOutput(false);
   if (!StickSleepBegin())
     Serial.printf("PW_STICK_SLEEP_SETUP_FAILED retry_ms=1000\n");
@@ -277,8 +277,8 @@ extern "C" void StickPortSetup(void) {
 extern "C" void StickPortLoop(void) {
   if (!ready) { delay(50); return; }
 #ifndef PW_STICK_BENCH_CONTROL
-  // Production has no serial command parser. Unread debug input must never
-  // become a persistent battery-powered sleep veto, even after unplugging.
+  // Limit the serial-input sleep check to builds that consume diagnostic
+  // commands.
   for (unsigned discarded = 0; discarded < 64 && Serial.available(); ++discarded)
     Serial.read();
 #endif
@@ -406,8 +406,8 @@ extern "C" void StickPortLoop(void) {
       Serial.println("PW_STICK_FRAME_END");
     }
     if (command == 'j' && !StickForegroundIsIr()) {
-      // Reproduce EXT1's ownership of our two switches without sleeping the
-      // USB PHY, then exercise the real sleep-setup restoration path.
+      // Switch both buttons to RTC mode, then exercise the sleep-return GPIO
+      // restoration while USB remains connected.
       const esp_err_t first = rtc_gpio_init(GPIO_NUM_11);
       const esp_err_t second = rtc_gpio_init(GPIO_NUM_12);
       const unsigned before =
@@ -469,8 +469,7 @@ extern "C" void StickPortLoop(void) {
       Serial.println();
     }
     if (command == 'G' && !StickForegroundIsIr()) {
-      // Reproduce foreground/render latency after the native score handoff.
-      // No navigation, save edits, or replacement of native sound settings.
+      // Delay score servicing to reproduce foreground rendering stalls.
       const int started = StickForegroundBenchMoveScore();
       if (started) delay(80);
       Serial.printf("PW_STICK_SOUND_STALL started=%u stall_ms=80\n", started);
@@ -544,8 +543,8 @@ extern "C" void StickPortLoop(void) {
     }
     if (command == 'F' && !StickForegroundIsIr() &&
         StickDisplayPanelIsReady()) {
-      // A reversible hardware check for the cold-wake command contract.
-      // End in display-on with the existing image, without touching game data.
+      // Exercise cold panel wake and finish with the current game image
+      // displayed.
       auto *screen = StickBoardScreen();
       auto *panel = screen->getPanel();
       screen->startWrite(); screen->writeCommand(0x28); screen->endWrite();
@@ -692,8 +691,8 @@ extern "C" void StickPortLoop(void) {
   }
   if (previous_ir) {
     previous_ir = false;
-    // IR owns the foreground for seconds at a time. Those elapsed samples
-    // cannot be replayed as a burst of MainTick calls after the handoff.
+    // IR can occupy the foreground for several seconds. Resume sampling from
+    // the current time when it finishes.
     next_sample_us = now + sample_period_us();
     next_beep_us = now + 8000;
 #ifdef PW_STICK_BENCH_CONTROL
@@ -720,13 +719,12 @@ extern "C" void StickPortLoop(void) {
   if (sound_elapsed > sound_max_us) sound_max_us = sound_elapsed;
 #endif
 
-  // A foreground owner may have held the loop past several sample slots.
-  // Resume at the current wall clock rather than replaying obsolete ticks.
+  // After a long foreground task, schedule the next sample from the current
+  // time.
   const uint64_t sample_period = sample_period_us();
   if (now > next_sample_us + sample_period) next_sample_us = now;
-  // A queued gesture or another foreground callback may have shortened the
-  // period before this loop began. Do not retain an inactive one-second
-  // deadline merely because the next poll observes the same short period.
+  // Recalculate the deadline when a gesture or foreground callback shortens
+  // the sample period.
   if (StickInputWakeScanActive() && next_sample_us > now + sample_period)
     next_sample_us = now + sample_period;
   if (now > next_input_us + 5000) next_input_us = now;
@@ -834,9 +832,8 @@ extern "C" void StickPortLoop(void) {
       && !Serial.available()
 #endif
       ) {
-    // USB Serial/JTAG disconnects during ESP32-S3 light sleep. Keep the
-    // charging/debug connection usable. Bench Y only arms a retained trial;
-    // it starts after USB is removed and never overrides this veto.
+    // Keep the CPU awake while USB is connected; Light-sleep disconnects USB
+    // Serial/JTAG. An armed battery trial starts after unplugging.
     if (now >= next_vbus_check_us) {
       refresh_usb_power();
       next_vbus_check_us = now + 1000000;

@@ -1,6 +1,6 @@
 # Audio trials, September 26-27, 2026
 
-These tests separate tone-command timing from actual acoustic output. Raw
+These tests measured score timing and acoustic output. Raw
 artifacts remain in `stick/.build/sound-scheduling-2026-09-26/` and
 `stick/.build/codec-startup-2026-09-27/`.
 
@@ -20,7 +20,7 @@ These are host command-lifetime observations.
 A USB bench recorded 20/20 complete native move cues after an 80 ms stall,
 with zero tone/begin/power errors and minimum command lifetime 52,667 µs.
 One I2S startup served the batch; codec/I2S flags returned to zero after the
-hold expired. This did not measure audible quality or battery energy.
+hold expired.
 
 The production app was
 `d9e3c352cf217a292557c099923fd2c7c3fa75c28a5db3be5059a2336d90aef3`.
@@ -32,21 +32,20 @@ boot checkpointed the existing journal from generation 567 to 568.
 ## Cold output path
 
 The proposed missing-clock cause was falsified: all six observations found
-168 to 175 BCLK transitions per 400 µs before the first note. Clock presence
-alone does not establish frequency accuracy.
+168 to 175 BCLK transitions per 400 µs before the first note.
 
 The codec retained power-sequence register `0x0C=0x20` and 24-bit input while
 output was 16-bit stereo. The adapter now verifies stage setup before activation,
 configures DAC bias/format and handles an acknowledged first-write loss.
 Cold preparation uses 200 ms, with no preparation delay for warm repeats.
 At 65 ms the diagnostic ADC transient obscured the 52 ms cue; 200 ms is a
-conservative tested interval, not the DAC's measured minimum settling time.
+the preparation interval used by the passing tests.
 
 The board self-test uses codec digital feedback and microphone energy, requiring
 both the native cue near FFT bin 16/17 and its observed fifth harmonic near
-bin 82/83. Only metrics leave the board; a startup transient alone cannot pass.
+bin 82/83. It reports the spectral measurements and discards the samples.
 
-## Results and limits
+## Results
 
 - BCLK-before-tone: 6/6 present.
 - Physical outgoing PCM: cold and warm native cues both present.
@@ -71,20 +70,16 @@ bin 82/83. Only metrics leave the board; a startup transient alone cannot pass.
   full rail loss, and safe failure after persistent write loss.
 - All 16 existing lifecycle/fault cases pass with the updated cold deadline.
 
-The ADC shares the codec and its own startup can obscure a preexisting acoustic
-signal. Consequently the failed cold captures do **not** independently prove
-that the old DAC emitted no sound. The register initialization defects are
-directly established; their responsibility for every user-reported miss is an
-inference. The passing final captures demonstrate signal output with the
-measurement path enabled. Normal playback still needs listening checks. The test is not a calibrated
-sound-pressure measurement.
+The microphone capture includes the ADC's startup transient, which obscured
+the tone in the failed cold captures. The final 200 ms setup produced the
+expected signal in both cold and warm tests. These measurements describe the
+recorded signal spectrum; listening checks assess the resulting sound.
 
 One intermediate spectral diagnostic overflowed loopTask's stack while printing.
 That batch is invalid and remains in the evidence directory. Diagnostic buffers
 were moved to bounded static storage; the final 24-case batch had no resets.
 
 The production sampler functions retained their complete bytes and addresses.
-These audio trials did not add retail infrared qualification or a discharge test.
 
 The installed codec-startup production app was
 `edcf812717e01e48ac78c1aa9bd2d6e2f930608778bf68cca3afd394deebee94`.

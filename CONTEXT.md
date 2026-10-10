@@ -1,14 +1,13 @@
 # Stickwalker terms
 
 Stickwalker is firmware for recreating a Pokéwalker on the M5Stack Stick S3.
-The reconstructed firmware owns game and protocol behavior.
-The Stick adapters provide hardware services. Use these distinctions when
-changing the scheduler or interpreting validation results.
+The reconstructed firmware implements the game and infrared protocol.
+The Stick adapters connect it to the new hardware.
 
 | Term | Meaning |
 | --- | --- |
 | Native firmware | The original Pokéwalker program represented by the matching H8 reconstruction. |
-| Experience fidelity | Recreating gameplay, progression, screen availability, responsiveness, walking and game compatibility on the Stick. It does not require identical chip settings. |
+| Experience fidelity | Recreating gameplay, progression, screen availability, responsiveness, walking and game compatibility on the Stick. Hardware settings can change to produce the same experience. |
 | Native UI cadence | The application's schedule for rendering and visual state. Ordinary refresh opportunities occur every quarter second; individual animations may advance more slowly. |
 | Panel scan rate | The TFT controller's internal rate for driving its stored image, independent of application cadence and processor image transfers. |
 | Stationary carry | Screen-off operation detecting whether meaningful movement has begun. |

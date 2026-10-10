@@ -12,7 +12,7 @@ constexpr auto kTimer = LEDC_TIMER_3;
 constexpr auto kChannel = LEDC_CHANNEL_7;
 
 unsigned duty(uint8_t brightness) {
-  // Preserve the verified LGFX brightness curve, including its offset.
+  // Use the LGFX brightness curve, including its offset.
   if (!brightness) return 0;
   constexpr unsigned offset = 16 * 259 >> 8;
   return (brightness * (257 - offset) + offset * 255 + 64) >> 7;
@@ -51,8 +51,8 @@ void StickBacklightSet(uint8_t brightness) {
 bool StickBacklightSleepReady(void) { return ready; }
 
 void StickBacklightSuspend(void) {
-  // A duty-update failure clears ready without releasing the hardware.
-  // Track allocation separately so that failure cannot skip idle teardown.
+  // Keep allocation state through a duty-update failure so idle teardown can
+  // still release the hardware.
   if (channel_configured) {
     ledc_stop(kMode, kChannel, 0);
     channel_configured = false;

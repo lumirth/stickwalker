@@ -1,7 +1,7 @@
 # Preparing a release
 
 A release contains installable firmware, source, runtime dependencies and a test
-record tied to its exact firmware bytes. Use a prerelease for early testing;
+record identifying the firmware tested. Use a prerelease for early testing;
 reserve a stable release for an image that completes the device checks below.
 
 ## Build and check
@@ -21,11 +21,10 @@ Find `xtensa-esp32s3-elf-` under the Arduino data directory at
 `packages/m5stack/tools/esp-x32/2601/bin/`.
 
 The timing check compares `measure_ir_gate`, `aligned_next` and `run_gate_segment`
-with the frozen production machine code and binds its report to the candidate
-ELF. Matching those bytes preserves the acquisition implementation used in the
-recorded infrared trials.
+with the production reference. The report records the new ELF hash and whether
+each function's instruction bytes match.
 
-## Assemble dependency materials
+## Assemble the runtime kit
 
 Use the source archives and `sources.json` from the previous release's runtime
 kit, or obtain the pinned archives recorded in
@@ -58,10 +57,10 @@ Packaging verifies the source inventory, firmware hashes, production mode,
 placeholder artwork, absence of diagnostic markers, infrared timing report and
 runtime kit. It produces three archives and `SHA256SUMS`:
 
-- **Firmware ZIP:** application, bootloader, partitions, symbols, installation
-  and player guides, manifests, timing result and dependency notices.
-- **Source archive:** the committed Stickwalker source and documentation.
-- **Runtime archive:** dependency sources and the verified relinking kit.
+- The firmware ZIP contains the binaries, symbols, installation and player
+  guides, manifests, timing result and dependency notices.
+- The source archive contains the committed code and documentation.
+- The runtime archive contains dependency sources and the relinking kit.
 
 The firmware manifest records `hardware_qualified: false`. A separate
 qualification record identifies the commit, app and ELF hashes and the tests
@@ -70,24 +69,30 @@ the previous device results.
 
 ## Device checks for a stable release
 
-Record setup, observations and failures against the frozen candidate. Use
-physical buttons for control checks and retail Game Cards for game compatibility.
+Run these checks on the firmware you intend to publish. Record the setup,
+observations and failures.
 
-1. [Back up and install](install.md) the exact candidate. Read back and verify
-   the app independently. For an app-only update, confirm registration,
+1. [Back up and install](install.md) the candidate. Read back the app and compare
+   its hash. For an app-only update, confirm registration,
    Pokémon, settings and valid EEPROM mirrors survive.
 2. Disconnect USB. Exercise the 500 ms M wake in every layout and rotation,
    ignored dark L/R, abandoned short M taps, navigation after release, Settings,
    display restoration, short sounds and clock progression.
 3. Repeat retail walk-start and return transfers on that image. Record
    whole-operation successes and failures, game/version, distance, orientation,
-   elapsed time and independent EEPROM verification. Include both HeartGold
-   and SoulSilver before reporting tested compatibility with both games.
+   elapsed time and EEPROM readback. Test both HeartGold and SoulSilver.
 4. Compare walking and stationary behavior with actual steps and, where
    available, an original Pokéwalker. Measure whole-device battery current with
-   USB disconnected and a stated use profile before advertising battery life.
+   USB disconnected. Record the time spent walking, idle and using the screen.
 5. Interrupt EEPROM journal/image writes on hardware and verify recovery
    without losing the last completed save.
+6. Update a paired installation from the September 30 firmware with a Pokémon
+   still on it. Confirm identity repair preserves its Pokémon, steps, Watts,
+   items and registration, then return the Pokémon to its Game Card.
+7. With the [photodiode connected](install.md#infrared-receiver), peer-connect
+   with an original Pokéwalker and with another Stickwalker. Check first contact,
+   same-day repeat rejection, a different peer and reconnection after day
+   rollover. Record each device's firmware and game language.
 
 Use the [debugging guide](debugging.md) for retained diagnostics and USB/JTAG
 procedures.
@@ -98,7 +103,6 @@ Run the Linux and macOS CI jobs for the final commit. Check unpacked archives,
 installation links and checksums, including a relink from the unpacked runtime
 archive. Attach all three archives, checksums and the qualification record.
 
-Write notes for a player: what this version offers, the supported board, how to
-install and where to find controls. Include the tested firmware identity and
-one clear account of the completed and remaining device checks. Publish early
-candidates as prereleases; publish a stable release after its device checks pass.
+Write release notes around what changed and how to update. Link the installation
+and controls guides. List the tests completed on this build and the device
+checks still to run. Publish as a prerelease until the stable-release checks pass.

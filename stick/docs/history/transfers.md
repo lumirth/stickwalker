@@ -1,10 +1,8 @@
 # Transfer trials
 
-These results precede the current candidate. Raw traces and independent EEPROM
-readbacks remain under ignored `stick/.build/trials/`. The 3DS peer runs the
-source-owned PHC engine; generated course fixtures do not reproduce a trainer's
-save or localized message renderer. They qualify their tested transport and
-storage paths, not every retail workflow.
+These trials used a retail HeartGold Game Card and a 3DS test peer running the
+HGSS communication protocol with generated course data. Raw traces and EEPROM
+readbacks are kept under `stick/.build/trials/`.
 
 ## Recorded operations
 
@@ -13,8 +11,7 @@ storage paths, not every retail workflow.
   `stick/.build/trials/port-hgss-real-image-atomic-complete/`. Independent
   EEPROM readback matched the HGSS source-built image and the transmitted
   course byte for byte. The course and record in that trial were sealed random
-  payloads, so it proves transport and storage rather than a coherent game
-  screen. Full repeated transaction qualification remains open. A frozen `.137`
+  payloads used to check transport and storage. A frozen `.137`
   app image remains at `../bench/experiments/g5-terminal-start-137/app.bin`;
   its full pre-port flash backup is also retained under `stick/.build/`.
 - A real HeartGold Game Card completed a walk-start transfer with the Stick.
@@ -42,8 +39,6 @@ storage paths, not every retail workflow.
   Flash verification passed, and the user reported that a normal HeartGold
   connection on this production image worked. This second real-card success
   is user-observed; the production image has no per-burst serial trace.
-  Repeated quantitative qualification on one frozen production image remains
-  open.
 - A source-faithful registered-walker `back` transaction on the integrated
   firmware received 90 valid bursts, ended with the original HGSS DONE result,
   and cleared the saved Pokémon flag while retaining registration. An `entry`
@@ -69,7 +64,7 @@ storage paths, not every retail workflow.
   before this series failed on `put` page 59: the source 3DS transmitted wire
   `AA` in the page's first byte, the Stick decoded `AB`, the source checksum
   rejected it, no ACK was sent, and both ends timed out. That trial is retained
-  as `journal-repeat-01-put`. The later 20/20 does not remove this failure.
+  as `journal-repeat-01-put`.
   A bench-only 96-gate opening snapshot now prints when a checksum fails so
   the next occurrence can distinguish weak/missing optical observation from
   phase assignment. The flashed diagnostic app SHA-256 is

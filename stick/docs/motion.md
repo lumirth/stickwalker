@@ -1,32 +1,29 @@
 # How Stickwalker counts steps
 
-Stickwalker uses the step-counting algorithm reconstructed from the original
-Pokéwalker firmware. The Stick supplies acceleration measurements; the
-Pokéwalker's own logic decides which movement counts as walking and how many
-steps to award.
+Stickwalker runs the Pokéwalker's original step-counting algorithm. The Stick's
+accelerometer measures movement, and the game code decides which movement
+counts as walking and how many steps to award.
 
-The original Pokéwalker uses a Bosch BMA150 accelerometer. The Stick S3 uses a
+The Pokéwalker uses a Bosch BMA150 accelerometer. The Stick S3 uses a
 [Bosch BMI270](https://www.bosch-sensortec.com/en/products/motion-sensors/imus/bmi270),
-a newer motion sensor designed for wearables. Stickwalker reads its three
-acceleration axes through M5Unified and converts them to the signed eight-bit
-samples expected by the reconstructed firmware. One g becomes 64 counts,
-matching the high byte of the BMA150's ±2 g output. Readings saturate at the
-original signed range. If a sensor poll has no fresh reading, the previous
-sample is retained.
+a newer sensor designed for wearables. Stickwalker reads all three axes through
+M5Unified and converts them to the signed eight-bit values used by the original
+firmware. One g becomes 64 counts, matching the BMA150's ±2 g output after the
+original firmware takes its high byte. Values beyond that range saturate.
+Between fresh sensor readings, the adapter keeps the previous sample.
 
-The reconstructed firmware collects batches of 64 samples at its original
-cadence. It analyzes repeated movement across all three axes with a fixed-point
-Fourier transform, selects a walking frequency and carries fractional steps
-between batches. The original pacing logic adds those steps to the daily and
-total counts and awards Watts.
+The game collects 64 samples at its original cadence, then uses a fixed-point
+Fourier transform to find repeated movement across the three axes. It selects
+a walking frequency and carries fractional steps into the next batch. The
+original pacing logic adds steps to the daily and lifetime totals and awards
+Watts.
 
-Keeping that algorithm and matching its input scale gives Stickwalker a basis
-for reproducing the original's walking behavior. Sensor filtering, mounting
-and how you carry the Stick can affect the measured motion. A side-by-side walk
-with an original Pokéwalker is the useful comparison for numerical accuracy.
+Matching the input scale and timing lets the original algorithm work with the
+new sensor, so Stickwalker should count steps much like a Pokéwalker. As with
+the original device, how you carry it affects the motion it measures.
 
-The sensor adapter is in [`motion_sample.cpp`](../motion_sample.cpp) and
-[`accel_bridge.cpp`](../accel_bridge.cpp). The reconstructed algorithm is in
-[`pw_fourier.c`](../../src/application/pw_fourier.c),
-[`pw_pedometer.c`](../../src/application/pw_pedometer.c) and
-[`pw_power.c`](../../src/application/pw_power.c).
+For the sensor conversion, see [`motion_sample.cpp`](../motion_sample.cpp) and
+[`accel_bridge.cpp`](../accel_bridge.cpp). The step algorithm is in
+[`pw_fourier.c`](../../src/application/pw_fourier.c) and
+[`pw_pedometer.c`](../../src/application/pw_pedometer.c).
+[`pw_power.c`](../../src/application/pw_power.c) controls the sampling schedule.

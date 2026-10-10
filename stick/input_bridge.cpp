@@ -58,9 +58,8 @@ bool pm1_write(uint8_t reg, uint8_t value) {
 }
 
 bool enable_power_button_input() {
-  // Keep hardware download-mode recovery available, but move its hold
-  // threshold from two to four seconds so the three-button menu shortcut
-  // (1.2 seconds) cannot enter it during an ordinary long press.
+  // Set download-mode recovery to a four-second hold so it remains separate
+  // from the 1.2-second Settings gesture.
   uint8_t single, twice, single_after, twice_after;
   if (!pm1_read(0x49, single) || !pm1_read(0x4a, twice)) return false;
   const uint8_t button_config = uint8_t((single & ~0x18u) | 0x18u | 1u);
@@ -112,8 +111,8 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
       discard_power_event = true;
       was_m_only_wake = true;
     }
-    // Do not poll the PMIC or deliver R/L while the game is dark. A retained
-    // L event is discarded on wake; it must not turn into a later menu press.
+    // Use M for dark-screen wake. The wake path clears the retained L event
+    // before navigation resumes.
     sampled_raw = main_pressed ? 1u : 0u;
 #ifdef PW_STICK_BENCH_CONTROL
     main_edges += main_pressed && !(last_raw & 1u);
@@ -150,9 +149,8 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
 #ifdef PW_STICK_BENCH_CONTROL
   bench_power_event = false;
 #endif
-  // The PMIC may report several state/event changes during one physical tap.
-  // Re-arm only after a quiet release, so it cannot open and close the menu
-  // on the same gesture.
+  // The PMIC can report several changes for one tap. Wait for a quiet release
+  // before accepting another Settings gesture.
   if (!power_read || power_pressed || power_event) {
     power_released_since_ms = 0;
   } else if (!power_released_since_ms) {
@@ -174,8 +172,7 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
   power_events += power_event;
   pmic_errors += power_button_ready && !power_read;
   last_raw = raw;
-  // During the sustained sound test, sample the physical PM1 key but do not
-  // dispatch it to the game or to the Stick Settings long-hold shortcut.
+  // Wait for release after the sound test before resuming game input.
   if (StickSoundBenchToneActive()) bench_suppress_until_release = true;
   if (bench_suppress_until_release) {
     if (!sampled_raw) bench_suppress_until_release = false;

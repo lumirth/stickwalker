@@ -24,8 +24,8 @@ struct RestorablePanel : lgfx::Panel_ST7789 {
     const uint8_t *source = lgfx::Panel_ST7789::getInitCommands(list);
     if (!deferred || !source) return source;
     unsigned used = 0;
-    // Reuse the installed driver's exact analog/gamma configuration, but
-    // stop before Sleep-out. Its reset and 130 ms delays run as deadlines.
+    // Use the installed driver's analog and gamma settings. Run reset and the
+    // 130 ms Sleep-out wait through deadlines.
     while (source[0] != CMD_SLPOUT && source[0] != 0xff) {
       const unsigned bytes = 2 + (source[1] & 0x7fu) +
                              ((source[1] & CMD_INIT_DELAY) ? 1u : 0u);
@@ -59,8 +59,8 @@ bool startup_check(bool ok, const char *stage) {
 }
 
 bool begin_pmic() {
-  // Warm resets can fail the first ID read; the cause is unresolved.
-  // M5GFX clears failed transfers, so retry by reinitializing its owned master.
+  // The first ID read sometimes fails after a warm reset. Reinitializing
+  // M5GFX's I2C master lets the next attempt recover.
   for (unsigned attempt = 0; attempt < 4; ++attempt) {
     if (attempt) {
       m5::In_I2C.release();
@@ -85,9 +85,8 @@ bool begin_pmic() {
 }  // namespace
 
 bool StickBoardBegin(void) {
-  // Reproduce the board setup used by the frozen optical control. M5.begin()
-  // also configures peripherals unrelated to the original Pokewalker and
-  // changes the GPIO5 detector's measured dark distribution on this board.
+  // Initialize the required peripherals individually. M5.begin() also changes
+  // GPIO5 configuration, which alters the photodiode's dark readings.
   gpio_set_level(GPIO_NUM_46, 0);
   gpio_set_direction(GPIO_NUM_46, GPIO_MODE_OUTPUT);
   gpio_set_direction(GPIO_NUM_5, GPIO_MODE_INPUT);
@@ -96,9 +95,9 @@ bool StickBoardBegin(void) {
   using P = m5::M5PM1_Class;
   if (!startup_check(m5::In_I2C.begin(I2C_NUM_1, 47, 48), "i2c") ||
       !startup_check(begin_pmic(), "pmic") ||
-      // The original PM1 GPIO1 IRQ output is unused: L is polled through the
-      // latched button register. With both button reset/off actions disabled,
-      // that IRQ function also makes the PM1 flash its status LED repeatedly.
+      // Poll L through the latched button register and disable its IRQ
+      // output. With reset and power-off actions disabled, the IRQ function
+      // repeatedly flashes the status LED.
       !pm1.setGPIOFunction(P::gpio1, P::gpio) ||
       !pm1.setGPIOMode(P::gpio1, P::input) ||
       !pm1.setLedEnLevel(false) ||
@@ -114,9 +113,8 @@ bool StickBoardBegin(void) {
   if (imu.WhoAmI() != 0x24) imu.setAddress(0x68);
   imu_ready = imu.WhoAmI() == 0x24 &&
               imu.begin() != m5::IMU_Base::imu_spec_none;
-  // M5Unified's BMI270 startup enables gyro and temperature too. The native
-  // Pokewalker application reads only acceleration, so leave its current
-  // accelerometer filter and rate intact while disabling unused sensors.
+  // M5Unified starts the accelerometer, gyro and temperature sensor together.
+  // Keep its accelerometer configuration and disable the two unused sensors.
   if (imu_ready)
     imu_ready = imu.writeRegister8(m5::BMI270_Class::PWR_CTRL_ADDR, 0x04);
 
@@ -190,8 +188,8 @@ lgfx::LGFX_Device *StickBoardScreen(void) {
 m5::M5PM1_Class &StickBoardPower(void) { return pm1; }
 
 bool StickBoardVbusVoltage(uint16_t *millivolts) {
-  // M5PM1 VIN_L/H, as used by M5Unified getVBUSVoltage(). Preserve the
-  // transaction result instead of that convenience API's failure-as-zero.
+  // Read M5PM1 VIN_L/H directly so callers can distinguish an I2C failure
+  // from a zero-voltage reading.
   uint8_t bytes[2];
   if (!m5::In_I2C.readRegister(0x6e, 0x24, bytes, sizeof(bytes), 100000))
     return false;

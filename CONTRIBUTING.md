@@ -1,41 +1,40 @@
 # Contributing
 
-Changes to Stickwalker are welcome. Start with the [development guide](stick/README.md)
-for adapter ownership and checks, or the [application source guide](docs/source.md)
-for game, storage and protocol work.
+For firmware changes, start with the [Stick development guide](stick/README.md)
+or the [application source guide](docs/source.md).
 
 ## Report a problem
 
-Include the release version (or commit for a custom build), what you did, what
-you expected and what happened. Say whether USB was connected. For input problems, include layout and rotation.
-For infrared problems, include the peer/game, distance, orientation and both
-successful and failed attempts. State whether inputs were physical or generated.
-A short reproduction and relevant logs help more than a full flash dump.
+Include the release version, or commit for a custom build, what you did, and
+what happened. A short sequence that reproduces the problem is especially
+useful. Also include the details relevant to it:
 
-Flash backups and EEPROM images contain private registration and game data.
-Keep them local; share only the diagnostic details needed to reproduce the issue.
+- For buttons or wake, the layout, rotation and whether USB was connected.
+- For infrared, the photodiode wiring, other device or game, distance and
+  orientation. Include how often the connection succeeds or fails.
+- For a test script, the command and relevant output.
+
+Keep flash backups and EEPROM images private; they contain registration and
+game data. Share the diagnostic output needed to describe the problem.
 
 ## Propose a change
 
-Describe how the patch changes the Stick's behavior as a Pokéwalker and why.
-Keep Stick-specific hardware code in `stick/`. Game rules and exchanges with
-HeartGold/SoulSilver belong in the reconstructed firmware under `src/`. Preserve
-wire/EEPROM widths, byte order and foreground ownership.
+Explain the problem and how the patch changes the Stick's behavior. Stick
+hardware adapters live in `stick/`; game rules and the infrared protocol live
+in `src/`. Preserve stored record sizes, byte order and the order in which tasks
+use shared working memory.
 
-Run `uv run python stick/check.py` for Stick changes. Build the target when
-changing adapters or shared application code, and identify any physical checks
-that remain open. For H8 application changes, also run the formatter, linter,
-and retail identity checks under both qualified compiler suites as described
-in the [H8 build guide](docs/build.md). Documentation-only changes need working
-links and commands that agree with the current tools.
+Run `uv run python stick/check.py` and build the firmware for code changes.
+Describe the device tests you ran. Shared H8 application changes also need the
+format, lint and binary-matching checks in the [H8 build guide](docs/build.md).
+For documentation, check the instructions and links you changed.
 
-Tests should exercise behavior, recovery or interoperability. Avoid assertions
-about wording or source shape unless that text is itself a public contract.
+Add tests for the behavior being changed, including relevant failure and
+recovery cases.
 
 ## Source and license
 
-Identify third-party material and retain its notices. Do not submit leaked or
-confidential source, ROM dumps, extracted retail artwork or proprietary compiler
-binaries. See [third-party notices](docs/third-party.md) for existing exceptions.
-
-Contributions are accepted under the project's [MIT license](LICENSE).
+Contributions use the project's [MIT license](LICENSE). Credit third-party
+material and keep its notices. Keep ROM dumps, extracted retail artwork,
+proprietary compiler binaries and confidential source out of contributions.
+See [third-party notices](docs/third-party.md) for the included dependencies.

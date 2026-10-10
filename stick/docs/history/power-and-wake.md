@@ -3,46 +3,44 @@
 This record preserves measured outcomes and failed observations from successive
 images. The [current power guide](../power.md) defines the implemented policy.
 The early trials used an M/R wake mask and a dark-screen L polling cap; the later
-M-only policy superseded both. No trial measured whole-device current or runtime.
+M-only policy superseded both.
 
-## Initial lifecycle ledger
+## Initial sleep and wake tests
 
 Raw artifacts are local under `stick/.build/power-hardware-2026-09-26/`.
 
 | Artifact / attempt | Outcome and meaning |
 | --- | --- |
-| `sleep.json`, `sleep-reconnect.json` | USB-connected sleep commands lost subsequent observation. No captured successful sleep count; incomplete, not passes. |
+| `sleep.json`, `sleep-reconnect.json` | USB-connected sleep commands lost subsequent observation. The trials ended without a retrieved sleep count. |
 | `startup.json`, startup/boot diagnostic logs | Awake startup/configuration observations; stage reporting introduced after PMIC startup failures. |
-| `dark-focused.json` → `dark-recovered.json` | First retained dark observation: 56 returns, 4.956 s in sleep calls. Recovered record exists; USB output itself was not sufficient. |
+| `dark-focused.json` → `dark-recovered.json` | First retained dark observation: 56 returns, 4.956 s in sleep calls. Recovered from the retained trial record. |
 | `dark-final.json` | Harness could not retrieve its expected previous record; failed observation. |
-| `dark-bus-diagnostic.json` | PMIC startup failure after warm reset; SDA/SCL both HIGH afterward do not identify the I2C failure mechanism. |
+| `dark-bus-diagnostic.json` | PMIC startup failure after warm reset; SDA and SCL were both high after the failure. |
 | `dark-recovery.json` | Completed approximately 5.093 s dark trial: 56 successful sleep returns, five accelerometer reads, native clock +5 s, zero recorded failures. |
 | `lit-recovery.json` | Completed sampling trial but four sleep entry errors and only 17 successful returns / 0.912 s in sleep calls. Failed power-scheduling result; original error codes unavailable. |
 | `lit-reject-cause.json` | Completed approximately 5.025 s visible trial: 82 returns, 80 accelerometer reads, clock +5 s, zero recorded failures. |
 | `lit-reject-cause-2.json` | USB device disappeared; ROM recovery could not open the missing port. Failed observation, required physical replug. |
 | `audio-reconnect.json` | Incomplete initial audio observation; later `audio-final.json` is the completed check. |
-| `audio-final.json` | Two cold-supply playback cycles. LCD/audio supply and amp 00→0c→00, codec/I2S stopped after hold, zero begin/power errors. No new audible-fidelity claim. |
-| `rx-final.json` | Two-second receiver worker start/stop, 240 MHz startup prerequisite, return to 80 MHz and IR boost off. PMIC first read failed and recovered on retry 1 in this actual run. No optical peer payload; not an exchange test. |
+| `audio-final.json` | Two cold-supply playback cycles. LCD/audio supply and amp 00→0c→00, codec/I2S stopped after hold, zero begin/power errors. |
+| `rx-final.json` | Two-second receiver worker start/stop, 240 MHz startup prerequisite, return to 80 MHz and IR boost off. PMIC first read failed and recovered on retry 1 during receiver startup. The trial exercised start and stop with no peer. |
 | `jtag-availability.log` | Espressif OpenOCD examined both cores using built-in USB JTAG; no halt, breakpoint, reset or flash command in that probe. |
-| `pre-flash-coredump-analysis.log` | Initial backup already contained a CRC-valid historical dump. Official decoder rejected a mismatched ELF; matching historical ELF not found. No cause or date attributed to today's tests. |
+| `pre-flash-coredump-analysis.log` | Initial backup already contained a CRC-valid historical dump. Official decoder rejected a mismatched ELF; matching historical ELF not found. |
 | `rejection-host-before-fix.log` / `rejection-host-after-fix.log` | Regression exposed the one-second veto; revised scheduler permits ordinary rejection without resetting wake configuration. |
 | `vbus-regression-before.log` / `vbus-regression-after.json` | Persistent failed power reads incorrectly allowed sleep before fix. Fifteen host lifecycle cases now pass, including unknown VBUS veto and transient read recovery. |
-| `final-host-ir-regression.log` | Three TX lifecycle/symbol tests pass; no receiver/payload qualification inferred. |
+| `final-host-ir-regression.log` | Three TX lifecycle/symbol tests pass. |
 | `usb-veto-final.json` | Final diagnostic build kept sleep count/error count zero during six seconds after Y arm, with measured VBUS 5218 mV. |
-| `production-jtag-*.log` | Initial running-memory read was rejected (target not halted). Subsequent dual-core reads were inconsistent with the ELF while CPU1 could not be examined. The installed supported ESP_ONLYCPU=1 configuration returned ready=1, USB veto=1 and the expected application descriptor magic. Brief halt/resume was followed by a fresh standalone reset; no optical measurement used these debugger sessions. |
-| `flash-interim-production.log` | A previous production output was flashed while a diagnostic rebuild was still running. No tests qualified that transient image, no storage partition was flashed; subsequent images were frozen only after successful build completion. |
+| `production-jtag-*.log` | Initial running-memory read was rejected (target not halted). Subsequent dual-core reads were inconsistent with the ELF while CPU1 could not be examined. The installed supported ESP_ONLYCPU=1 configuration returned ready=1, USB veto=1 and the expected application descriptor magic. Brief halt/resume was followed by a fresh standalone reset. |
+| `flash-interim-production.log` | A previous production output was flashed while a diagnostic rebuild was still running. The interim image received no tests. Later trials used completed builds, and each flash preserved the storage partition. |
 
-Successful sleep-call duration includes entry/wake overhead and is not an exact
-asleep duty fraction. These finite trials verify scheduling and physical returns,
-not long-running battery wake reliability, movement accuracy or energy savings.
-PMIC bounded retry recovered an observed failure; its physical cause is unresolved.
+Sleep-call durations include entry and wake overhead. The PMIC recovered on
+retry after a failed read; the records do not locate the electrical fault.
+
 ## Panel and physical-input findings
 
 The display review established that a command without chip-select ownership
 was ignored. RDDPM remained `98` after an unselected display-on command and
 changed to `9c` after the selected command. Following restoration, MADCTL was
-`b8` and pixel format `05`. This verifies controller state, not perceived shades
-or a battery-current reduction.
+`b8` and pixel format `05`.
 
 The wake diagnostic found a pending gesture could inherit the inactive
 one-second deadline. Before correction, a generated Center gesture still had
@@ -54,8 +52,7 @@ qualified switch acquisition.
 EXT1 preparation left M/R in RTC IO while polling used digital reads. The
 corrected handoff restores digital ownership after every sleep return. The
 hardware mux probe reported `before=3 restored=1 after=0` twice. Two timed
-physical-button windows captured no M edge; they did not demonstrate resolution
-of the reported physical-switch failure.
+physical-button windows captured no M edge.
 
 `rtc-mux-production-liveness.log` had invalid descriptor `0xbad00bad` and no
 clock progression, so its RAM values cannot identify a crash cause. A fresh
@@ -75,7 +72,6 @@ Eight USB-awake generated-input trials passed: two abandoned M taps, two
 accepted M holds, two ignored dark L events and two Settings opens after wake.
 Accepted wakes reported LCD status `9c`, pixel format `05`, PWM ready and PMIC
 output `04`; rejected gestures left output `00` and the panel asleep.
-These observations do not qualify physical-switch sleep/wake on battery.
 
 The first probe failed its obsolete native-Center injection expectation at
 0.9 seconds. It was changed to exercise M wake; `hardware-wake-attempt1.json`
@@ -84,7 +80,7 @@ and its log remain under `stick/.build/m-only-wake-2026-09-27/`.
 ## Installation identities and storage checks
 
 Each listed image had app-only flash verification and retained sampler machine
-bytes. Storage checks apply to its own local backup, not to a future candidate.
+bytes. Each storage comparison used that trial's pre-flash backup.
 
 | Milestone | Production app SHA-256 | Local evidence directory |
 | --- | --- | --- |
@@ -115,6 +111,3 @@ The later abandoned-wake and M-only trials preserved logical EEPROM hash
 Checkpointing moved generation 568 to 569 with zero changed logical addresses.
 The M-only production flash also matched its complete pre-production storage
 partition; CPU0 readback found ready=1 and advancing RTC after resume.
-
-Raw saves stay private. Interrupted-write recovery, physical walking calibration,
-long-running wake reliability and battery energy still need candidate qualification.

@@ -69,10 +69,9 @@ bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
   for (unsigned length_trial = 0; length_trial < 2; ++length_trial) {
     unsigned best_bad = UINT_MAX;
     uint64_t best_phase = UINT64_MAX;
-    // Search the peer's previous credible long-burst baud first. Otherwise
-    // estimate it from this burst's gate count. The first observed pulse may
-    // be a data pulse, so even the fast search needs the full origin range.
-    // All fits use only UART framing and optical phase, never payload bytes.
+    // Try the previous long burst's baud estimate first, or estimate it from
+    // this burst's gate count. Search every start phase because the first
+    // observed pulse may be a data bit.
     const bool short_frame = bytes <= 16;
     const int estimated_step =
         int((gate_count * 10000u + bytes * 5u) / (bytes * 10u));
@@ -89,8 +88,8 @@ bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
           (anchor + radius > 30120 ? 30120 : anchor + radius);
       for (int step = first_step; step <= last_step; step += 5) {
         for (int half = -10; half <= 8; ++half) {
-          // This decoder is called only from the foreground IR transport.
-          // Keep the geometry workspace out of Arduino's 8 KiB loop stack.
+          // Keep the geometry workspace in static storage to fit the
+          // foreground task's 8 KiB stack.
           static Geometry candidate;
           candidate.bytes = bytes;
           candidate.origin_twice = int(strong[0]) * 2 + half;
@@ -98,9 +97,8 @@ bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
           candidate.fit_pass = uint8_t(pass);
           candidate.inverse_q15 = int(((1u << 15) * 10000u +
                                        unsigned(step / 2)) / unsigned(step));
-          // A missing first optical pulse can leave the first data-zero pulse
-          // as the first strong observation. Framing decides between cells 0
-          // and 1 without using payload bytes.
+          // If the first optical pulse is missed, UART framing distinguishes
+          // a start bit from the first data-zero pulse.
           const int opening_cell = nearest_cell(strong[0], candidate);
           if (opening_cell < 0 || opening_cell > 1) continue;
           map_cells(strong, count, candidate);

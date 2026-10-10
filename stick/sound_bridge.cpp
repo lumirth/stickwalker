@@ -21,22 +21,19 @@ int64_t shutdown_retry_us = 0;
 bool codec_configured = false;
 bool codec_image_valid = false;
 unsigned codec_generation = 0;
-// Snapshot every register modified by Espressif's ES8311 suspend sequence.
-// Warm resume restores the actual proven configuration, not guessed defaults.
+// Save the registers changed by ES8311 suspend so warm resume can restore
+// them.
 constexpr uint8_t kSuspendRegisters[] = {
     0x00, 0x01, 0x02, 0x0d, 0x0e, 0x12, 0x14, 0x15, 0x17, 0x32, 0x45};
 uint8_t codec_image[sizeof(kSuspendRegisters)] = {};
-// Timer W drives the original piezo with a pulse waveform. The library's
-// default tone is a sine, which softens very brief score notes on the Stick's
-// speaker. Keep the source pitch and note durations, but render each cycle as
-// the digital waveform that the original output mode requested.
+// Use a pulse waveform to match the original Timer W output, with the score's
+// pitches and note durations.
 constexpr uint8_t kPiezoCycle[16] = {
     255, 255, 255, 255, 255, 255, 255, 255,
       0,   0,   0,   0,   0,   0,   0,   0};
-// Prepare the cold output path for 200 ms before starting the score. The
-// on-board acoustic check passes there; at 65 ms, ADC startup obscures the
-// 52 ms cue. This conservative interval is not a measured DAC minimum.
-// Warm repeats skip preparation; native note durations stay unchanged.
+// Prepare cold output for 200 ms before starting a score. Acoustic checks
+// captured the full 52 ms cue with this interval; ADC startup obscured it at
+// 65 ms. Warm playback skips preparation.
 constexpr int64_t kOutputStartupUs = 200000;
 constexpr int64_t kAmplifierHoldUs = 500000;
 #ifdef PW_STICK_BENCH_CONTROL
@@ -61,10 +58,9 @@ int64_t period_us() {
 }
 
 void anchor_output_period() {
-  // The native period write resets Timer W. A newly emitted note/rest must
-  // start at the actual output transition, not inherit overdue cycles from
-  // foreground drawing. Otherwise one service call can start and erase an
-  // entire short note before the asynchronous speaker task consumes it.
+  // Start each note's timer at its output transition. Carrying overdue
+  // drawing time into this timer can end a short note before the speaker task
+  // plays it.
   const int64_t now = esp_timer_get_time();
   if (next_period_us < now) next_period_us = now;
 }
@@ -100,11 +96,9 @@ bool speaker_power(void *, bool on) {
     return ok;
   }
   codec_configured = true;  // Teardown also covers a partial resume failure.
-  // Explicitly configure ES8311's power-up stage timing instead of retaining
-  // its POR stage-C setting (0x20); the reference driver uses zero.
-  // Program the stage timing before ANY write that starts its state machine,
-  // including a retained-register resume. Confirm it: Espressif documents an
-  // occasional first-write loss on this codec, even when the bus acknowledges.
+  // Set ES8311 stage timing to zero before starting its power-up state
+  // machine, including on warm resume. Read it back because this codec can
+  // acknowledge and lose the first write.
   bool timing_ready = false;
   for (unsigned attempt = 0; attempt < 2 && !timing_ready; ++attempt) {
     uint8_t timing = 0xff;
@@ -124,8 +118,8 @@ bool speaker_power(void *, bool on) {
                                      codec_image[i], 100000)) return false;
   }
   static constexpr uint8_t codec[][2] = {
-      // Complete the DAC-side bias and serial format setup used by the
-      // reference ES8311 driver, rather than relying on POR defaults.
+      // Set DAC bias and serial format according to the ES8311 reference
+      // driver.
       {0x0b, 0x00}, {0x10, 0x1f}, {0x11, 0x7f}, {0x09, 0x0c},
       {0x00, 0x80}, {0x01, 0xb5}, {0x02, 0x18}, {0x0d, 0x01},
       {0x12, 0x00}, {0x13, 0x10}, {0x32, 0xbf}, {0x37, 0x08},
@@ -188,8 +182,8 @@ bool start_output() {
 }  // namespace
 
 extern "C" void StickSoundInit(void) {
-  // M5.begin() is intentionally absent: it perturbs the GPIO5 receiver.
-  // Configure only the Stick S3's ES8311 output and its PM1 power gate.
+  // Initialize the ES8311 and its PM1 power supply directly. M5.begin()
+  // changes GPIO5 configuration and disturbs reception.
   auto config = M5.Speaker.config();
   config.pin_mck = 18;
   config.pin_bck = 17;
@@ -209,8 +203,8 @@ extern "C" void StickSoundInit(void) {
   config.use_dac = false;
   config.dac_zero_level = 0;
   M5.Speaker.config(config);
-  // Start I2S only when the first real score reaches the output. An idle I2S
-  // task on the optical sampler core changes its physical timing.
+  // Start I2S with the first score. Even an idle I2S task on the sampler core
+  // changes optical timing.
   speaker_ready = false;
   enabled = false;
   compare_value = 0;

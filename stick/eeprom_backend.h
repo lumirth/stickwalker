@@ -5,17 +5,17 @@
 extern "C" {
 #endif
 
-/* Mount checked image slots and replay the private EEPROM write journal.
- * Never format a nonblank filesystem. */
+/* Load the newest valid image, replay its journal and repair the device
+ * identity. Format LittleFS when the partition is blank. */
 int StickEepromMount(void);
-/* Defer flash writes during the source-faithful optical session. */
+/* Buffer EEPROM writes in RAM during an infrared session. */
 void StickEepromDefer(int enabled);
 int StickEepromCommit(void);
-/* Persist a source EEPROM mirror write as one atomic image update. */
+/* Commit the writes in an EEPROM mirror update together. */
 void StickEepromBatchBegin(void);
 int StickEepromBatchEnd(void);
 #ifdef PW_STICK_BENCH_CONTROL
-/* Read-only inspection of the committed image for independent verification. */
+/* Inspect the saved image for bench readback checks. */
 const unsigned char *StickEepromSnapshot(void);
 int StickEepromBenchErase(void);
 #endif

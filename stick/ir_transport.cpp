@@ -25,8 +25,8 @@ constexpr unsigned kEventSlots = 8;
 constexpr unsigned kGateHz = 345600;
 constexpr unsigned kLowCutoff = 124;
 constexpr unsigned kPacketGapGates = 120;
-// An entry exchange is shorter than 30 seconds. Do not insert a one-tick
-// blind spot every 125 ms: measured failures lost 5-9 opening UART bytes.
+// Allow a complete entry exchange within one 30-second interval. A tick-sized
+// interruption every 125 ms lost 5–9 opening UART bytes in testing.
 constexpr unsigned kSegmentGates = kGateHz * 30;
 
 struct OpticalEvent {
@@ -180,8 +180,8 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
           __atomic_store_n(&produced, gate + 1, __ATOMIC_RELEASE);
           portENABLE_INTERRUPTS();
           if (caller) xTaskNotifyGive(caller);
-          // This is a causal peer packet boundary: the peer waits for the
-          // Stick's answer, so service the idle task and watchdog here.
+          // The peer waits for our reply here, leaving time to service the
+          // idle task and watchdog.
           vTaskDelay(1);
           portDISABLE_INTERRUPTS();
           next = aligned_next(align_us);
@@ -194,8 +194,7 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
   if (in_packet) {
     core1_tick(true);
     ++overlong_bursts;
-    // A packet that reaches the bounded extension has no valid optical gap.
-    // The protocol must see an error, never a truncated but plausible frame.
+    // Fail bursts that reach the extension limit without an optical gap.
     if (gate >= limit + pw_stick::kMaxBurstGates)
       __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
   }
@@ -409,7 +408,7 @@ extern "C" void StickIrStop(void) {
   if (!pw_stick::suspend_ir_tx())
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
   StickBoardPower().setExtOutput(false);
-  // Never change the sampling clock beneath a worker that failed to stop.
+  // Keep the sampling clock running until the worker has stopped.
   if (worker_stopped) setCpuFrequencyMhz(80);
 #ifdef PW_STICK_BENCH_CONTROL
   if (trace_enabled()) {

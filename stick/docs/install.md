@@ -32,9 +32,10 @@ board won't connect, enter its USB download mode using M5Stack's
 
 ## Update an existing Stickwalker installation
 
-An app-only update preserves the LittleFS game-data partition and NVS settings.
-It requires the existing 8 MB partition layout described below. Read and compare
-the installed partition table with the new build before an update:
+An app-only update keeps your Pokémon, registration, steps, Watts, items and
+settings. The October 10 update also repairs missing device IDs on first boot.
+
+Check that the installed partition layout matches the release before updating:
 
 ```sh
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT read-flash 0x8000 0xC00 /path/to/installed-partitions.bin
@@ -49,9 +50,10 @@ uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x10000
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT verify-flash 0x10000 PwStick.ino.bin
 ```
 
-Do not use Arduino's ordinary Upload command for an update: it also writes
-bootloader/partition/OTA metadata. This project has no OTA updater. A board that
-previously used OTA/app1 needs its boot selection inspected before this procedure.
+Use these esptool commands for updates. Arduino's Upload command also rewrites
+the bootloader, partition table and boot selection. If the board previously ran
+OTA firmware from app1, inspect its boot selection before using the app0 address.
+Stickwalker installations made with this guide use app0.
 
 ## First installation
 
@@ -71,13 +73,36 @@ uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x0 PwS
 
 The selected layout has app0 at `0x10000` (size `0x330000`), app1 at `0x340000`,
 LittleFS at `0x670000` (size `0x180000`), and coredump at `0x7F0000`. NVS starts
-at `0x9000`. First installation changes the partition layout and boot selection;
-The erased game-data region becomes a fresh LittleFS filesystem on first boot.
-The storage backend also checks writes and journals changes before reporting
-them complete.
+at `0x9000`. On first boot, Stickwalker creates its filesystem in the erased
+game-data region.
 
 After boot, check the display and controls, open Settings and test sound. For an
 update, confirm the previous registration, Pokémon and settings remain. Unplug
 USB, let the screen go dark, and verify a 500 ms M hold wakes it. You can now
 [connect to your game and take a Pokémon for a walk](playing.md). The
 [controls guide](controls.md) covers button layouts and device settings.
+
+## Infrared receiver
+
+Stickwalker uses the Stick S3's built-in infrared LED to transmit and a
+**BPV10NF photodiode** on the expansion header to receive. Connect the photodiode
+before trying a Game Card transfer or peer play.
+
+Turn the Stick off and disconnect USB while fitting it:
+
+| BPV10NF lead | Stick S3 header pin |
+| --- | --- |
+| Anode (A) | **GND** |
+| Cathode (C) | **G5** (GPIO5) |
+
+G5 and GND are adjacent on the header. Identify the leads using the
+[BPV10NF package drawing](https://www.vishay.com/docs/81503/bpv10nf.pdf#page=4),
+especially if they have already been trimmed. Connect the bare photodiode
+directly between those two pins. Keep the leads from touching each other or neighboring pins,
+and secure the connections for carrying the Stick.
+
+Point the photodiode's rounded face and the Stick's infrared transmitter toward
+the Game Card's infrared window or the other walker's infrared window. Both
+need a clear line of sight. If a transfer times out, check the two connections
+and polarity, then adjust alignment and separation while keeping the devices
+still.

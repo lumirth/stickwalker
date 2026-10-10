@@ -1,13 +1,13 @@
 # Relinking the firmware
 
-This kit is for developers who want to replace or modify the libraries linked
-into the release. Installing Stickwalker only requires the firmware ZIP.
+Use the runtime kit to rebuild a release ELF or replace the libraries linked
+into it. For ordinary installation, download the firmware ZIP and follow the
+[install guide](install.md).
 
 The kit contains the release's application and library objects, Arduino core
 archive, linked ESP32-S3 SDK archives, linker scripts and dependency source
 archives. `sources.json` records their origins and hashes. Licenses and notices
-are retained under `licenses/` and in the source archives. Stickwalker's MIT
-license does not replace these dependency licenses.
+are retained under `licenses/` and in the source archives.
 
 ## Reproduce the release ELF
 
@@ -48,9 +48,8 @@ Convert a relinked ELF into an ESP32-S3 flash image with the pinned esptool:
 uvx --from esptool==5.3.0 esptool --chip esp32s3 elf2image --flash-mode dio --flash-freq 80m --flash-size 8MB --elf-sha256-offset 0xb0 -o output/PwStick.ino.bin output/PwStick.ino.elf
 ```
 
-A modified runtime produces a new candidate. Recheck infrared timing and perform
-device qualification before relying on it for game transfers. The release's
-hardware evidence applies only to the recorded firmware hashes.
+After changing the runtime, run the [infrared timing check and device tests](release.md)
+on the resulting firmware.
 
 ## ESP-IDF sources
 

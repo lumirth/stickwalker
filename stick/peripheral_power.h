@@ -4,8 +4,8 @@
 
 enum class StickPeripheral : uint8_t { Display = 1, Sound = 2 };
 
-// Application-task ownership of the shared LCD/codec/microphone supply.
-// Neither owner may switch off the other's hardware.
+// Coordinate LCD, codec and microphone supply requests on the application
+// task. Switch off the supply after its last user releases it.
 void StickPeripheralPowerInit(void);
 bool StickPeripheralAcquire(StickPeripheral owner);
 void StickPeripheralRelease(StickPeripheral owner);

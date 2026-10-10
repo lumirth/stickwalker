@@ -6,9 +6,10 @@ covers persistence and pixel presentation for changes to the adapters.
 ## Persist settings
 
 `pw-controls/layout-v2` stores layout, rotation and the two-key window. Migration
-maps each legacy configuration to its actual directional behavior, including the
-reversed three-key mapping. Rotation is applied by the display adapter; the
-input state machine does not receive it. Native game EEPROM is separate.
+maps each legacy configuration to its directional behavior, including the
+reversed three-key mapping. The display adapter applies rotation. Button mapping
+uses the selected layout.
+Game progress is stored in the EEPROM image.
 
 `pw-display/dark` stores appearance. Unsaved installations default to Dark.
 A failed persistence write leaves the previous appearance active. A successful
@@ -29,10 +30,8 @@ native rendering cadence. Its RGB565 palette is:
 
 RGB565 gives green six bits and red/blue five. The intermediate channels expand
 to (173,174,173) and (82,81,82) with M5GFX, within one 8-bit level of neutral.
-These values describe the digital palette. An optical comparison would measure
-panel luminance against the original LCD.
 
-Keep `setSwapBytes(true)` after panel reinitialization: M5GFX's
+Call `setSwapBytes(true)` after panel reinitialization. M5GFX's
 `create_pc(uint16_t*, bool)` path otherwise interprets intermediate buffer words
 in the wrong byte order. Black and white still look correct, which can conceal
 the mistake. Light/Dark selects the software palette. Panel inversion, gamma
@@ -46,4 +45,5 @@ to backlight brightness.
 
 `uv run python stick/check.py` covers layout migration, input gestures, palette
 ordering/reversal, persistence failure and full repaint after the overlay.
-Hardware visual checks remain part of [candidate qualification](release.md).
+After a display change, check the four shades and Settings on the board in both
+appearances and after wake.

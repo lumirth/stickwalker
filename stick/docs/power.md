@@ -1,49 +1,45 @@
-# Power and foreground ownership
+# Power management
 
-The port preserves the native game's display availability and motion-processing
-schedule while sleeping the ESP32-S3 between work deadlines. Battery operation
-allows Light-sleep; USB power keeps the processor awake for development and
-diagnostics.
+Stickwalker sleeps the ESP32-S3 between game tasks when running on battery.
+USB power keeps the CPU awake so the serial and debugger connections remain
+available.
 
-## Motion and input
+## Sampling and buttons
 
-Inactive/activity work runs at 1 Hz; moving/interactive work runs at 16 Hz.
-Eligible samples are processed immediately with the native FFT and estimator.
-Sound and infrared sessions preserve the native sampling gaps because they own
-foreground execution and shared workspace. Ordinary menus and games continue
-sampling. See the [motion decision](../../docs/adr/0001-preserve-native-motion-ownership.md).
+The original game checks for activity at 1 Hz and samples walking at 16 Hz.
+Stickwalker processes each sample as it arrives. Sound and infrared pause motion
+sampling while they use the shared working memory; menus and games continue to
+sample. The [motion scheduling decision](../../docs/adr/0001-preserve-native-motion-ownership.md)
+explains why.
 
-Awake input polls run at 5 ms. Visible operation caps sleep at 100 ms so L's PMIC
-press latch remains usable; the 62.5 ms native deadline usually wakes sooner.
-Stick Settings counts as visible even when the underlying game is blank.
+Awake button polls run every 5 ms. While the game or Settings is visible, sleep
+is capped at 100 ms so L's PMIC press latch can be read. The 62.5 ms game deadline
+usually wakes the CPU sooner.
 
-Screen-off wake uses physical M alone, held for 500 ms. L/R activity neither
-polls the PMIC nor shortens the inactive schedule. A cancelled hold reverses
-panel preparation. On return to visible input, the L latch is discarded and all
-buttons must be released before navigation. See the [wake decision](../../docs/adr/0002-m-only-dark-wake.md).
+With the screen off, holding M for 500 ms wakes it. Releasing M early cancels
+panel preparation. After wake, the adapter clears L's retained press and waits
+for all buttons to be released before navigation resumes. See the
+[wake policy](../../docs/adr/0002-m-only-dark-wake.md) and
+[L button reference](pmic-input.md).
 
-## Supplies and sleep
+## Peripherals
 
-`board_hal.cpp` owns PMIC setup. `peripheral_power.cpp` coordinates shared supply
-requirements; display, audio and IR adapters request the rails they need.
-`power_sleep.cpp` programs wake sources and restores M/R pads from RTC ownership
-to digital GPIO after every sleep return, including rejected entries. Setup
-failures veto sleep and use a bounded retry.
+`board_hal.cpp` configures the PMIC. The display, sound and infrared adapters
+request their supplies through `peripheral_power.cpp`, which switches a shared
+supply off after its last user releases it.
 
-The [PMIC button review](pmic-input.md) distinguishes
-raw L state/latching from classified-click timing. The SINGLE field's 125 ms
-option is not a measured raw-input delay. A GPIO13 classified-click IRQ has not
-been qualified as a replacement for polling.
+`power_sleep.cpp` sets the wake sources and restores M and R to digital GPIO
+after each sleep attempt, including rejected entries. Configuration failures
+keep the CPU awake until a scheduled retry succeeds.
 
-## Battery evidence
+## Measuring power use
 
-Battery percentage is estimated from voltage. The
-[hardware records](history/power-and-wake.md) cover sleep, wake and scheduling.
-To characterize battery life, measure current and discharge under a stated
-use profile.
+Settings estimates charge percentage from battery voltage. To measure battery
+life, record current at the battery connection during stationary carry,
+walking and screen-on use. Include time spent with the screen lit, sound,
+infrared transfers and transient peaks. This measures the whole device,
+including the PMIC, sensors and peripheral supplies.
 
-Measure stationary carry, moving carry and lit interaction at the battery path,
-including PMIC, conversions, IMU, display/audio rails, IR boost and retained RAM.
-Include the screen's idle-on time and transient peaks in the use profile.
-The [release checklist](release.md#device-checks-for-a-stable-release) separates battery,
-walking, control and infrared qualification.
+The [device test records](history/power-and-wake.md) contain sleep and wake
+results. The [release checklist](release.md#device-checks-for-a-stable-release)
+lists the battery tests for a release.

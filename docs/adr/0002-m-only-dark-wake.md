@@ -1,33 +1,31 @@
-# M-only wake while the game screen is off
+# Use M to wake the screen
 
-Physical M is the sole button that begins a screen-off wake,
-independently of layout and orientation. Hold M for the existing 500 ms gesture;
-L and R resume their configured roles after wake and release. A held R or L
-must not prevent M from waking. An abandoned M press cancels panel preparation.
+Holding physical M for 500 ms wakes the Stick in every layout and rotation.
+L and R resume their configured roles after wake. Releasing M early cancels
+panel preparation. A held L or R still allows M to wake the display.
 
-Screen-off operation does not read the PMIC button register, add R to EXT1,
-cap sleep to 100 ms, or accelerate native sampling for L/R activity. Discard a
-retained L event on return to visible input and consume the wake gesture until
-all switches are released. Failed PMIC reads do not count as a quiet release.
+While the screen is off, EXT1 watches M and the next game deadline sets the
+timer wake. L polling stops. After wake, the adapter clears L's retained event
+and waits for all buttons to be released. A successful PMIC read is required
+to establish that L has been released.
 
-Visible game and Stick Settings controls retain front-button wake and the
-100 ms maximum sleep for the PMIC's latched L input. Awake input polls run at
-5 ms; moving/interactive native work usually supplies a 62.5 ms wake deadline.
-The visible cap keeps L usable without adding an unverified PMIC button-interrupt path.
-An open Settings overlay counts as visible even if the native game is blank.
+When the game or Settings is visible, the front buttons can wake the CPU and
+sleep is capped at 100 ms for L polling. Awake polls run every 5 ms. Walking
+and interactive game work normally supply a 62.5 ms deadline.
 
-EXT1's incremental enable API appends pins. Explicitly disable the old mask
-before changing between M and M/R. Restore both RTC-capable pads to digital
-GPIO after every sleep return, including rejected entries. Configuration errors
-veto sleep and retry at a bounded rate.
+## GPIO restoration
 
-Motion processing remains immediate at the existing 1 Hz inactive/activity
-and 16 Hz moving/interactive schedules, with native audio/IR ownership gaps.
-The sensor mode, ODR, FFT, estimator, protocol and EEPROM format remain unchanged.
+EXT1's incremental API appends pins. Clear its old mask before switching
+between M and M/R. After every sleep attempt, return both pads to digital GPIO,
+including when the sleep controller rejects entry. Configuration failures
+keep the CPU awake until a scheduled retry.
 
-Host validation covers actual adapter branches and simulated electrical API
-calls. USB bench probes exercise generated gestures, rail/panel readback, and
-production boot. Neither proves physical-switch wake or whole-device current;
-USB continues to veto Light-sleep. Timer counts alone do not establish battery lifetime.
+## Checks
 
-[ESP-IDF sleep API](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/system/sleep_modes.html)
+Host tests cover the adapter branches and sleep API calls. The
+[device test records](../../stick/docs/history/power-and-wake.md) record the
+button, panel and boot trials. USB keeps the CPU awake during bench commands;
+test physical sleep and wake on battery.
+
+The [ESP-IDF sleep API](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/system/sleep_modes.html)
+describes the wake-source and GPIO functions.

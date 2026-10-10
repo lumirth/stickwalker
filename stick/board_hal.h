@@ -6,9 +6,9 @@
 bool StickBoardBegin(void);
 lgfx::LGFX_Device *StickBoardScreen(void);
 bool StickBoardAccel(float *x, float *y, float *z);
-// False means unknown supply state; callers must not treat it as zero volts.
+// Returns false on a failed supply measurement.
 bool StickBoardVbusVoltage(uint16_t *millivolts);
-// Called only by the shared peripheral owner, after display/audio teardown.
+// Call through the shared supply manager after display and audio teardown.
 bool StickBoardPeripheralSupply(bool on);
 void StickBoardDisplayReset(bool released);
 bool StickBoardDisplayInitRegisters(void);

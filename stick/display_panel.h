@@ -7,8 +7,8 @@
 extern "C" {
 #endif
 
-/* Call after board init. Present only from the application task, outside the
- * optically quiet receive interval; drawing does not advance game state. */
+/* Initialize after board setup. Present from the application task between
+ * optical receive intervals. */
 int StickDisplayPanelInit(void);
 void StickDisplayPanelSetOrientation(unsigned right_side_down);
 void StickDisplayPanelSetBacklight(unsigned enabled);
@@ -17,7 +17,7 @@ void StickDisplayPanelSetContrastDelta(unsigned delta);
 int StickDisplayPresent(void);
 void StickDisplayPowerService(void);
 void StickDisplayPrepareWake(void);
-/* Abandoned physical gesture; never cancels a visible game or settings screen. */
+/* Cancel pending wake preparation when the user releases M early. */
 void StickDisplayCancelPreparedWake(void);
 int StickDisplayPanelIsReady(void);
 uint64_t StickDisplayNextDeadline(void);

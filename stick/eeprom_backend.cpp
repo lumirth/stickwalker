@@ -1,8 +1,10 @@
 #include "eeprom_backend.h"
+#include "device_identity.h"
 
 #include <FS.h>
 #include <LittleFS.h>
 #include <esp_partition.h>
+#include <esp_mac.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -193,8 +195,8 @@ bool replay_journal() {
     dirty = true;
   }
   file.close();
-  // Checkpoint on boot. This also removes any interrupted tail so later
-  // appends cannot be hidden behind an incomplete record.
+  // Checkpoint the replayed journal and remove its incomplete tail before
+  // accepting new writes.
   return StickEepromCommit();
 }
 
@@ -237,8 +239,8 @@ extern "C" int StickEepromMount(void) {
     read_slot(1, generation);
     active_slot = 1;
   } else {
-    // A mounted filesystem with other files must not be interpreted as an
-    // erased Pokewalker. Fresh initialization is allowed only without slots.
+    // Existing save files with invalid headers or checksums need recovery.
+    // Initialize a fresh image when all save files are absent.
     if (LittleFS.exists(kSlots[0]) || LittleFS.exists(kSlots[1]) ||
         LittleFS.exists(kJournal)) return 0;
     memset(image, 0xff, sizeof(image));
@@ -246,7 +248,16 @@ extern "C" int StickEepromMount(void) {
   }
   mounted = true;
   if (dirty && !StickEepromCommit()) return 0;
-  return replay_journal();
+  if (!replay_journal()) return 0;
+  uint8_t factory_mac[6];
+  if (esp_efuse_mac_get_default(factory_mac) != ESP_OK) return 0;
+  if (StickIdentityRepair(image, factory_mac)) {
+    dirty = true;
+    // Save all repaired identity copies in one checkpoint before boot. On
+    // failure, the previous slot remains available for recovery.
+    if (!StickEepromCommit()) return 0;
+  }
+  return 1;
 }
 
 #ifdef PW_STICK_BENCH_CONTROL

@@ -97,8 +97,8 @@ extern "C" void StickDisplayPrepareWake(void) {
   prewarm_until_us = esp_timer_get_time() + 750000;
   if (panel_awake || wake_stage) return;
   if (!StickPeripheralAcquire(StickPeripheral::Display)) {
-    // Acquire records ownership before the PMIC write. A failed request must
-    // not leave a deferred rail-on claim after the gesture is abandoned.
+    // Acquire records the supply request before writing the PMIC. Release
+    // that request if panel preparation fails.
     StickPeripheralRelease(StickPeripheral::Display);
     return;
   }
@@ -131,8 +131,8 @@ extern "C" void StickDisplayCancelPreparedWake(void) {
     StickPeripheralRelease(StickPeripheral::Display);
     return;
   }
-  // A started Sleep-out must finish its 130 ms wait before Sleep-in. The
-  // service below will skip Display-on once this preparation lease is gone.
+  // Finish Sleep-out's 130 ms wait before sending Sleep-in. Releasing the
+  // preparation request skips Display-on.
   StickDisplayPowerService();
 }
 
@@ -230,8 +230,7 @@ extern "C" int StickDisplaySetDark(unsigned dark) {
 extern "C" void StickDisplayPanelSetContrastDelta(unsigned delta) {
   auto *screen = StickBoardScreen();
   if (delta > 9) delta = 9;
-  // Keep the source UI and save field. Its contrast step now sets the
-  // transmissive panel's backlight, while pixel shades stay fixed.
+  // Map the game's Contrast setting to backlight brightness.
   backlight_level = uint8_t(24 + 11 * delta);
   if (screen && backlight_on) screen->setBrightness(backlight_level);
 }

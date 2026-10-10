@@ -14,7 +14,8 @@ void StickInputPoll(unsigned long milliseconds);
 u8 StickInputLevels(void);
 /* True while a physical press or a queued gesture needs prompt native scans. */
 int StickInputWakeScanActive(void);
-/* Dark game with no device overlay: only physical M begins a wake gesture. */
+/* True when the game screen is off and Settings is closed; M starts the wake
+ * gesture. */
 int StickInputMOnlyWake(void);
 int StickMenuRequested(void);
 /* Device overlay consumes physical M/R/L without sending game input. */

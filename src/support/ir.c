@@ -236,10 +236,8 @@ void IrHardwareStart(void)
 
 #define PW_IR_BULK_MAXIMUM_CHUNK_LENGTH EEPROM_PAGE_BYTES
 #ifdef PW_STICK_S3
-/* The H8 decoder below trusts a checksum-valid compressed page. On the Stick,
- * reject an impossible phrase before calling it so a damaged optical burst
- * cannot underflow its 8-bit remaining count or read past the packet. Valid
- * pages still use the original BulkDecode implementation unchanged. */
+/* Validate compressed phrase lengths before BulkDecode. Malformed phrases can
+ * underflow its eight-bit remaining count or read beyond the packet. */
 static u8 StickCompressedPageWellFormed(const u8 *packed, u8 length)
 {
   u16 input;

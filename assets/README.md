@@ -94,10 +94,8 @@ and [NCL writer](https://github.com/Garhoogin/NitroPaint/blob/be4d73c4843350665e
 describe these containers.
 
 Extraction reconstructs the sprite pixels from the ROM. Its NCG writer supplies
-fresh palette-zero tile attributes and a link to `grayscale.ncl`. That palette is
-an editor aid chosen for this project. The BMP font sheet is also a project
-representation of the surviving glyph bytes. Original artwork comments, palette
-filenames, and the original font authoring format remain unknown.
+fresh palette-zero tile attributes and a link to `grayscale.ncl`. The palette lets an editor display the four firmware shades. The BMP font sheet
+arranges the stored glyph bytes into editable cells.
 
 The generated firmware images consist of eight-row pages, read from top to
 bottom. Each page contains columns from left to right. A column stores two bytes:
