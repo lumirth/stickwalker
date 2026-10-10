@@ -10,8 +10,8 @@ From the intended checkout, run:
 
 ```sh
 uv sync --locked
-uv run python stick/check.py
 uv run python stick/build_port.py --output-dir stick/.build/candidate --retain-build
+uv run python stick/check.py --use-build --build-dir stick/.build/candidate
 uv run python stick/check_timing.py --elf stick/.build/candidate/PwStick.ino.elf --tool-prefix /path/to/xtensa-esp32s3-elf- --output stick/.build/candidate/ir-timing.json
 ```
 

@@ -73,6 +73,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Firmware simulation
+
+The development checks use [esp32sim](https://github.com/mikroverk/esp32sim) at
+`fe3a9c08125cc760107865df3ffa979362952fe9`, by Joakim Eriksson and Alice.
+[`stick/simulation/soc.patch`](../stick/simulation/soc.patch) extends its SPI,
+GPIO, watchdog and RMT models. Its [MIT notice](../stick/simulation/ESP32SIM-LICENSE)
+is retained with the patch. The simulator downloads Espressif's ESP32-S3 mask ROM
+from [esp-rom-elfs](https://github.com/espressif/esp-rom-elfs), under Apache-2.0.
+
 ## Stickwalker runtime
 
 The Stick build uses M5Stack's ESP32 board package **3.3.9**,
