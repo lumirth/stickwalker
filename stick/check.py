@@ -84,6 +84,8 @@ def main() -> None:
                 subprocess.run([str(binary)], check=True)
                 print(f"{name}: PASS", flush=True)
         for path in (
+            "stick/tests/ir_receive_watchdog_test.py",
+            "stick/tests/ir_receive_lifecycle_test.py",
             "stick/tests/peer_lifecycle_test.py",
             "stick/tests/ir_tx_power_test.py",
             "stick/audits/m_only_wake_trace.py",
