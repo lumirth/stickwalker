@@ -35,8 +35,8 @@ building through `check.py`.
 ## Workflows and expectations
 
 `settings.actions` opens Settings with L, uses M and R to change rotation and
-appearance, closes the menu and restarts the chip. OCR reads the display before
-and after restart. The [controls guide](../docs/controls.md) defines the button
+appearance, closes the menu and restarts the chip. OCR reads the display in the selected physical orientation before and after
+restart. The background brightness also checks the visible appearance. The [controls guide](../docs/controls.md) defines the button
 behavior and persistence expected by this workflow.
 
 `connect.actions` selects Connect while GPIO5 is held low. After the attempt

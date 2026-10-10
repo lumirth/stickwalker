@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -23,32 +24,37 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def read_screen(path: Path) -> str:
+def read_screen(path: Path, rotation: int) -> str:
     image = Image.open(path)
     texts = []
-    for angle in (-90, 90):
-        for scale in (6, 8):
-            readable = image.rotate(angle, expand=True)
-            readable = readable.resize((240 * scale, 135 * scale), Image.Resampling.NEAREST)
-            target = path.with_name(path.stem + f"-ocr-{angle}-{scale}.png")
-            readable.save(target)
-            result = subprocess.run(
-                ["tesseract", str(target), "stdout", "--psm", "6"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            texts.append(result.stdout)
+    for scale in (6, 8):
+        readable = image.rotate(rotation, expand=True)
+        readable = readable.resize((240 * scale, 135 * scale), Image.Resampling.NEAREST)
+        target = path.with_name(path.stem + f"-ocr-{rotation}-{scale}.png")
+        readable.save(target)
+        result = subprocess.run(
+            ["tesseract", str(target), "stdout", "--psm", "6"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        texts.append(result.stdout)
     text = "\n".join(texts)
     path.with_suffix(".txt").write_text(text)
     return text
 
 
-def expect_screen(path: Path, *phrases: str) -> None:
-    text = read_screen(path)
+def expect_screen(path: Path, *phrases: str, rotation: int = -90) -> None:
+    text = read_screen(path, rotation)
     for phrase in phrases:
         if phrase not in text:
             raise AssertionError(f"{path}: expected {phrase!r}; read:\n{text}")
+
+
+def expect_appearance(path: Path, light: bool) -> None:
+    brightness = statistics.median(Image.open(path).convert("L").tobytes())
+    if (brightness >= 128) != light:
+        raise AssertionError(f"{path}: selected appearance does not match the visible background")
 
 
 def optical_frames(path: Path) -> list[bytes]:
@@ -167,8 +173,12 @@ def main() -> None:
             )
         if scenario == "settings":
             expect_screen(folder / "settings.png", "STICK SETTINGS", "Left side down", "Dark")
+            expect_appearance(folder / "settings.png", light=False)
             for name in ("changed.png", "retained.png"):
-                expect_screen(folder / name, "STICK SETTINGS", "Right side down", "Light")
+                expect_screen(
+                    folder / name, "STICK SETTINGS", "Right side down", "Light", rotation=90
+                )
+                expect_appearance(folder / name, light=True)
             evidence["scenarios"][scenario] = (
                 "Buttons change rotation and appearance; reset retains both."
             )
