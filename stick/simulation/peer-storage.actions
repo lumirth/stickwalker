@@ -1,0 +1,38 @@
+run 4000
+peer write-page 65408
+press M
+press R
+run 100
+release M
+release R
+run 300
+press M
+press R
+run 100
+release M
+release R
+run 4000
+peer report written.txt
+peer stop
+reset
+run 4000
+peer read-page 65408
+press M
+press R
+run 100
+release M
+release R
+run 300
+press M
+press R
+run 100
+release M
+release R
+run 4000
+peer report restored.txt
+optical peer.optical
+press L
+run 100
+release L
+run 200
+screen settings-after.png

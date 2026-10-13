@@ -11,3 +11,4 @@ bool StickPeripheralAcquire(StickPeripheral owner);
 void StickPeripheralRelease(StickPeripheral owner);
 void StickPeripheralPowerService(void);
 unsigned StickPeripheralGeneration(void);
+uint64_t StickPeripheralNextDeadline(void);

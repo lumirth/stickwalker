@@ -96,8 +96,10 @@ void PeerAwardGift(void)
   PeerInfo *peer;
   Item *items;
   u32 giftScore;
+#ifdef PW_STICK_S3
   u32 peerDailySteps;
   u16 peerHourSteps;
+#endif
   u8 freeSlot;
 
   ScratchReset();
@@ -111,9 +113,6 @@ void PeerAwardGift(void)
 #ifdef PW_STICK_S3
   peerDailySteps = StickReadBe32((const u8 *)&peer->dailySteps);
   peerHourSteps = StickReadBe16((const u8 *)&peer->hourSteps);
-#else
-  peerDailySteps = peer->dailySteps;
-  peerHourSteps = peer->hourSteps;
 #endif
   items = ScratchAlloc(sizeof(Item) * 10);
   EepromRead(PW_EEPROM_MEMBER_ADDRESS(EEPROM_WALK, WalkData, friendItems),
@@ -123,8 +122,8 @@ void PeerAwardGift(void)
   giftScore = g_state.dailySteps + peerDailySteps +
               (u16)((g_state.hourSteps + peerHourSteps) * 10u);
 #else
-  giftScore = g_state.dailySteps + peerDailySteps +
-              ((g_state.hourSteps + peerHourSteps) * 10);
+  giftScore = g_state.dailySteps + peer->dailySteps +
+              ((g_state.hourSteps + peer->hourSteps) * 10);
 #endif
   if (giftScore > 20000ul) {
     giftScore = 20000ul;
@@ -151,7 +150,11 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
+#ifdef PW_STICK_S3
     if (g_state.dailySteps > peerDailySteps) {
+#else
+    if (g_state.dailySteps > peer->dailySteps) {
+#endif
       g_ui.view.peer.itemIndex = 0;
     } else {
       g_ui.view.peer.itemIndex = 1;
@@ -164,7 +167,11 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
+#ifdef PW_STICK_S3
     if (g_state.dailySteps > peerDailySteps) {
+#else
+    if (g_state.dailySteps > peer->dailySteps) {
+#endif
       g_ui.view.peer.itemIndex = 2;
     } else {
       g_ui.view.peer.itemIndex = 3;
@@ -177,7 +184,11 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
+#ifdef PW_STICK_S3
     if (g_state.dailySteps > peerDailySteps) {
+#else
+    if (g_state.dailySteps > peer->dailySteps) {
+#endif
       g_ui.view.peer.itemIndex = 4;
     } else {
       g_ui.view.peer.itemIndex = 5;
@@ -190,7 +201,11 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
+#ifdef PW_STICK_S3
     if (g_state.dailySteps > peerDailySteps) {
+#else
+    if (g_state.dailySteps > peer->dailySteps) {
+#endif
       g_ui.view.peer.itemIndex = 6;
     } else {
       g_ui.view.peer.itemIndex = 7;
@@ -203,7 +218,11 @@ void PeerAwardGift(void)
     if (g_ui.view.peer.wattsAwarded != 0) {
       return;
     }
+#ifdef PW_STICK_S3
     if (g_state.dailySteps > peerDailySteps) {
+#else
+    if (g_state.dailySteps > peer->dailySteps) {
+#endif
       g_ui.view.peer.itemIndex = 8;
     } else {
       g_ui.view.peer.itemIndex = 9;

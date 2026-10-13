@@ -2,6 +2,7 @@
 #define PW_STICK_DISPLAY_PANEL_H
 
 #include <stdint.h>
+#include "display_bus.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,8 +14,8 @@ int StickDisplayPanelInit(void);
 void StickDisplayPanelSetOrientation(unsigned right_side_down);
 void StickDisplayPanelSetBacklight(unsigned enabled);
 void StickDisplayPanelSetContrastDelta(unsigned delta);
-/* False until asynchronous physical wake is ready; keep the image pending. */
-int StickDisplayPresent(void);
+int StickDisplayPresent(const StickDisplaySnapshot *snapshot);
+int StickDisplayPresentationPending(void);
 void StickDisplayPowerService(void);
 void StickDisplayPrepareWake(void);
 /* Cancel pending wake preparation when the user releases M early. */

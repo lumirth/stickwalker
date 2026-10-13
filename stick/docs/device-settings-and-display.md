@@ -43,7 +43,12 @@ to backlight brightness.
 
 ## Check changes
 
-`uv run python stick/check.py` covers layout migration, input gestures, palette
-ordering/reversal, persistence failure and full repaint after the overlay.
+The presenter consumes an immutable native LCD snapshot and revision. A call
+transfers at most eight native rows and finishes with SPI idle, retaining no
+caller pointer. Remaining strips are scheduled independently of native refresh;
+appearance, rotation and overlay changes also invalidate presentation.
+
+`uv run python stick/check.py` exercises production input gestures, layout and
+appearance persistence, and returning from Settings to the native screen.
 After a display change, check the four shades and Settings on the board in both
 appearances and after wake.

@@ -78,7 +78,7 @@ game-data region.
 
 After boot, check the display and controls, open Settings and test sound. For an
 update, confirm the previous registration, Pokémon and settings remain. Unplug
-USB, let the screen go dark, and verify a 500 ms M hold wakes it. You can now
+USB, let the screen go dark, and hold M until it wakes, roughly half a second. You can now
 [connect to your game and take a Pokémon for a walk](playing.md). The
 [controls guide](controls.md) covers button layouts and device settings.
 

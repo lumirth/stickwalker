@@ -1,4 +1,5 @@
 #include "foreground_bridge.h"
+#include "native_runtime.h"
 
 #include "project.h"
 #include "flags.h"
@@ -9,20 +10,15 @@
 #include "application/pw_buzzer.h"
 #include "support/ir.h"
 
-void RtcQuarterSecondInterrupt(void);
-void RtcSecondInterrupt(void);
 void BeepTick(void);
 void MotionSessionEnd(void);
 
-void StickForegroundQuarterSecond(void) { RtcQuarterSecondInterrupt(); }
-void StickForegroundSecond(void) { RtcSecondInterrupt(); }
 int StickForegroundIsIr(void) { return g_task == IrProtocolTick; }
 int StickForegroundIsMain(void) { return g_task == MainTick; }
 int StickForegroundIsBeep(void) { return g_task == BeepTick; }
 int StickForegroundIsInactive(void) {
   return (g_state.flags.byte & SYSTEM_MODE_MASK) == SYSTEM_MODE_INACTIVE;
 }
-unsigned StickForegroundUiFrame(void) { return g_state.uiFrame; }
 void StickForegroundRun(void) {
   if (g_task) g_task();
 #ifdef PW_STICK_BENCH_CONTROL
@@ -39,14 +35,25 @@ void StickForegroundRequestIr(void) {
   g_state.events.byte |= EVENT_IR_REQUEST;
 #endif
 }
-void StickForegroundWakeDisplay(void) { MotionSessionStart(); }
-void StickForegroundDeviceMenuClosed(void) { StickForegroundWakeDisplay(); }
+void StickForegroundDeviceMenuClosed(void) {
+  StickNativeMotionClock(1);
+  MotionSessionStart();
+}
 void StickForegroundCenterWake(void) {
+  StickNativeCenterInterrupt();
+  StickNativeService();
+}
+void StickForegroundAcceptCenterInterrupt(void) {
   /* The original center switch also raises IRQ0. The GPIO adapter must
    * supply that latch when its virtual Center edge is first delivered. */
   g_state.events.byte |= EVENT_CENTER_PRESS;
   g_state.buttonWake[0] = 1;
 }
+void StickForegroundDiscardCenterInput(void) {
+  StickNativeCancelCenterInterrupt();
+  g_state.events.byte &= EVENT_CLEAR(EVENT_CENTER_PRESS);
+}
+int StickForegroundIrHasInput(void) { return g_state.irReceivedBytes != 0; }
 #ifdef PW_STICK_BENCH_CONTROL
 void StickForegroundBenchSleep(void) {
   DisplayEnterPowerSave();
@@ -74,12 +81,6 @@ int StickForegroundBenchMoveScore(void) {
 }
 #endif
 unsigned StickForegroundIrResult(void) { return g_state.irResult; }
-void StickForegroundIrDiagnostic(unsigned *phase, unsigned *received,
-                                 unsigned *reference) {
-  *phase = g_work.irc.work.handshakePhase;
-  *received = g_state.irReceivedBytes;
-  *reference = g_state.irTimerReference;
-}
 #ifdef PW_STICK_BENCH_CONTROL
 void StickForegroundUiDiagnostic(unsigned *view, unsigned *updates,
                                  unsigned *frames, unsigned *seconds,

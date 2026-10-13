@@ -16,15 +16,25 @@ void Controls::Debouncer::update(uint32_t now_ms, bool value) {
 }
 
 void Controls::emit(uint8_t value) {
-  if (value == desired_) return;
-  desired_ = value;
-  if (count_ < sizeof(queue_)) {
-    queue_[(head_ + count_) % sizeof(queue_)] = value;
-    ++count_;
-    ++emitted_;
-  } else {
-    ++overflow_;
+  if (faulted_ || value == desired_) return;
+  if (count_ && queue_[(head_ + count_ - 1) % kCapacity].value == 0 && value) {
+    const uint8_t preceding = count_ > 1 ?
+        queue_[(head_ + count_ - 2) % kCapacity].value : delivered_;
+    if (!(preceding & value)) {
+      --count_;
+      ++consumed_;
+    }
   }
+  if (count_ == kCapacity) {
+    ++overflow_;
+    require_release();
+    faulted_ = true;
+    return;
+  }
+  desired_ = value;
+  queue_[(head_ + count_) % kCapacity] = {now_ms_, value};
+  ++count_;
+  ++emitted_;
 }
 
 uint8_t Controls::direction(bool main_button) const {
@@ -45,22 +55,42 @@ void Controls::set_chord_window(uint16_t milliseconds) {
 
 void Controls::require_release() {
   gesture_ = Gesture::Suppressed;
+  cancelled_ += count_;
   head_ = count_ = 0;
   desired_ = delivered_ = 0;
-  menu_ = false;
-  power_was_down_ = power_.stable;
+  center_notified_ = false;
   wait_release_ = true;
 }
 
+void Controls::expire(uint32_t now_ms) {
+  if (count_ && uint32_t(now_ms - queue_[head_].milliseconds) >
+                    kMaximumPendingAgeMs) {
+    ++expired_;
+    require_release();
+    faulted_ = true;
+  }
+}
+
 void Controls::sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
-                      bool power_pressed) {
+                      bool power_pressed, bool captured,
+                      bool power_press_latched) {
+  now_ms_ = now_ms;
+  expire(now_ms);
+  const uint8_t previous = stable_buttons();
   main_.update(now_ms, main_pressed);
   side_.update(now_ms, side_pressed);
   power_.update(now_ms, power_pressed);
+  if (power_press_latched) {
+    power_.stable = power_.candidate = true;
+    power_.since_ms = now_ms;
+  }
+  pressed_ = stable_buttons() & ~previous;
   const bool m = main_.stable, r = side_.stable, l = power_.stable;
+  if (captured) return;
   if (wait_release_) {
-    if (!m && !r && !l) {
+    if (!m && !r && !l && !main_pressed && !side_pressed && !power_pressed) {
       wait_release_ = false;
+      faulted_ = false;
       gesture_ = Gesture::Idle;
     }
     return;
@@ -76,8 +106,6 @@ void Controls::sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
     return;
   }
 
-  if (l && !power_was_down_) menu_ = true;
-  power_was_down_ = l;
   switch (gesture_) {
     case Gesture::Idle:
       if (m && !r) { gesture_ = Gesture::PendingMain; first_down_ms_ = now_ms; }
@@ -156,31 +184,53 @@ void Controls::sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
 }
 
 uint8_t Controls::next_scan() {
+  return next_scan(now_ms_);
+}
+
+uint8_t Controls::next_scan(uint32_t now_ms) {
+  expire(now_ms);
   if (count_) {
-    delivered_ = queue_[head_];
-    head_ = (head_ + 1) % sizeof(queue_);
+    delivered_ = queue_[head_].value;
+    head_ = (head_ + 1) % kCapacity;
     --count_;
     ++consumed_;
   } else {
     delivered_ = desired_;
   }
+  if (!(delivered_ & kCenter)) center_notified_ = false;
   return delivered_;
 }
 
-bool Controls::idle() const { return !main_.stable && !side_.stable && !power_.stable && !count_; }
+bool Controls::idle() const {
+  return !stable_buttons() && !main_.candidate && !side_.candidate &&
+         !power_.candidate && !count_;
+}
+
+uint8_t Controls::stable_buttons() const {
+  return uint8_t((main_.stable ? 1u : 0u) | (side_.stable ? 2u : 0u) |
+                 (power_.stable ? 4u : 0u));
+}
+
+uint8_t Controls::pressed_buttons() const { return pressed_; }
 
 Controls::Diagnostic Controls::diagnostic() const {
   return {uint8_t(gesture_),
-          uint8_t((main_.stable ? 1u : 0u) | (side_.stable ? 2u : 0u) |
-                  (power_.stable ? 4u : 0u)),
+          stable_buttons(),
           desired_, delivered_, count_, uint8_t(wait_release_),
-          emitted_, consumed_, overflow_};
+          emitted_, consumed_, overflow_, expired_, cancelled_};
 }
 
-bool Controls::menu_requested() {
-  bool requested = menu_;
-  menu_ = false;
-  return requested;
+bool Controls::take_center_press() {
+  return take_center_press(now_ms_);
+}
+
+bool Controls::take_center_press(uint32_t now_ms) {
+  expire(now_ms);
+  const uint8_t available = count_ ? queue_[head_].value : desired_;
+  if (!(available & kCenter) || (delivered_ & kCenter) || center_notified_)
+    return false;
+  center_notified_ = true;
+  return true;
 }
 
 }  // namespace pw_stick

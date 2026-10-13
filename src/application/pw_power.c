@@ -4,17 +4,24 @@
 #include "application/pw_buzzer.h"
 #include "application/pw_nt7508.h"
 #include "application/pw_power.h"
+#ifdef PW_STICK_S3
+#include "stick/native_runtime.h"
+#endif
 
 /* Timer B1 resumes regular sampling while the display stays asleep.
  * The one-second RTC interrupt maintains the motion timeout. */
 void MotionSessionWake(void)
 {
-#ifndef PW_STICK_S3
+#ifdef PW_STICK_S3
+  StickNativeMotionClock(1);
+#else
   CKSTPR1.BYTE |= 4;
 #endif
   g_state.flags.byte =
       ((g_state.flags.byte & SYSTEM_MODE_CLEAR) | SYSTEM_MODE_MOTION);
-#ifndef PW_STICK_S3
+#ifdef PW_STICK_S3
+  StickNativeRefreshInterrupt(1);
+#else
   RTC.RTCCR2.BYTE |= 1;
 #endif
   g_state.idleSeconds[IDLE_MOTION] = ACTIVITY_MOTION_SECONDS;
@@ -57,7 +64,9 @@ void MotionSessionStart(void)
     }
     g_state.flags.byte =
         ((g_state.flags.byte & SYSTEM_MODE_CLEAR) | SYSTEM_MODE_INTERACTIVE);
-#ifndef PW_STICK_S3
+#ifdef PW_STICK_S3
+    StickNativeRefreshInterrupt(1);
+#else
     RTC.RTCCR2.BYTE |= 1;
 #endif
     DisplayExitPowerSave();
@@ -70,7 +79,10 @@ void MotionSessionStart(void)
 void MotionSessionEnd(void)
 {
   BeepDisableTimer();
-#ifndef PW_STICK_S3
+#ifdef PW_STICK_S3
+  StickNativeMotionClock(0);
+  StickNativeRefreshInterrupt(0);
+#else
   CKSTPR1.BYTE &= 0xfb;
   RTC.RTCCR2.BYTE &= 0xfe;
 #endif

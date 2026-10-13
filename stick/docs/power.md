@@ -12,11 +12,11 @@ sampling while they use the shared working memory; menus and games continue to
 sample. The [motion scheduling decision](../../docs/adr/0001-preserve-native-motion-ownership.md)
 explains why.
 
-Awake button polls run every 5 ms. While the game or Settings is visible, sleep
-is capped at 100 ms so L's PMIC press latch can be read. The 62.5 ms game deadline
-usually wakes the CPU sooner.
+Required awake button polls run every 5 ms. While the game or Settings is visible,
+that acquisition deadline participates in CPU sleep decisions, including L's
+retained PMIC press. Delivery does not change the native sampling clock.
 
-With the screen off, holding M for 500 ms wakes it. Releasing M early cancels
+With the screen off, holding M through native Center qualification wakes it. Releasing M early cancels
 panel preparation. After wake, the adapter clears L's retained press and waits
 for all buttons to be released before navigation resumes. See the
 [wake policy](../../docs/adr/0002-m-only-dark-wake.md) and

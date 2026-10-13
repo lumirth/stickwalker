@@ -1,0 +1,22 @@
+run 4000
+peer start
+press M
+press R
+run 100
+release M
+release R
+run 300
+press M
+press R
+run 100
+release M
+release R
+run 4000
+peer report peer.txt
+optical peer.optical
+screen completed.png
+press L
+run 100
+release L
+run 200
+screen settings-after.png

@@ -5,26 +5,23 @@
 extern "C" {
 #endif
 
-void StickForegroundQuarterSecond(void);
-void StickForegroundSecond(void);
 int StickForegroundIsIr(void);
 int StickForegroundIsMain(void);
 int StickForegroundIsBeep(void);
 int StickForegroundIsInactive(void);
-unsigned StickForegroundUiFrame(void);
 void StickForegroundRun(void);
 void StickForegroundRequestIr(void);
 void StickForegroundDeviceMenuClosed(void);
-void StickForegroundWakeDisplay(void);
 void StickForegroundCenterWake(void);
+void StickForegroundAcceptCenterInterrupt(void);
+void StickForegroundDiscardCenterInput(void);
+int StickForegroundIrHasInput(void);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickForegroundBenchSleep(void);
 void StickForegroundBenchInactive(void);
 int StickForegroundBenchMoveScore(void);
 #endif
 unsigned StickForegroundIrResult(void);
-void StickForegroundIrDiagnostic(unsigned *phase, unsigned *received,
-                                 unsigned *reference);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickForegroundUiDiagnostic(unsigned *view, unsigned *updates,
                                  unsigned *frames, unsigned *seconds,

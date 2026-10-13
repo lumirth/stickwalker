@@ -119,6 +119,10 @@ bool StickSleepBegin(void) {
   return true;
 }
 
+uint64_t StickSleepNextDeadline(void) {
+  return ready ? UINT64_MAX : retry_begin_us;
+}
+
 bool StickSleepUntil(uint64_t deadline_us) {
   const uint64_t now = uint64_t(esp_timer_get_time());
   if (!ready && (now < retry_begin_us || !StickSleepBegin())) return false;
@@ -129,10 +133,7 @@ bool StickSleepUntil(uint64_t deadline_us) {
     return false;
   }
   const bool m_only = StickInputMOnlyWake();
-  // Cap visible-screen sleep for L polling. With the screen off, wake for M
-  // or the next game deadline.
-  uint64_t duration = deadline_us - now - 1000;
-  if (!m_only && duration > 100000) duration = 100000;
+  const uint64_t duration = deadline_us - now - 1000;
   if (digitalRead(11) == LOW || (!m_only && digitalRead(12) == LOW)) return false;
   const esp_err_t timer_result = esp_sleep_enable_timer_wakeup(duration);
   if (timer_result != ESP_OK) {

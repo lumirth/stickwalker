@@ -184,7 +184,7 @@ void DisplayAddress(u8 x, u8 page)
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
   LCD_TX((((x / DISPLAY_COL_MSB_DIVISOR) & DISPLAY_COL_MSB_MASK) +
-               DISPLAY_COL_MSB_COMMAND));
+          DISPLAY_COL_MSB_COMMAND));
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
   LCD_TX((x & DISPLAY_COL_LSB_MASK));
@@ -194,7 +194,7 @@ void DisplayAddress(u8 x, u8 page)
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
   LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + page +
-               DISPLAY_PAGE_COMMAND_BASE));
+          DISPLAY_PAGE_COMMAND_BASE));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
 }
@@ -274,7 +274,7 @@ void DisplayFill(u8 pixelValue)
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
     LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + y +
-                 DISPLAY_PAGE_COMMAND_BASE));
+            DISPLAY_PAGE_COMMAND_BASE));
     while (SSU.SSSR.BIT.TEND == 0) {
     }
     IO.PDR1.BIT.B1 = 1;
@@ -330,7 +330,7 @@ void DisplayFill(u8 pixelValue)
   do {                                                                         \
     while (SSU.SSSR.BIT.TDRE == 0) {                                           \
     }                                                                          \
-    LCD_TX((value));                                                       \
+    LCD_TX((value));                                                           \
   } while (0)
 #define LCD_END()                                                              \
   do {                                                                         \
@@ -467,7 +467,7 @@ void DisplayClear(u8 height)
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
     LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + y +
-                 DISPLAY_PAGE_COMMAND_BASE));
+            DISPLAY_PAGE_COMMAND_BASE));
     while (SSU.SSSR.BIT.TEND == 0) {
     }
     IO.PDR1.BIT.B1 = 1;
@@ -524,7 +524,7 @@ void DisplayBlit(u8 x, u8 y, u8 width, u8 height, const u8 *raster)
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
     LCD_TX((((left / DISPLAY_COL_MSB_DIVISOR) & DISPLAY_COL_MSB_MASK) +
-                 DISPLAY_COL_MSB_COMMAND));
+            DISPLAY_COL_MSB_COMMAND));
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
     LCD_TX((left & DISPLAY_COL_LSB_MASK));
@@ -534,7 +534,7 @@ void DisplayBlit(u8 x, u8 y, u8 width, u8 height, const u8 *raster)
     while (SSU.SSSR.BIT.TDRE == 0) {
     }
     LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES + row +
-                 DISPLAY_PAGE_COMMAND_BASE));
+            DISPLAY_PAGE_COMMAND_BASE));
     while (SSU.SSSR.BIT.TEND == 0) {
     }
     IO.PDR1.BIT.B1 = 1;
@@ -955,7 +955,7 @@ void DisplayMessageRule(void)
   while (SSU.SSSR.BIT.TDRE == 0) {
   }
   LCD_TX((g_displayBank.bytes.index * DISPLAY_BANK_PAGES +
-               DISPLAY_PAGE_COMMAND_BASE + DISPLAY_RULE_PAGE_OFFSET));
+          DISPLAY_PAGE_COMMAND_BASE + DISPLAY_RULE_PAGE_OFFSET));
   while (SSU.SSSR.BIT.TEND == 0) {
   }
   IO.PDR1.BIT.B1 = 1;

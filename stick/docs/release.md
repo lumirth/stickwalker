@@ -24,6 +24,12 @@ The timing check compares `measure_ir_gate`, `aligned_next` and `run_gate_segmen
 with the production reference. The report records the new ELF hash and whether
 each function's instruction bytes match.
 
+The native-platform redesign changes the receiver handoff and its gate-loop
+machine code. The frozen reference is intentionally unchanged. A differing
+report is a physical requalification requirement, not permission to replace the
+reference with the candidate's hashes. Simulator protocol checks alone cannot
+qualify this candidate for a stable release.
+
 ## Assemble the runtime kit
 
 Use the source archives and `sources.json` from the previous release's runtime
@@ -75,7 +81,7 @@ observations and failures.
 1. [Back up and install](install.md) the candidate. Read back the app and compare
    its hash. For an app-only update, confirm registration,
    Pokémon, settings and valid EEPROM mirrors survive.
-2. Disconnect USB. Exercise the 500 ms M wake in every layout and rotation,
+2. Disconnect USB. Exercise native M-hold wake in every layout and rotation,
    ignored dark L/R, abandoned short M taps, navigation after release, Settings,
    display restoration, short sounds and clock progression.
 3. Repeat retail walk-start and return transfers on that image. Record

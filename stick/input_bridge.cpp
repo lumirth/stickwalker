@@ -5,36 +5,34 @@
 #include "display_bus.h"
 #include "display_panel.h"
 #include "foreground_bridge.h"
-#ifdef PW_STICK_BENCH_CONTROL
 #include "sound_bridge.h"
-#endif
 
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <Preferences.h>
+#include <esp_timer.h>
 
 namespace {
 
 pw_stick::Controls controls;
 bool power_button_ready = false;
-u8 input_profile = 0;
-u8 input_layout = 0;
-u8 input_orientation = 0;
-u8 chord_window_index = 0;
+pw_stick::ControlSettings settings;
 bool menu_active = false;
 bool was_m_only_wake = false;
-bool discard_power_event = false;
+bool discard_power_event = true;
 u8 sampled_raw = 0;
-u8 menu_candidate = 0, menu_stable = 0, menu_pending = 0;
-uint32_t menu_since_ms = 0, three_menu_since_ms = 0;
-bool three_menu_started = false, three_menu_sent = false;
-bool three_menu_requested = false;
-bool power_event_requested = false;
+u8 menu_pending = 0;
+bool menu_wait_release = true;
+bool menu_requested = false;
 bool power_action_armed = false;
+bool power_release_tracking = false;
 uint32_t power_released_since_ms = 0;
-uint32_t front_wake_since_ms = 0;
+uint32_t power_retry_ms = 0;
+bool wake_center = false;
+bool wake_started = false;
 bool front_wake_consuming = false;
 u8 previous_levels = 0;
+uint64_t last_poll_us = 0;
 #ifdef PW_STICK_BENCH_CONTROL
 u8 injected_button = 0;
 u8 held_button = 0;
@@ -58,8 +56,6 @@ bool pm1_write(uint8_t reg, uint8_t value) {
 }
 
 bool enable_power_button_input() {
-  // Set download-mode recovery to a four-second hold so it remains separate
-  // from the 1.2-second Settings gesture.
   uint8_t single, twice, single_after, twice_after;
   if (!pm1_read(0x49, single) || !pm1_read(0x4a, twice)) return false;
   const uint8_t button_config = uint8_t((single & ~0x18u) | 0x18u | 1u);
@@ -76,70 +72,82 @@ extern "C" void StickInputInit(void) {
   pinMode(11, INPUT_PULLUP);
   pinMode(12, INPUT_PULLUP);
   power_button_ready = enable_power_button_input();
+  power_retry_ms = millis() + 1000;
+  last_poll_us = esp_timer_get_time();
   previous_levels = 0;
   Preferences preferences;
   if (preferences.begin("pw-controls", true)) {
     const u8 stored = preferences.getUChar("layout-v2", 0xff);
-    const auto settings = stored == 0xff ?
+    settings = stored == 0xff ?
         pw_stick::migrate_controls(preferences.getUChar("layout", 0)) :
         pw_stick::decode_controls(stored);
     preferences.end();
-    input_layout = u8(settings.layout);
-    input_orientation = settings.orientation;
-    chord_window_index = settings.chord_window;
   }
-  input_profile = pw_stick::three_key(pw_stick::Layout(input_layout));
-  controls.configure(pw_stick::Layout(input_layout));
-  controls.set_chord_window(80 + chord_window_index * 40);
+  controls.configure(settings.layout);
+  controls.set_chord_window(80 + settings.chord_window * 40);
 }
 
 extern "C" void StickInputPoll(unsigned long milliseconds) {
+  const uint32_t now_ms = uint32_t(milliseconds);
+  last_poll_us = esp_timer_get_time();
   const bool main_pressed = digitalRead(11) == LOW
 #ifdef PW_STICK_BENCH_CONTROL
-                            || uint32_t(bench_main_until_ms - milliseconds) <
-                                   0x80000000u
+                            || (bench_main_until_ms &&
+                                int32_t(bench_main_until_ms - now_ms) > 0)
 #endif
                             ;
   if (StickInputMOnlyWake()) {
     if (!was_m_only_wake) {
       controls.require_release();
       previous_levels = menu_pending = 0;
-      three_menu_started = three_menu_sent = three_menu_requested = false;
-      power_event_requested = power_action_armed = false;
-      power_released_since_ms = front_wake_since_ms = 0;
+      menu_requested = power_action_armed = power_release_tracking = false;
+      wake_center = wake_started = false;
       front_wake_consuming = false;
       discard_power_event = true;
       was_m_only_wake = true;
     }
-    // Use M for dark-screen wake. The wake path clears the retained L event
-    // before navigation resumes.
     sampled_raw = main_pressed ? 1u : 0u;
+    controls.sample(now_ms, main_pressed, false, false, true);
 #ifdef PW_STICK_BENCH_CONTROL
     main_edges += main_pressed && !(last_raw & 1u);
     last_raw = sampled_raw;
     bench_power_event = false;
 #endif
     if (main_pressed) {
+      wake_started = true;
       StickDisplayPrepareWake();
-      if (!front_wake_since_ms) front_wake_since_ms = uint32_t(milliseconds);
-      else if (uint32_t(milliseconds - front_wake_since_ms) >= 500) {
-        StickForegroundWakeDisplay();
-        controls.require_release();
-        front_wake_consuming = true;
-        front_wake_since_ms = 0;
-      }
+      StickSoundPrepare();
     } else {
-      front_wake_since_ms = 0;
       StickDisplayCancelPreparedWake();
     }
+    const bool center = (controls.stable_buttons() & 1u) != 0;
+    if (center && !wake_center) StickForegroundCenterWake();
+    wake_center = center;
     return;
   }
-  was_m_only_wake = false;
+  if (was_m_only_wake) {
+    was_m_only_wake = false;
+    front_wake_consuming = wake_started;
+    wake_center = false;
+    controls.require_release();
+  }
+  if (!power_button_ready && int32_t(now_ms - power_retry_ms) >= 0) {
+    power_button_ready = enable_power_button_input();
+    power_retry_ms = now_ms + 1000;
+    discard_power_event = true;
+  }
   uint8_t power_state = 0;
   const bool power_read = power_button_ready && pm1_read(0x48, power_state);
+  if (power_button_ready && !power_read) {
+#ifdef PW_STICK_BENCH_CONTROL
+    ++pmic_errors;
+#endif
+    power_button_ready = false;
+    power_retry_ms = now_ms + 1000;
+    power_action_armed = false;
+    controls.require_release();
+  }
   const bool power_pressed = power_read && (power_state & 1u);
-  // BTN_Status bit 7 records a press until the register is read. A short
-  // power-key tap can end between polls even when its event was captured.
   const bool power_event = !discard_power_event && ((power_read && (power_state & 0x80u))
 #ifdef PW_STICK_BENCH_CONTROL
                            || bench_power_event
@@ -149,13 +157,12 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
 #ifdef PW_STICK_BENCH_CONTROL
   bench_power_event = false;
 #endif
-  // The PMIC can report several changes for one tap. Wait for a quiet release
-  // before accepting another Settings gesture.
   if (!power_read || power_pressed || power_event) {
-    power_released_since_ms = 0;
-  } else if (!power_released_since_ms) {
-    power_released_since_ms = uint32_t(milliseconds);
-  } else if (uint32_t(milliseconds - power_released_since_ms) >= 50) {
+    power_release_tracking = false;
+  } else if (!power_release_tracking) {
+    power_release_tracking = true;
+    power_released_since_ms = now_ms;
+  } else if (uint32_t(now_ms - power_released_since_ms) >= 50) {
     power_action_armed = true;
   }
   const bool power_action = power_action_armed &&
@@ -170,63 +177,45 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
   side_edges += (raw & 2u) && !(last_raw & 2u);
   power_edges += (raw & 4u) && !(last_raw & 4u);
   power_events += power_event;
-  pmic_errors += power_button_ready && !power_read;
   last_raw = raw;
-  // Wait for release after the sound test before resuming game input.
   if (StickSoundBenchToneActive()) bench_suppress_until_release = true;
   if (bench_suppress_until_release) {
     if (!sampled_raw) bench_suppress_until_release = false;
     controls.require_release();
-    three_menu_started = false;
-    three_menu_sent = false;
-    three_menu_requested = false;
-    power_event_requested = false;
+    controls.sample(now_ms, main_pressed, side_pressed, power_pressed, true);
+    menu_requested = false;
     return;
   }
 #endif
-  if (menu_active) {
-    if (power_action) menu_pending |= 4u;
-    if (sampled_raw != menu_candidate) {
-      menu_candidate = sampled_raw;
-      menu_since_ms = uint32_t(milliseconds);
-    }
-    if (menu_stable != menu_candidate &&
-        uint32_t(milliseconds - menu_since_ms) >= 5) {
-      const u8 new_edges = menu_candidate & ~menu_stable;
-      menu_stable = menu_candidate;
-      menu_pending |= new_edges & 3u;
-    }
-    return;
-  }
+  controls.sample(now_ms, main_pressed, side_pressed, power_pressed,
+                  menu_active || front_wake_consuming, power_action);
   if (front_wake_consuming) {
-    if (!main_pressed && !side_pressed && !power_pressed &&
-        (!power_button_ready || power_read))
+    if (!sampled_raw && !controls.stable_buttons() && power_read) {
       front_wake_consuming = false;
-    // Feed quiet levels to release the debouncers after the wake gesture.
-    if (!front_wake_consuming)
-      controls.sample(uint32_t(milliseconds), false, false, false);
+      controls.require_release();
+    }
     return;
   }
-  if (!input_profile && power_action) power_event_requested = true;
-  if (input_profile && power_pressed) {
-    if (!three_menu_started) {
-      three_menu_started = true;
-      three_menu_since_ms = uint32_t(milliseconds);
-    } else if (!three_menu_sent &&
-               uint32_t(milliseconds - three_menu_since_ms) >= 1200) {
-      three_menu_sent = true;
-      three_menu_requested = true;
+  if (menu_active) {
+    if (menu_wait_release) {
+      if (!sampled_raw && !controls.stable_buttons() && power_read)
+        menu_wait_release = false;
+    } else {
+      menu_pending |= controls.pressed_buttons() & 3u;
+      if (power_action) menu_pending |= 4u;
     }
-  } else {
-    three_menu_started = false;
-    three_menu_sent = false;
+    return;
   }
-  controls.sample(uint32_t(milliseconds), main_pressed, side_pressed,
-                  input_profile ? power_pressed : false);
+  if (!pw_stick::three_key(settings.layout) && power_action) {
+    menu_requested = true;
+    controls.require_release();
+  }
+  if (controls.take_center_press()) StickForegroundCenterWake();
 }
 
 extern "C" u8 StickInputLevels(void) {
-  if (menu_active) {
+  if (menu_active || menu_requested || front_wake_consuming ||
+      (was_m_only_wake && !StickInputMOnlyWake())) {
     previous_levels = 0;
     return 0;
   }
@@ -234,27 +223,24 @@ extern "C" u8 StickInputLevels(void) {
   if (held_scans) {
     --held_scans;
     const u8 value = held_button;
-    if ((value & pw_stick::kCenter) &&
-        !(previous_levels & pw_stick::kCenter))
-      StickForegroundCenterWake();
     previous_levels = value;
     return value;
   }
   if (injected_button) {
     const u8 value = injected_button;
     injected_button = 0;
-    if ((value & pw_stick::kCenter) &&
-        !(previous_levels & pw_stick::kCenter))
-      StickForegroundCenterWake();
     previous_levels = value;
     return value;
   }
 #endif
-  if (StickInputMOnlyWake()) { previous_levels = 0; return 0; }
-  const u8 value = controls.next_scan();
-  if ((value & pw_stick::kCenter) &&
-      !(previous_levels & pw_stick::kCenter))
-    StickForegroundCenterWake();
+  u8 value;
+  if (StickInputMOnlyWake()) {
+    value = wake_center ? pw_stick::kCenter : 0;
+  } else {
+    const uint32_t now_ms = millis();
+    if (controls.take_center_press(now_ms)) StickForegroundCenterWake();
+    value = controls.next_scan(now_ms);
+  }
 #ifdef PW_STICK_BENCH_CONTROL
   left_edges += (value & pw_stick::kLeft) &&
                 !(previous_levels & pw_stick::kLeft);
@@ -284,8 +270,17 @@ extern "C" int StickInputWakeScanActive(void) {
   return 0;
 }
 
+extern "C" uint64_t StickInputNextDeadline(void) {
+  if (StickInputMOnlyWake() && !sampled_raw &&
+      !(controls.stable_buttons() & 1u)) return UINT64_MAX;
+  return last_poll_us + 5000;
+}
+
 #ifdef PW_STICK_BENCH_CONTROL
-extern "C" void StickInputBenchInject(u8 button) { injected_button = button; }
+extern "C" void StickInputBenchInject(u8 button) {
+  injected_button = button;
+  if (button & pw_stick::kCenter) StickForegroundCenterWake();
+}
 extern "C" void StickInputBenchMainHold(unsigned milliseconds) {
   bench_main_until_ms = millis() + milliseconds;
 }
@@ -293,6 +288,7 @@ extern "C" void StickInputBenchPowerEvent(void) { bench_power_event = true; }
 extern "C" void StickInputBenchHold(u8 button, unsigned scans) {
   held_button = button;
   held_scans = scans;
+  if (scans && (button & pw_stick::kCenter)) StickForegroundCenterWake();
 }
 extern "C" void StickInputDiagnostic(unsigned *main_count,
                                        unsigned *side_count,
@@ -314,7 +310,8 @@ extern "C" void StickInputPathDiagnostic(
     unsigned *stable, unsigned *gesture, unsigned *desired,
     unsigned *delivered, unsigned *queued, unsigned *wait_release,
     unsigned *emitted, unsigned *consumed, unsigned *overflow,
-    unsigned *left_count, unsigned *right_count, unsigned *center_count) {
+    unsigned *left_count, unsigned *right_count, unsigned *center_count,
+    unsigned *expired, unsigned *cancelled) {
   const auto d = controls.diagnostic();
   *stable = d.stable;
   *gesture = d.gesture;
@@ -328,24 +325,39 @@ extern "C" void StickInputPathDiagnostic(
   *left_count = left_edges;
   *right_count = right_edges;
   *center_count = center_edges;
+  *expired = d.expired;
+  *cancelled = d.cancelled;
 }
 #endif
 
 extern "C" int StickMenuRequested(void) {
-  const bool requested = controls.menu_requested() || three_menu_requested ||
-                         power_event_requested;
-  three_menu_requested = false;
-  power_event_requested = false;
+  const bool requested = menu_requested;
+  menu_requested = false;
   return requested ? 1 : 0;
 }
 
+extern "C" int StickInputSettingsLauncher(void) {
+  if (!pw_stick::three_key(settings.layout) || menu_active ||
+      StickInputMOnlyWake()) return 0;
+  menu_requested = true;
+  controls.require_release();
+  return 1;
+}
+
 extern "C" void StickInputMenuMode(int enabled) {
+  StickForegroundDiscardCenterInput();
   menu_active = enabled != 0;
-  menu_candidate = menu_stable = sampled_raw;
   menu_pending = 0;
-  menu_since_ms = millis();
+  menu_wait_release = true;
   controls.require_release();
   previous_levels = 0;
+}
+
+extern "C" void StickInputRequireRelease(void) {
+  controls.require_release();
+  StickForegroundDiscardCenterInput();
+  previous_levels = 0;
+  front_wake_consuming = true;
 }
 
 extern "C" u8 StickInputTakeMenuButtons(void) {
@@ -354,10 +366,12 @@ extern "C" u8 StickInputTakeMenuButtons(void) {
   return value;
 }
 
-extern "C" u8 StickInputProfile(void) { return input_profile; }
-extern "C" u8 StickInputLayout(void) { return input_layout; }
-extern "C" u8 StickInputOrientation(void) { return input_orientation; }
-extern "C" u8 StickInputChordWindowIndex(void) { return chord_window_index; }
+extern "C" u8 StickInputProfile(void) {
+  return pw_stick::three_key(settings.layout);
+}
+extern "C" u8 StickInputLayout(void) { return u8(settings.layout); }
+extern "C" u8 StickInputOrientation(void) { return settings.orientation; }
+extern "C" u8 StickInputChordWindowIndex(void) { return settings.chord_window; }
 
 extern "C" int StickInputConfigure(u8 layout, u8 orientation,
                                       u8 window_index) {
@@ -369,11 +383,8 @@ extern "C" int StickInputConfigure(u8 layout, u8 orientation,
           {pw_stick::Layout(layout), orientation, window_index}));
   preferences.end();
   if (written != 1) return 0;
-  input_layout = layout;
-  input_profile = pw_stick::three_key(pw_stick::Layout(layout));
-  input_orientation = orientation;
-  chord_window_index = window_index;
-  controls.configure(pw_stick::Layout(layout));
-  controls.set_chord_window(80 + window_index * 40);
+  settings = {pw_stick::Layout(layout), orientation, window_index};
+  controls.configure(settings.layout);
+  controls.set_chord_window(80 + settings.chord_window * 40);
   return 1;
 }

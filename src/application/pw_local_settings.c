@@ -9,6 +9,10 @@
 #include "application/pw_player_input.h"
 #include "support/lib_common.h"
 #include "support/scratch.h"
+#ifdef PW_STICK_S3
+#include "stick/input_bridge.h"
+#define SETTINGS_SELECT_STICK 2
+#endif
 
 #define VOLUME_LEVELS 3
 
@@ -22,6 +26,13 @@ void SettingsInit(void)
 void SettingsNavigate(void)
 {
   if (InputPressed(BUTTON_LEFT) != 0) {
+#ifdef PW_STICK_S3
+    if (g_ui.view.settings.selection == SETTINGS_SELECT_STICK) {
+      g_ui.view.settings.selection = SETTINGS_SELECT_CONTRAST;
+      BeepLoadScore(SCORE_MOVE);
+      return;
+    }
+#endif
     if (g_ui.view.settings.selection == SETTINGS_SELECT_VOLUME) {
       BeepLoadScore(SCORE_BACK);
       MenuReset();
@@ -35,8 +46,19 @@ void SettingsNavigate(void)
     return;
   }
   if (g_ui.view.settings.selection == SETTINGS_SELECT_CONTRAST) {
+#ifdef PW_STICK_S3
+    if (StickInputProfile()) {
+      g_ui.view.settings.selection = SETTINGS_SELECT_STICK;
+      BeepLoadScore(SCORE_MOVE);
+    }
+#endif
     return;
   }
+#ifdef PW_STICK_S3
+  if (g_ui.view.settings.selection == SETTINGS_SELECT_STICK) {
+    return;
+  }
+#endif
   g_ui.view.settings.selection = SETTINGS_SELECT_CONTRAST;
   BeepLoadScore(SCORE_MOVE);
 }
@@ -92,6 +114,12 @@ void SettingsUpdate(void)
 {
   u8 page;
 
+#ifdef PW_STICK_S3
+  if (!StickInputProfile() &&
+      g_ui.view.settings.selection == SETTINGS_SELECT_STICK) {
+    SettingsInit();
+  }
+#endif
   page = g_ui.view.settings.page;
   switch (page) {
   case SETTINGS_PAGE_SELECT:
@@ -109,6 +137,12 @@ void SettingsUpdate(void)
     return;
   }
   if (g_ui.view.settings.page == SETTINGS_PAGE_SELECT) {
+#ifdef PW_STICK_S3
+    if (g_ui.view.settings.selection == SETTINGS_SELECT_STICK) {
+      StickInputSettingsLauncher();
+      return;
+    }
+#endif
     BeepLoadScore(SCORE_CONFIRM);
     g_ui.view.settings.page = (g_ui.view.settings.selection + 1);
   } else {
@@ -127,6 +161,16 @@ void SettingsRender(void)
   u8 *eepromSource;
   u8 cursorX;
   int i;
+
+#ifdef PW_STICK_S3
+  if (g_ui.view.settings.selection == SETTINGS_SELECT_STICK) {
+    DisplayText(20, 16, "STICK SETTINGS");
+    DisplayText(16, 32, "CENTER TO OPEN");
+    DisplayText(16, 48, "LEFT TO RETURN");
+    RenderBattery(88, 0);
+    return;
+  }
+#endif
 
   resources = (UiResources *)EEPROM_UI;
   ScratchReset();

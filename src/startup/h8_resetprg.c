@@ -325,7 +325,11 @@ void StatusApplyTime(void)
 #endif
   if (seconds != 0) {
     g_state.save.rtcSeconds = seconds;
+#ifdef PW_STICK_S3
     RtcSetTime(seconds);
+#else
+    RtcSetTime(g_work.irc.statusA.status.rtcSeconds);
+#endif
   }
 }
 

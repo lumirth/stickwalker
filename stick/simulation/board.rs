@@ -1,6 +1,6 @@
 use esp_periph::i2c::I2cDevice;
 use esp_soc::{
-    board::{BoardModel, SpiPins},
+    board::{BoardEdge, BoardModel, SpiPins},
     devices::dcs_panel::DcsPanel,
 };
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,8 @@ pub struct Inputs {
     pub left_latched: bool,
     pub optical: Vec<Vec<(u64, bool)>>,
     pub cycle: u64,
+    pub vbus_mv: Option<u16>,
+    pub peer: Option<crate::peer::DsPeer>,
 }
 
 enum Device {
@@ -104,6 +106,20 @@ impl I2cDevice for Registers {
     fn read(&mut self) -> u8 {
         let reg = self.pointer as usize;
         let byte = match self.device {
+            Device::Pmic if reg == 4 => {
+                if self.inputs.lock().unwrap().vbus_mv.unwrap_or(5000) >= 4000 {
+                    1
+                } else {
+                    4
+                }
+            }
+            Device::Pmic if reg == 0x24 || reg == 0x25 => self
+                .inputs
+                .lock()
+                .unwrap()
+                .vbus_mv
+                .unwrap_or(5000)
+                .to_le_bytes()[reg - 0x24],
             Device::Pmic if reg == 0x48 => {
                 let mut state = self.inputs.lock().unwrap();
                 let byte = u8::from(state.left) | if state.left_latched { 0x80 } else { 0 };
@@ -204,6 +220,12 @@ impl BoardModel for StickS3 {
         }
         self.panel.dc = self.levels & (1 << 45) != 0;
     }
+    fn gpio_output_at(&mut self, cycle: u64, changes: &[(u8, bool)], enabled: u64, output: u64) {
+        self.gpio_changes(changes);
+        if let Some(peer) = self.inputs.lock().unwrap().peer.as_mut() {
+            peer.gpio_output(cycle, enabled, output);
+        }
+    }
     fn i2c_devices(&mut self) -> Vec<(u8, u8, Box<dyn I2cDevice>)> {
         self.devices
             .iter()
@@ -273,20 +295,51 @@ impl BoardModel for StickS3 {
         if pin == 46 {
             // The onboard transmitter draws from the PMIC's external 5 V rail.
             let powered = self.devices[0].1.lock().unwrap().regs[6] & 8 != 0;
-            let light = pulses
+            let light: Vec<(u64, bool)> = pulses
                 .iter()
                 .map(|&(cycles, high)| (cycles, high && powered))
                 .collect();
-            self.inputs.lock().unwrap().optical.push(light);
+            let mut state = self.inputs.lock().unwrap();
+            let cycle = state.cycle;
+            if let Some(peer) = state.peer.as_mut() {
+                peer.observe_tx(cycle, &light);
+            }
+            state.optical.push(light);
         }
     }
+    fn next_deadline(&self) -> Option<u64> {
+        self.inputs
+            .lock()
+            .unwrap()
+            .peer
+            .as_ref()
+            .and_then(|peer| peer.next_deadline())
+    }
+    fn uses_gpio_waveform(&self) -> bool {
+        self.inputs.lock().unwrap().peer.is_some()
+    }
     fn advance_to(&mut self, cycle: u64) {
-        self.inputs.lock().unwrap().cycle = cycle;
+        let mut state = self.inputs.lock().unwrap();
+        state.cycle = cycle;
+        if let Some(peer) = state.peer.as_mut() {
+            peer.advance_to(cycle);
+        }
+    }
+    fn take_edges(&mut self) -> Vec<BoardEdge> {
+        self.inputs
+            .lock()
+            .unwrap()
+            .peer
+            .as_mut()
+            .map_or_else(Vec::new, |peer| peer.take_edges())
     }
     fn report(&self) -> String {
         format!(
-            "ST7789: {} pixels; on={}, sleeping={}",
-            self.panel.pixels_written, self.panel.on, self.panel.sleeping
+            "ST7789: {} pixels; on={}, sleeping={}; peripheral_supply={}",
+            self.panel.pixels_written,
+            self.panel.on,
+            self.panel.sleeping,
+            self.devices[0].1.lock().unwrap().regs[0x11] & 4 != 0
         )
     }
 }

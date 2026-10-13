@@ -3,6 +3,7 @@
 #include "types.h"
 #ifdef PW_STICK_S3
 #include "stick/motion_sample.h"
+#include "stick/native_runtime.h"
 #endif
 #include "eeprom_address.h"
 #include "startup/hardware.h"
@@ -579,7 +580,9 @@ void MainTick(void)
   CaptureSample();
   IENR1.BIT.IENRTC = 1;
 #else
+  g_state.events.bits.lowPowerClock = 0;
   CaptureSample();
+  StickNativeService();
 #endif
   InputScan();
   if ((g_state.flags.byte & SYSTEM_MODE_MASK) == SYSTEM_MODE_INACTIVE) {
@@ -623,13 +626,9 @@ void MainTick(void)
             g_state.centerHoldScans = 0;
           }
         } else {
-#ifndef PW_STICK_S3
           set_ccr(0x80);
-#endif
           BatteryUpdate();
-#ifndef PW_STICK_S3
           set_ccr(0);
-#endif
           MotionSessionIdleCheck();
         }
       }
@@ -658,6 +657,8 @@ void BeepTick(void)
   if (TW.GRA != 0) {
     sleep();
   }
+#else
+  g_state.events.bits.lowPowerClock = 1;
 #endif
   WatchdogService();
   InputScan();

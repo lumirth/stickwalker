@@ -6,6 +6,7 @@
 // Suspend the CPU in Light-sleep until the caller's next work deadline.
 bool StickSleepBegin(void);
 bool StickSleepUntil(uint64_t deadline_us);
+uint64_t StickSleepNextDeadline(void);
 
 #ifdef PW_STICK_BENCH_CONTROL
 void StickSleepDiagnostic(uint64_t *count, uint64_t *sleep_us,

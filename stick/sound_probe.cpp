@@ -1,6 +1,7 @@
 #ifdef PW_STICK_BENCH_CONTROL
 // The self-test reports aggregate energy measurements.
 #include "foreground_bridge.h"
+#include "native_runtime.h"
 #include "sound_bridge.h"
 #include "board_hal.h"
 #include <Arduino.h>
@@ -122,6 +123,7 @@ extern "C" void StickSoundBenchCapture(bool microphone, bool calibration, bool m
   const int64_t start = esp_timer_get_time();
   int16_t samples[256];
   while (ok && esp_timer_get_time() - start < bin_count * 10000) {
+    StickNativeService();
     StickSoundService();
     size_t bytes = 0;
     const auto read = i2s_channel_read(rx, samples, sizeof(samples), &bytes, 1);

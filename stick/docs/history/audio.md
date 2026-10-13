@@ -4,6 +4,11 @@ These tests measured score timing and acoustic output. Raw
 artifacts remain in `stick/.build/sound-scheduling-2026-09-26/` and
 `stick/.build/codec-startup-2026-09-27/`.
 
+These are historical results, not qualification of the current
+[native-platform redesign](../native-platform.md). It removes score reanchoring
+and the fixed cold-start delay, preparing physical output separately from native
+score timing. Its acoustic onset and settling need fresh device measurements.
+
 ## Score scheduling
 
 The native score walker and Stick adapter initially failed 102 of 176 host
