@@ -83,15 +83,6 @@ void begin_battery_trial(uint64_t now) {
   battery_trial_armed = false;
 }
 
-int battery_percent_estimate(u16 millivolts) {
-  if (!millivolts) return -1;
-  // M5Unified uses this voltage-only scale for M5PM1. It is an estimate,
-  // particularly while charging or under a changing load.
-  if (millivolts <= 3300) return 0;
-  if (millivolts >= 4100) return 100;
-  return (millivolts - 3300) * 100 / 800;
-}
-
 }
 
 void StickDiagnosticsInit(void) {
@@ -439,7 +430,7 @@ int StickDiagnosticsService(void) {
                     StickSettingsIsOpen(), StickSettingsSelection(),
                     StickInputProfile(), StickInputOrientation(),
                     80 + StickInputChordWindowIndex() * 40,
-                    unsigned(millivolts), battery_percent_estimate(millivolts),
+                    unsigned(millivolts), StickBatteryPercentEstimate(millivolts),
                     unsigned(StickBoardPower().getVBUSVoltage() >= 4000),
                     StickInputLayout(), StickDisplayIsDark());
     }

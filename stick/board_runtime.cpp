@@ -118,11 +118,6 @@ extern "C" void StickPortLoop(void) {
     previous_ir = false;
     next_input = uint64_t(esp_timer_get_time());
     if (StickDisplayIsPowered()) StickSoundPrepare();
-#ifdef PW_STICK_BENCH_CONTROL
-    if (StickIrBenchTraceEnabled())
-      Serial.printf("PW_STICK_IR_DONE result=%u\n", StickForegroundIrResult());
-    StickIrBenchTrace(0);
-#endif
   }
 
   uint64_t now = uint64_t(esp_timer_get_time());

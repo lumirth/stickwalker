@@ -183,10 +183,6 @@ void Controls::sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
   }
 }
 
-uint8_t Controls::next_scan() {
-  return next_scan(now_ms_);
-}
-
 uint8_t Controls::next_scan(uint32_t now_ms) {
   expire(now_ms);
   if (count_) {

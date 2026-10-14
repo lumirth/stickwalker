@@ -37,7 +37,6 @@ class Controls {
   void sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
               bool power_pressed, bool captured = false,
               bool power_press_latched = false);
-  uint8_t next_scan();
   uint8_t next_scan(uint32_t now_ms);
   bool idle() const;
   uint8_t stable_buttons() const;

@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 u16 StickBatteryMillivolts(void);
+int StickBatteryPercentEstimate(u16 millivolts);
 u8 StickBatteryLow(void);
 
 #ifdef __cplusplus

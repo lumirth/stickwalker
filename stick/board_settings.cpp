@@ -25,8 +25,7 @@ void battery() {
   if (!StickDisplayPanelIsReady()) return;
   auto *screen = StickBoardScreen();
   const unsigned millivolts = StickBatteryMillivolts();
-  const int percent = !millivolts ? -1 : millivolts <= 3300 ? 0 :
-      millivolts >= 4100 ? 100 : int((millivolts - 3300) * 100 / 800);
+  const int percent = StickBatteryPercentEstimate(millivolts);
   screen->fillRect(8, 27, 224, 12, StickDisplayBackground());
   screen->setTextColor(StickDisplayForeground(), StickDisplayBackground());
   screen->setTextSize(1);
