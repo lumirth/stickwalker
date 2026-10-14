@@ -62,18 +62,16 @@ The navigation expectations follow `HomeUpdate`, `MainMenuUpdate` and the docume
 Stick control mapping, not an injected foreground callback.
 
 `layouts.actions` selects every layout, resets the chip and reopens Settings to
-verify persistence. The two three-key layouts must use their respective physical
-Left and Right keys to navigate the native menu, reach the explicit third
-`STICK SETTINGS` choice and open the overlay with M. Native volume and contrast
-remain editable: the workflow changes volume 2 to 0 and contrast 4 to 5, saves,
-resets, and checks both checksummed EEPROM mirrors in the resulting filesystem.
-The original two-choice behavior comes from `pw_local_settings.c` in the matching
-firmware; the third choice is the deliberate Stick extension. Tiny native captions
-are checked against the bundled public font, while OCR reads the larger menu labels.
-Editor cursor positions are checked independently against the selected values.
-After cycling from three-key back to two-key, closing the overlay must restore
-the native volume selector rather than leave its third launcher selected. A fresh
-dedicated L press must reopen the overlay with the same two-key layout.
+verify persistence. Both three-key mappings deliver physical L+R to gameplay
+before a one-second hold opens the board overlay. The pending-hold capture must
+show the native menu; the overlay's input layout must remain unchanged while
+both keys, then R alone, remain held. A fresh R changes the layout only after
+release. Native Volume and Contrast remain the only selector choices: a second
+Right press stays on Contrast. The workflow changes volume 2 to 0 and contrast
+4 to 5, saves, resets, and checks both checksummed EEPROM mirrors in the
+resulting filesystem. Editor cursor positions are checked independently.
+After cycling from three-key back to two-key, a fresh dedicated L press must
+reopen the overlay with the same two-key layout.
 
 `wake.actions` waits for the native 60-second display timeout with USB present.
 R and L cannot wake the sleeping panel. A short M press cancels preparation and
@@ -141,12 +139,31 @@ model drives the compiled photodiode receiver; it does not replace decoding or
 native protocol callbacks. It is a functional status/page exchange, not a complete
 retail DS transfer or an analog interoperability qualification.
 
+`peer-transfer.actions` follows the supplied HGSS put sequence with synthetic
+uncompressed data: status/Watts, 82 course pages, five trainer-record pages,
+PHC/distribution reads, checksum/ping, commit and one-way shutdown. After reset,
+independent flash extraction checks the committed course and trainer identity.
+
+`peer-play.actions` uses an eligible public Walker fixture and exchanges status,
+animation, name, trainer-house records, peer information and start. Both bulk
+transfer directions are checked. After reset, the native peer-history entry
+and received animation/name must remain in flash. It covers one handshake role;
+it does not yet cover all opening collisions or both native role branches.
+
+Both new workflows enable local transmitter echo and use 115760 baud, matching
+the recorded retail-card clock. `STICK_E2E_OPCODE_TIMING=1` uses independently
+scheduled CPUs in one-instruction quanta with opcode/branch/call/load-use costs.
+The default short workflows retain their original timing mode. This is a
+software timing sensitivity check, not an analog or cache-accurate hardware
+model. The [regression investigation](../docs/history/ir-readiness-regression.md)
+records the before/after evidence and decoder-equivalence check.
+
 Each run creates a fresh directory under `stick/.build/e2e-results/` with screen
 images, OCR text, console output, optical waveforms and flash. `results.json`
 records the completed workflows and hashes of the application, merged image and
 simulator patch. CI retains these files for review, including failed runs.
 
-The suite does not yet establish complete retail transfers, exhaustive power-loss
+The suite does not establish retail hardware transfers, exhaustive power-loss
 recovery, walking accuracy, social-offer acceptance, battery life or
 physical optical timing. The stationary fixture has no eligible social offer;
 observing the wake alone does not prove the offer consequence. An exploratory
@@ -198,6 +215,11 @@ number of milliseconds. Every run stops on an unexpected chip reset or panic.
 | `peer write-page 65408` | Also write/read a page containing byte `index XOR 0x5A` at the given address |
 | `peer read-page 65408` | Also read and verify that page without writing it |
 | `peer report name.txt` | Save peer phase, packet trace, observed Watts and any protocol error |
+| `peer put path baud turnaround_us` | Run the HGSS put sequence with a public 10430-byte course |
+| `peer walker path` | Run a Walker exchange using a public 64 KiB fixture |
+| `peer echo on` | Illuminate the receiver with live local RMT pulses during transmission |
+| `run-until-peer 15000` | Advance until peer completion/error, bounded by the given milliseconds |
+| `peer legacy-watts` | Diagnostic comparison only: accept the pre-PR reversed Watts bytes |
 | `peer stop` | Disconnect the test peer before restarting the board |
 | `reset` | Restart the chip while retaining flash and board devices |
 

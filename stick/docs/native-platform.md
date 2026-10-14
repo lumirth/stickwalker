@@ -51,9 +51,11 @@ Opening Settings cancels an undelivered Center latch. Closing it resumes samplin
 and visibility without pretending another native Center wake occurred.
 
 Two-key layouts retain dedicated L access to Stick Settings. Three-key layouts
-add Stick Settings after Contrast in the native Settings selector. Holding a
-gameplay direction no longer opens the overlay. Settings captures buttons, but
-native time, motion and eligible foreground work continue; it is not a game pause.
+observe a one-second physical L+R hold alongside normal directional delivery.
+Recognition opens the overlay and consumes its gesture through release; pending
+holds reserve no input. The native Settings selector retains Volume and Contrast.
+Settings captures buttons, but native time, motion and eligible foreground work
+continue; it is not a game pause.
 
 ## Output and power
 
@@ -85,8 +87,11 @@ Audio is quiesced and the prepared Connect image presented before acquisition.
 A completed non-self burst hands execution to the protocol with the receiver
 core's interrupts restored. The worker waits while decoding and bounded storage
 work complete. Consumed-event tickets prevent lost or premature release. Startup
-and transmission wait for actual aligned acquisition before emitting a bit;
-that preparation is not tagged as self-echo. Ignored or rejected input releases
+and transmission wait for fresh acquisition progress before emitting a bit;
+that preparation is not tagged as self-echo. The gate producer ends at a complete
+non-self burst. Notification and release waiting run in the worker with
+interrupts restored, outside the gate function; readiness uses its existing
+published sample count. Ignored or rejected input releases
 reception when no native packet remains. Stop wakes a waiting receiver and waits
 for completion and suspension before deleting its task.
 
@@ -117,7 +122,10 @@ before acquisition, appends bounded durable records during the reply window,
 and permits checkpoint compaction after the session. Actual persistence failures
 suppress further acknowledgments and pending activation; completed durable
 writes are not rolled back. Timing overruns are recorded separately from storage
-failures. LittleFS and flash latency still need measurement against peer deadlines.
+failures. Independent append verification reads only the new record through a
+fresh POSIX descriptor. Exact decoder search pruning creates reply-time headroom;
+see the [IR regression investigation](history/ir-readiness-regression.md).
+LittleFS and flash latency still need measurement against peer deadlines.
 
 The DS's Back and present-collection paths do not wait for a final deletion
 acknowledgment. No new handshake or claim of two-device atomicity is introduced.

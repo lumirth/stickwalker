@@ -13,6 +13,16 @@ enum Phase {
     Acknowledgment,
     Status,
     Watts,
+    PutAccepted,
+    PutPage,
+    PutRead,
+    PutPing,
+    PutCommitted,
+    WalkerStatus,
+    WalkerWrite,
+    WalkerRead,
+    WalkerInfo,
+    WalkerStart,
     PageWritten,
     PageRead,
     Shutdown,
@@ -32,7 +42,34 @@ struct Page {
     write: bool,
 }
 
-pub struct DsPeer {
+struct Put {
+    bytes: Vec<u8>,
+    offset: usize,
+    records: Vec<u8>,
+    record_offset: usize,
+    last_address: u16,
+    read_segment: usize,
+    read_offset: usize,
+    read_count: usize,
+}
+
+// The matching firmware exchanges animation, name, trainer-house records and
+// PeerInfo in this order. Addresses and sizes come from its public record map.
+const WALKER_SEGMENTS: [(usize, usize, usize); 3] = [
+    (0x91be, 0xf400, 384),
+    (0x993e, 0xf580, 320),
+    (0xcc00, 0xdc00, 548),
+];
+
+struct Walker {
+    image: Vec<u8>,
+    expected: Vec<u8>,
+    segment: usize,
+    offset: usize,
+    chunk: usize,
+}
+
+pub struct OpticalPeer {
     phase: Phase,
     now: u64,
     session: [u8; 4],
@@ -52,9 +89,16 @@ pub struct DsPeer {
     transmitted_frames: usize,
     charge_count: u64,
     discharge_count: u64,
+    baud: u64,
+    turnaround: u64,
+    echoes: VecDeque<LightPulse>,
+    put: Option<Put>,
+    status: Vec<u8>,
+    expected_watts: [u8; 2],
+    walker: Option<Walker>,
 }
 
-impl DsPeer {
+impl OpticalPeer {
     pub fn new() -> Self {
         Self {
             phase: Phase::Probe,
@@ -76,6 +120,170 @@ impl DsPeer {
             transmitted_frames: 0,
             charge_count: 0,
             discharge_count: 0,
+            baud: BAUD,
+            turnaround: TURNAROUND,
+            echoes: VecDeque::new(),
+            put: None,
+            status: Vec::new(),
+            expected_watts: [0, 100],
+            walker: None,
+        }
+    }
+
+    pub fn timing(mut self, baud: u64, turnaround_us: u64) -> Self {
+        assert!((110_000..=120_000).contains(&baud));
+        self.baud = baud;
+        self.turnaround = turnaround_us * (CPU_HZ / 1_000_000);
+        self
+    }
+
+    pub fn with_put(bytes: Vec<u8>) -> Self {
+        assert_eq!(bytes.len(), 10_430);
+        let mut peer = Self::new();
+        peer.put = Some(Put {
+            bytes,
+            offset: 0,
+            records: vec![0; 548],
+            record_offset: 0,
+            last_address: 0,
+            read_segment: 0,
+            read_offset: 0,
+            read_count: 0,
+        });
+        peer
+    }
+
+    pub fn legacy_watts(&mut self) {
+        self.expected_watts = [100, 0];
+    }
+
+    pub fn with_walker(mut image: Vec<u8>) -> Self {
+        assert_eq!(image.len(), 65536);
+        let expected = image.clone();
+        let mut identity = [0; 40];
+        identity[..21].copy_from_slice(b"PUBLIC OPTICAL WALKER");
+        image[0xed + 16..0xed + 56].copy_from_slice(&identity);
+        image[0xcc08..0xcc30].copy_from_slice(&identity);
+        for &(source, _, length) in &WALKER_SEGMENTS[..2] {
+            for byte in &mut image[source..source + length] {
+                *byte ^= 0x5a;
+            }
+        }
+        let mut peer = Self::new();
+        peer.walker = Some(Walker {
+            image,
+            expected,
+            segment: 0,
+            offset: 0,
+            chunk: 0,
+        });
+        peer
+    }
+
+    fn walker_write(&mut self) {
+        let walker = self.walker.as_mut().unwrap();
+        if walker.segment == WALKER_SEGMENTS.len() {
+            walker.segment = 0;
+            walker.offset = 0;
+            self.walker_read();
+            return;
+        }
+        let (source, destination, length) = WALKER_SEGMENTS[walker.segment];
+        walker.chunk = (length - walker.offset).min(128);
+        let bytes =
+            walker.image[source + walker.offset..source + walker.offset + walker.chunk].to_vec();
+        let address = destination + walker.offset;
+        self.phase = Phase::WalkerWrite;
+        self.send(
+            2 | (address as u8 & 0x80),
+            (address >> 8) as u8,
+            self.session,
+            &bytes,
+        );
+    }
+
+    fn walker_read(&mut self) {
+        let walker = self.walker.as_mut().unwrap();
+        if walker.segment == WALKER_SEGMENTS.len() {
+            let mut info = vec![0; 56];
+            info[..4].copy_from_slice(&1000u32.to_be_bytes());
+            info[4..6].copy_from_slice(&10u16.to_be_bytes());
+            info[14..16].copy_from_slice(&25u16.to_le_bytes());
+            self.phase = Phase::WalkerInfo;
+            self.send(0x14, 2, self.session, &info);
+            return;
+        }
+        let (source, _, length) = WALKER_SEGMENTS[walker.segment];
+        walker.chunk = (length - walker.offset).min(128);
+        let address = (source + walker.offset) as u16;
+        let count = walker.chunk as u8;
+        self.phase = Phase::WalkerRead;
+        self.send(
+            0x0c,
+            2,
+            self.session,
+            &[(address >> 8) as u8, address as u8, count],
+        );
+    }
+
+    fn walker_advance(&mut self) {
+        let walker = self.walker.as_mut().unwrap();
+        walker.offset += walker.chunk;
+        if walker.offset == WALKER_SEGMENTS[walker.segment].2 {
+            walker.segment += 1;
+            walker.offset = 0;
+        }
+    }
+
+    fn put_page(&mut self) {
+        let put = self.put.as_mut().unwrap();
+        if put.offset == put.bytes.len() && put.record_offset == put.records.len() {
+            self.put_read();
+        } else {
+            let (address, bytes) = if put.offset < put.bytes.len() {
+                let address = 0xd700 + put.offset;
+                let end = (put.offset + 128).min(put.bytes.len());
+                let bytes = put.bytes[put.offset..end].to_vec();
+                put.offset = end;
+                (address, bytes)
+            } else {
+                let address = 0xd480 + put.record_offset;
+                let end = (put.record_offset + 128).min(put.records.len());
+                let bytes = put.records[put.record_offset..end].to_vec();
+                put.record_offset = end;
+                (address, bytes)
+            };
+            put.last_address = address as u16;
+            self.phase = Phase::PutPage;
+            self.send(
+                0x02 | (address as u8 & 0x80),
+                (address >> 8) as u8,
+                self.session,
+                &bytes,
+            );
+        }
+    }
+
+    fn put_read(&mut self) {
+        // HGSS phc_lib.c: course, trainer record, PHCData, distribution data,
+        // checksum/ping, put commit and one-way shutdown.
+        const READS: [(u16, usize); 2] = [(0xce80, 3404), (0xb800, 1736)];
+        let put = self.put.as_mut().unwrap();
+        if put.read_segment == READS.len() {
+            self.phase = Phase::PutPing;
+            self.send(0x24, 1, self.session, &[]);
+        } else {
+            let (base, length) = READS[put.read_segment];
+            let address = base + put.read_offset as u16;
+            put.read_count = (length - put.read_offset).min(128);
+            let count = put.read_count as u8;
+            self.phase = Phase::PutRead;
+            self.send(
+                0x0c,
+                2,
+                self.session,
+                &[(address >> 8) as u8, address as u8, count],
+            );
         }
     }
 
@@ -122,7 +330,24 @@ impl DsPeer {
         if self.output_enabled || !self.charged {
             return None;
         }
-        self.pulses.front().map(|pulse| pulse.start.max(self.now))
+        [self.pulses.front(), self.echoes.front()]
+            .into_iter()
+            .flatten()
+            .map(|pulse| pulse.start.max(self.now))
+            .min()
+    }
+
+    pub fn local_light(&mut self, cycle: u64, pulses: &[(u64, bool)]) {
+        let mut start = cycle;
+        for &(duration, high) in pulses {
+            if high && duration != 0 {
+                self.echoes.push_back(LightPulse {
+                    start,
+                    end: start + duration,
+                });
+            }
+            start += duration;
+        }
     }
 
     pub fn gpio_output(&mut self, cycle: u64, enabled: u64, output: u64) {
@@ -137,10 +362,10 @@ impl DsPeer {
         if enabled {
             self.edge(cycle, high);
         } else if self.charged
-            && self
-                .pulses
-                .front()
-                .is_some_and(|pulse| pulse.start <= cycle)
+            && [self.pulses.front(), self.echoes.front()]
+                .into_iter()
+                .flatten()
+                .any(|pulse| pulse.start <= cycle && pulse.end > cycle)
         {
             self.edge(cycle, false);
         }
@@ -159,6 +384,9 @@ impl DsPeer {
         self.now = cycle;
         while self.pulses.front().is_some_and(|pulse| pulse.end <= cycle) {
             self.pulses.pop_front();
+        }
+        while self.echoes.front().is_some_and(|pulse| pulse.end <= cycle) {
+            self.echoes.pop_front();
         }
         if self.phase == Phase::Shutdown && cycle >= self.transmit_end {
             self.phase = Phase::Complete;
@@ -195,23 +423,28 @@ impl DsPeer {
         packet.extend_from_slice(payload);
         let checksum = checksum(&packet).to_le_bytes();
         packet[2..4].copy_from_slice(&checksum);
-        self.trace += &format!("{} DS {}\n", self.now, hex(&packet));
-        let start = self.now + TURNAROUND;
+        self.trace += &format!(
+            "{} {} {}\n",
+            self.now,
+            if self.walker.is_some() { "PEER" } else { "DS" },
+            hex(&packet)
+        );
+        let start = self.now + self.turnaround;
         self.pulses.clear();
         for (index, byte) in packet.iter().enumerate() {
             let wire = byte ^ 0xaa;
             for bit in 0..10 {
                 let zero = bit == 0 || (bit < 9 && wire & (1 << (bit - 1)) == 0);
                 if zero {
-                    let start = start + (index as u64 * 10 + bit) * CPU_HZ / BAUD;
+                    let start = start + (index as u64 * 10 + bit) * CPU_HZ / self.baud;
                     self.pulses.push_back(LightPulse {
                         start,
-                        end: start + CPU_HZ * 3 / (BAUD * 16),
+                        end: start + CPU_HZ * 3 / (self.baud * 16),
                     });
                 }
             }
         }
-        self.transmit_end = start + packet.len() as u64 * 10 * CPU_HZ / BAUD;
+        self.transmit_end = start + packet.len() as u64 * 10 * CPU_HZ / self.baud;
         self.timeout = Some(self.now + TIMEOUT);
         self.transmitted_frames += 1;
     }
@@ -247,7 +480,7 @@ impl DsPeer {
         }
         if packet == [0xfc] && self.phase == Phase::Probe {
             self.phase = Phase::Acknowledgment;
-            self.send(0xfa, 1, TOKEN, &[]);
+            self.send(0xfa, if self.walker.is_some() { 2 } else { 1 }, TOKEN, &[]);
             return;
         }
         if packet.len() < 8 {
@@ -274,23 +507,36 @@ impl DsPeer {
                 for index in 0..4 {
                     self.session[index] = TOKEN[index] ^ token[index];
                 }
-                self.phase = Phase::Status;
-                self.send(0x20, 1, self.session, &[]);
+                if let Some(walker) = &self.walker {
+                    let status = walker.image[0xed..0xed + 104].to_vec();
+                    self.phase = Phase::WalkerStatus;
+                    self.send(0x10, 2, self.session, &status);
+                } else {
+                    self.phase = Phase::Status;
+                    self.send(0x20, 1, self.session, &[]);
+                }
             }
             Phase::Status if command == 0x22 && argument == 2 && payload.len() == 104 => {
+                self.status = payload.to_vec();
+                if let Some(put) = self.put.as_mut() {
+                    put.records[8..48].copy_from_slice(&payload[16..56]);
+                }
                 self.phase = Phase::Watts;
                 self.send(0x0c, 2, self.session, &[0xce, 0x8a, 2]);
             }
             Phase::Watts if command == 0x0e && argument == 2 && payload.len() == 2 => {
                 self.watts = Some(payload.try_into().unwrap());
-                if payload != [0, 100] {
+                if payload != self.expected_watts {
                     self.fail(format!(
                         "expected fixture Watts 0064, received {}",
                         hex(payload)
                     ));
                     return;
                 }
-                if let Some(page) = &self.page {
+                if self.put.is_some() {
+                    self.phase = Phase::PutAccepted;
+                    self.send(0x52, 1, self.session, &self.status.clone());
+                } else if let Some(page) = &self.page {
                     if page.write {
                         let address = page.address;
                         let bytes = page.bytes.clone();
@@ -322,6 +568,79 @@ impl DsPeer {
                 }
                 self.page_verified = true;
                 self.shutdown();
+            }
+            Phase::PutAccepted if command == 0x54 && argument == 2 && payload.is_empty() => {
+                self.put_page();
+            }
+            Phase::PutPage if command == 4 && payload.is_empty() => {
+                if argument != (self.put.as_ref().unwrap().last_address >> 8) as u8 {
+                    self.fail("put page acknowledgment has the wrong address".into());
+                    return;
+                }
+                self.put_page();
+            }
+            Phase::PutCommitted if command == 0x5a && argument == 2 && payload.is_empty() => {
+                self.shutdown();
+            }
+            Phase::PutRead if command == 0x0e && argument == 2 => {
+                let put = self.put.as_mut().unwrap();
+                if payload.len() != put.read_count {
+                    self.fail("DS PHC/distribution read has the wrong length".into());
+                    return;
+                }
+                if put.read_segment == 0
+                    && put.read_offset == 0
+                    && payload[10..12] != self.expected_watts
+                {
+                    self.fail("DS PHCData contains incorrectly ordered Watts".into());
+                    return;
+                }
+                put.read_offset += put.read_count;
+                let length = if put.read_segment == 0 { 3404 } else { 1736 };
+                if put.read_offset == length {
+                    put.read_segment += 1;
+                    put.read_offset = 0;
+                }
+                self.put_read();
+            }
+            Phase::PutPing if command == 0x26 && argument == 2 && payload.is_empty() => {
+                self.phase = Phase::PutCommitted;
+                self.send(0x5a, 1, self.session, &[]);
+            }
+            Phase::WalkerStatus if command == 0x12 && argument == 2 && payload.len() == 104 => {
+                if payload[91] & 3 != 3 {
+                    self.fail("Walker peer play requires registration and a companion".into());
+                    return;
+                }
+                self.walker_write();
+            }
+            Phase::WalkerWrite if command == 4 && payload.is_empty() => {
+                let walker = self.walker.as_ref().unwrap();
+                let address = WALKER_SEGMENTS[walker.segment].1 + walker.offset;
+                if argument != (address >> 8) as u8 {
+                    self.fail("peer page acknowledgment has the wrong address".into());
+                    return;
+                }
+                self.walker_advance();
+                self.walker_write();
+            }
+            Phase::WalkerRead if command == 0x0e && argument == 2 => {
+                let walker = self.walker.as_ref().unwrap();
+                let source = WALKER_SEGMENTS[walker.segment].0 + walker.offset;
+                if payload != &walker.expected[source..source + walker.chunk] {
+                    self.fail("peer animation/name/records differ from the public fixture".into());
+                    return;
+                }
+                self.walker_advance();
+                self.walker_read();
+            }
+            Phase::WalkerInfo if command == 0x14 && argument == 2 && payload.len() == 56 => {
+                self.phase = Phase::WalkerStart;
+                self.send(0x16, 2, self.session, &[]);
+            }
+            Phase::WalkerStart if command == 0x16 && argument == 2 && payload.is_empty() => {
+                self.phase = Phase::Complete;
+                self.timeout = None;
             }
             _ => self.fail(format!(
                 "unexpected command {command:02x}, argument {argument:02x}, payload length {}",

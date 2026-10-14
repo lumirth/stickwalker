@@ -19,7 +19,6 @@ uint64_t StickInputNextDeadline(void);
  * gesture. */
 int StickInputMOnlyWake(void);
 int StickMenuRequested(void);
-int StickInputSettingsLauncher(void);
 void StickInputRequireRelease(void);
 /* Device overlay consumes physical M/R/L without sending game input. */
 void StickInputMenuMode(int enabled);

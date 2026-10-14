@@ -37,27 +37,41 @@ void map_cells(const uint16_t *strong, unsigned count, Geometry &geometry) {
   }
 }
 
-uint64_t phase_error_for(const uint16_t *strong, unsigned count,
-                         const Geometry &geometry) {
-  uint64_t phase_error = 0;
+bool score_geometry(const uint16_t *strong, unsigned count,
+                     const Geometry &geometry, unsigned best_bad,
+                     uint64_t best_phase, bool earlier, unsigned &bad,
+                     uint64_t &phase) {
+  // Sorted gates map monotonically to cells. Count each occupied start/stop
+  // once, and reject as soon as stop errors alone exceed the current best.
+  // With perfect framing already found, nonnegative phase-error terms also
+  // let us reject a candidate once its partial sum cannot beat the winner.
+  // Neither bound changes the framing-first, phase-second search ordering.
+  unsigned starts = 0, stops = 0;
+  int previous = -1;
+  phase = 0;
   for (unsigned i = 0; i < count; ++i) {
     const int32_t position_q16 =
-        (int32_t(strong[i]) * 2 - geometry.origin_twice) *
-        geometry.inverse_q15;
+        (int32_t(strong[i]) * 2 - geometry.origin_twice) * geometry.inverse_q15;
     const int cell = (position_q16 + (1 << 15)) >> 16;
     const int32_t offset = position_q16 - cell * 65536;
-    phase_error += uint32_t(offset * offset);
+    phase += uint32_t(offset * offset);
+    if (cell >= 0 && cell < int(geometry.bytes * 10) && cell != previous) {
+      previous = cell;
+      const unsigned bit = unsigned(cell) % 10;
+      starts += bit == 0;
+      stops += bit == 9;
+    }
+    // A later gate cannot fill a missing start in this already-observed prefix.
+    const unsigned prefix = cell < 0 ? 0 :
+        (unsigned(cell) / 10 + 1 < geometry.bytes ?
+         unsigned(cell) / 10 + 1 : geometry.bytes);
+    const unsigned lower_bound = prefix - starts + stops;
+    if (lower_bound > best_bad ||
+        (lower_bound == best_bad &&
+         (phase > best_phase || (phase == best_phase && !earlier)))) return false;
   }
-  return phase_error;
-}
-
-unsigned framing_errors(const Geometry &geometry) {
-  unsigned bad = 0;
-  for (unsigned byte = 0; byte < geometry.bytes; ++byte) {
-    bad += !geometry.occupied[byte * 10];
-    bad += geometry.occupied[byte * 10 + 9];
-  }
-  return bad;
+  bad = geometry.bytes - starts + stops;
+  return bad <= best_bad;
 }
 
 bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
@@ -86,7 +100,17 @@ bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
           (anchor - radius < 29700 ? 29700 : anchor - radius);
       const int last_step = full_search ? 30120 :
           (anchor + radius > 30120 ? 30120 : anchor + radius);
-      for (int step = first_step; step <= last_step; step += 5) {
+      if (first_step > last_step) continue;
+      const int steps = (last_step - first_step) / 5 + 1;
+      int center = (anchor - first_step + 2) / 5;
+      if (center < 0) center = 0;
+      if (center >= steps) center = steps - 1;
+      // Visit the likely baud first so the same exact search gets a useful
+      // rejection bound early. Explicit ties preserve its original ordering.
+      for (int trial = 0; trial < steps * 2; ++trial) {
+        const int index = center + ((trial + 1) / 2) * (trial & 1 ? -1 : 1);
+        if (index < 0 || index >= steps) continue;
+        const int step = first_step + index * 5;
         for (int half = -10; half <= 8; ++half) {
           // Keep the geometry workspace in static storage to fit the
           // foreground task's 8 KiB stack.
@@ -101,11 +125,14 @@ bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
           // a start bit from the first data-zero pulse.
           const int opening_cell = nearest_cell(strong[0], candidate);
           if (opening_cell < 0 || opening_cell > 1) continue;
-          map_cells(strong, count, candidate);
-          const unsigned bad = framing_errors(candidate);
-          if (bad > best_bad) continue;
-          const uint64_t phase = phase_error_for(strong, count, candidate);
-          if (bad < best_bad || (bad == best_bad && phase < best_phase)) {
+          unsigned bad;
+          uint64_t phase;
+          const bool earlier = candidate.fit_pass < best.fit_pass ||
+              (candidate.fit_pass == best.fit_pass && step < best.step_10000);
+          if (!score_geometry(strong, count, candidate, best_bad, best_phase,
+                               earlier, bad, phase)) continue;
+          if (bad < best_bad || (bad == best_bad &&
+              (phase < best_phase || (phase == best_phase && earlier)))) {
             best = candidate;
             best_bad = bad;
             best_phase = phase;
@@ -185,6 +212,7 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
 
   static Geometry geometry;
   if (!fit_geometry(strong, strong_count, gate_count, geometry)) return false;
+  map_cells(strong, strong_count, geometry);
   remove_recovery_tails(bins, strong, strong_count, geometry, out);
 
   for (unsigned byte = 0; byte < geometry.bytes; ++byte) {

@@ -5,6 +5,7 @@ namespace pw_stick {
 namespace {
 // Require sustained overlap so alternating direction taps do not emit Center.
 constexpr uint32_t kChordHoldMs = 20;
+constexpr uint32_t kSettingsHoldMs = 1000;
 }
 
 void Controls::Debouncer::update(uint32_t now_ms, bool value) {
@@ -60,6 +61,7 @@ void Controls::require_release() {
   desired_ = delivered_ = 0;
   center_notified_ = false;
   wait_release_ = true;
+  settings_hold_tracking_ = settings_hold_requested_ = false;
 }
 
 void Controls::expire(uint32_t now_ms) {
@@ -86,7 +88,10 @@ void Controls::sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
   }
   pressed_ = stable_buttons() & ~previous;
   const bool m = main_.stable, r = side_.stable, l = power_.stable;
-  if (captured) return;
+  if (captured) {
+    settings_hold_tracking_ = false;
+    return;
+  }
   if (wait_release_) {
     if (!m && !r && !l && !main_pressed && !side_pressed && !power_pressed) {
       wait_release_ = false;
@@ -97,6 +102,18 @@ void Controls::sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
   }
 
   if (three_key(layout_)) {
+    // Observe the physical L+R hold alongside normal gameplay delivery.
+    // Capture starts only after the caller opens the Settings overlay.
+    if (l && r && power_pressed && side_pressed) {
+      if (!settings_hold_tracking_) {
+        settings_hold_tracking_ = true;
+        settings_hold_since_ms_ = now_ms;
+      } else if (uint32_t(now_ms - settings_hold_since_ms_) >= kSettingsHoldMs) {
+        settings_hold_requested_ = true;
+      }
+    } else {
+      settings_hold_tracking_ = false;
+    }
     uint8_t value = m ? kCenter : 0;
     if (layout_ == Layout::ThreeKeyLR)
       value |= (l ? kLeft : 0) | (r ? kRight : 0);
@@ -208,6 +225,12 @@ uint8_t Controls::stable_buttons() const {
 }
 
 uint8_t Controls::pressed_buttons() const { return pressed_; }
+
+bool Controls::take_settings_hold() {
+  const bool requested = settings_hold_requested_;
+  settings_hold_requested_ = false;
+  return requested;
+}
 
 Controls::Diagnostic Controls::diagnostic() const {
   return {uint8_t(gesture_),

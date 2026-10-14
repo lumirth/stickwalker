@@ -43,6 +43,7 @@ class Controls {
   uint8_t pressed_buttons() const;
   bool take_center_press();
   bool take_center_press(uint32_t now_ms);
+  bool take_settings_hold();
   void require_release();
   Diagnostic diagnostic() const;
 
@@ -82,6 +83,9 @@ class Controls {
   bool center_notified_ = false;
   bool faulted_ = false;
   bool wait_release_ = true;
+  bool settings_hold_tracking_ = false;
+  bool settings_hold_requested_ = false;
+  uint32_t settings_hold_since_ms_ = 0;
   uint32_t emitted_ = 0, consumed_ = 0, overflow_ = 0;
   uint32_t expired_ = 0, cancelled_ = 0;
 };

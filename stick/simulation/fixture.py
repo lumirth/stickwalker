@@ -26,7 +26,16 @@ def raster(text: str, width: int, height: int = 16) -> bytes:
     return bytes(data)
 
 
-def eeprom(watts: int = 100) -> bytes:
+def course() -> bytes:
+    data = bytearray(10430)
+    struct.pack_into("<H", data, 0, 25)
+    data[12] = 5
+    for index in range(190, len(data)):
+        data[index] = (index * 37 + 0x5A) & 255
+    return bytes(data)
+
+
+def eeprom(watts: int = 100, companion: bool = False) -> bytes:
     image = bytearray(65536)
     image[:8] = b"nintendo"
 
@@ -42,7 +51,7 @@ def eeprom(watts: int = 100) -> bytes:
     mirror(0x16F, 0x26F, bytes(1))
     status = bytearray(104)
     status[16:56] = identity
-    status[91] = 1
+    status[91] = 3 if companion else 1
     status[95] = 2
     mirror(0xED, 0x1ED, status)
     save = bytearray(24)
@@ -75,6 +84,9 @@ def eeprom(watts: int = 100) -> bytes:
     for index in range(16):
         struct.pack_into("<HBB", image, 0x8CB0 + index * 4, 0, len(score), sum(score) & 255)
     image[0x8CF0 : 0x8CF0 + len(score)] = score
+    if companion:
+        image[0xCC08:0xCC30] = identity
+        image[0x8F00 : 0x8F00 + 10430] = course()
     return bytes(image)
 
 
@@ -94,7 +106,9 @@ def filesystem(
     if partition is None:
         raise ValueError("Firmware has no LittleFS partition")
     offset, size = partition
-    payload = eeprom(100 if case == "registered" else 200)
+    payload = eeprom(
+        100 if case in ("registered", "peer-play") else 200, companion=case == "peer-play"
+    )
     source = folder / "fixture-files"
     source.mkdir()
 
@@ -102,13 +116,13 @@ def filesystem(
         header = struct.pack("<5I", magic, generation, sequence, len(data), zlib.crc32(data))
         return header + struct.pack("<I", zlib.crc32(header)) + data
 
-    if case in ("registered", "recovery-legacy"):
+    if case in ("registered", "recovery-legacy", "peer-play"):
         (source / "pw-a.bin").write_bytes(
             struct.pack("<III", 0x50574531, 1, zlib.crc32(payload)) + payload
         )
     else:
         (source / "pw2-a.bin").write_bytes(versioned(0x50574532, 2, 2, payload))
-    if case != "registered":
+    if case not in ("registered", "peer-play"):
         older = eeprom(100)
         patches = b"".join(
             struct.pack("<HH", address, 25) + older[address : address + 25]

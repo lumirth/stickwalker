@@ -105,13 +105,16 @@ Header make_header(uint32_t magic, uint32_t version, uint32_t serial,
   return header;
 }
 
-bool write_record(const char *path, const Header &header, const uint8_t *bytes,
-                  bool append, size_t expected_size) {
+int open_record(const char *path, int flags) {
   char full_path[64];
   const int length = snprintf(full_path, sizeof(full_path), "%s%s", kMountPath, path);
-  if (length < 0 || size_t(length) >= sizeof(full_path)) return false;
-  const int fd = open(full_path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC),
-                      0600);
+  if (length < 0 || size_t(length) >= sizeof(full_path)) return -1;
+  return open(full_path, flags, 0600);
+}
+
+bool write_record(const char *path, const Header &header, const uint8_t *bytes,
+                  bool append, size_t expected_size) {
+  const int fd = open_record(path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC));
   if (fd < 0) return false;
   struct stat status;
   const bool written = fstat(fd, &status) == 0 &&
@@ -121,6 +124,31 @@ bool write_record(const char *path, const Header &header, const uint8_t *bytes,
   const bool synced = fsync(fd) == 0;
   const bool closed = close(fd) == 0;
   return written && synced && closed;
+}
+
+bool verify_append(const Header &header) {
+  // Buffered fseek/fread can reread a 4 KiB journal prefix to reach a tiny
+  // appended record. Read exactly that record through a fresh descriptor.
+  const int fd = open_record(kJournal, O_RDONLY);
+  if (fd < 0) return false;
+  struct stat status;
+  Header observed;
+  bool valid = fstat(fd, &status) == 0 && status.st_size >= 0 &&
+      size_t(status.st_size) == journal_size + sizeof(header) + header.length &&
+      lseek(fd, off_t(journal_size), SEEK_SET) == off_t(journal_size) &&
+      read(fd, &observed, sizeof(observed)) == ssize_t(sizeof(observed)) &&
+      !memcmp(&observed, &header, sizeof(header));
+  uint8_t block[256];
+  size_t offset = 0;
+  while (valid && offset < header.length) {
+    const size_t count = header.length - offset < sizeof(block)
+                             ? header.length - offset : sizeof(block);
+    valid = read(fd, block, count) == ssize_t(count) &&
+            !memcmp(block, journal_record + offset, count);
+    offset += count;
+  }
+  const bool closed = close(fd) == 0;
+  return valid && closed;
 }
 
 bool partition_blank() {
@@ -264,22 +292,7 @@ bool append_journal_record() {
                                     journal_record, journal_record_length);
   if (!write_record(kJournal, header, journal_record, true, journal_size))
     return false;
-  fs::File verify = LittleFS.open(kJournal, "r");
-  Header observed;
-  if (!verify || verify.size() != journal_size + sizeof(header) + header.length ||
-      !verify.seek(journal_size) ||
-      verify.read(reinterpret_cast<uint8_t *>(&observed), sizeof(observed)) !=
-          sizeof(observed) || memcmp(&observed, &header, sizeof(header)))
-    return false;
-  uint8_t block[256];
-  size_t offset = 0;
-  while (offset < journal_record_length) {
-    const size_t count = journal_record_length - offset < sizeof(block)
-                             ? journal_record_length - offset : sizeof(block);
-    if (verify.read(block, count) != count ||
-        memcmp(block, journal_record + offset, count)) return false;
-    offset += count;
-  }
+  if (!verify_append(header)) return false;
   sequence = header.sequence;
   journal_size += sizeof(header) + header.length;
   journal_record_length = 0;

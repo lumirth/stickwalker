@@ -11,8 +11,8 @@ at least 20 ms.
 | --- | --- | --- | --- | --- |
 | 2-key M/R, default | M | M+R | R | L |
 | 2-key R/M | R | M+R | M | L |
-| 3-key L/R | L | M | R | Native Settings → right past Contrast → Center |
-| 3-key R/L | R | M | L | Native Settings → right past Contrast → Center |
+| 3-key L/R | L | M | R | Hold L+R for one second |
+| 3-key R/L | R | M | L | Hold L+R for one second |
 
 ## Wake the screen
 
@@ -39,10 +39,11 @@ Your layout, rotation and appearance are remembered across restarts, separately
 from your Pokémon and game progress. Settings also shows battery voltage and an
 estimated charge percentage.
 
-In three-key layouts, native Volume and Contrast retain their original behavior;
-the additional selector opens Stick Settings. Holding L remains a direction and
-does not later open an overlay. Native time and background work continue while
-Stick Settings captures buttons.
+In three-key layouts, hold physical L and R together for one second to open
+Stick Settings. Gameplay receives both directions while the hold is pending.
+Release all buttons after the overlay opens before using its controls. Native
+Volume and Contrast retain their original two-choice selector. Native time and
+background work continue while Stick Settings captures buttons.
 
 Rapid taps are buffered, but stale input is not played into later screens. If
 pending transitions exceed 250 ms or fill the bounded queue, the gesture is

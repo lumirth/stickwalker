@@ -22,7 +22,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "stick/simulation"))
 from bootstrap import REVISION, prepare  # noqa: E402
-from fixture import filesystem  # noqa: E402
+from fixture import course, filesystem  # noqa: E402
 
 SCENARIOS = (
     "settings",
@@ -36,6 +36,8 @@ SCENARIOS = (
     "recovery-truncated",
     "peer",
     "peer-storage",
+    "peer-transfer",
+    "peer-play",
 )
 
 
@@ -119,26 +121,6 @@ def optical_frames(path: Path) -> list[bytes]:
 
 def screen_region(path: Path, box: tuple[int, int, int, int]) -> bytes:
     return Image.open(path).rotate(-90, expand=True).crop(box).tobytes()
-
-
-def expect_native_text(path: Path, x: int, y: int, text: str, font_path: Path) -> None:
-    font = Image.open(font_path).convert("L")
-    screen = Image.open(path).rotate(-90, expand=True).convert("L")
-    for position, character in enumerate(text):
-        cell = ord(character) - (ord("0") if character.isdigit() else ord("A") - 10)
-        for row in range(8):
-            for column in range(4):
-                expected = (
-                    character != " "
-                    and column < 3
-                    and font.getpixel((cell * 3 + column, row)) < 128
-                )
-                actual = (
-                    screen.getpixel((24 + (x + position * 4 + column) * 2, 3 + (y + row) * 2))
-                    >= 128
-                )
-                if actual != expected:
-                    raise AssertionError(f"{path}: native caption differs from {text!r}")
 
 
 def expect_cursor(path: Path, x: int, y: int) -> None:
@@ -294,11 +276,6 @@ def main() -> None:
     for name, expected in manifest["outputs"].items():
         if digest(build / name) != expected:
             raise RuntimeError(f"Firmware hash differs from its build record: {name}")
-    font_path = ROOT / next(
-        name
-        for name in manifest["source_sha256"]
-        if name.startswith("assets/") and name.endswith("/font.bmp")
-    )
     binary, rom = prepare()
     destination = args.output_dir.resolve()
     destination.mkdir(parents=True, exist_ok=True)
@@ -333,6 +310,8 @@ def main() -> None:
             "stick/simulation/recovery.actions",
             "stick/simulation/peer.actions",
             "stick/simulation/peer-storage.actions",
+            "stick/simulation/peer-transfer.actions",
+            "stick/simulation/peer-play.actions",
             "stick/simulation/peer.rs",
             "stick/simulation/fixture.py",
         )
@@ -349,12 +328,21 @@ def main() -> None:
         folder = out / scenario
         folder.mkdir(exist_ok=True)
         scenario_fixture = fixture
-        if scenario.startswith("recovery-"):
+        if scenario.startswith("recovery-") or scenario == "peer-play":
             scenario_fixture = filesystem(
                 tool, build / "PwStick.ino.partitions.bin", folder, scenario
             )
         action = "recovery" if scenario.startswith("recovery-") else scenario
         script = ROOT / f"stick/simulation/{action}.actions"
+        if scenario in ("peer-transfer", "peer-play"):
+            script = folder / f"{scenario}.actions"
+            actions = (ROOT / f"stick/simulation/{scenario}.actions").read_text()
+            if scenario == "peer-transfer":
+                source = folder / "course.bin"
+                source.write_bytes(course())
+            else:
+                source = folder / "fixture.eeprom"
+            script.write_text(actions.replace("PUBLIC_FIXTURE", str(source)))
         if scenario == "battery":
             script = folder / "battery.actions"
             actions = (ROOT / "stick/simulation/wake.actions").read_text()
@@ -380,6 +368,14 @@ def main() -> None:
                 stderr=log,
                 check=True,
                 timeout=360,
+                env={
+                    **os.environ,
+                    **(
+                        {"STICK_E2E_OPCODE_TIMING": "1"}
+                        if scenario in ("peer-transfer", "peer-play")
+                        else {}
+                    ),
+                },
             )
         if scenario == "settings":
             expect_screen(folder / "settings.png", "STICK SETTINGS", "Left side down", "Dark")
@@ -443,13 +439,25 @@ def main() -> None:
             ):
                 raise AssertionError("Layout selection did not cycle through four distinct choices")
             expect_screen(folder / "two-key-native.png", "SETTINGS")
-            expect_cursor(folder / "two-key-native.png", 0, 20)
             expect_screen(folder / "two-key-reopened.png", "STICK SETTINGS")
             if labels[0] != screen_region(folder / "two-key-reopened.png", (10, 42, 165, 52)):
                 raise AssertionError("Dedicated L did not reopen the retained two-key layout")
-            for name in ("launcher-L", "launcher-R"):
-                expect_native_text(folder / f"{name}.png", 20, 16, "STICK SETTINGS", font_path)
-                expect_native_text(folder / f"{name}.png", 16, 32, "CENTER TO OPEN", font_path)
+            for mapping, index in (("LR", 2), ("RL", 3)):
+                direction = folder / f"direction-{mapping}.png"
+                pending = folder / f"pending-{mapping}.png"
+                expect_screen(direction, "SETTINGS")
+                if screen_region(direction, (24, 24, 184, 72)) == screen_region(
+                    pending, (24, 24, 184, 72)
+                ):
+                    raise AssertionError("Joining the Settings hold withheld gameplay Right")
+                if "STICK SETTINGS" in read_screen(pending, -90):
+                    raise AssertionError("Settings opened before its one-second hold")
+                expect_cursor(folder / f"two-choice-{mapping}.png", 48, 20)
+                for prefix in ("held", "partial"):
+                    path = folder / f"{prefix}-{mapping}.png"
+                    expect_screen(path, "STICK SETTINGS")
+                    if labels[index] != screen_region(path, (10, 42, 165, 52)):
+                        raise AssertionError("Opening hold operated the Settings overlay")
             for name, x, y in (
                 ("volume", 64, 44),
                 ("volume-changed", 0, 44),
@@ -459,7 +467,7 @@ def main() -> None:
                 expect_cursor(folder / f"{name}.png", x, y)
             expect_saved_settings(folder, tool, fixture[0], fixture[1].stat().st_size)
             evidence["scenarios"][scenario] = (
-                "All four layouts persist; both three-key mappings reach the explicit launcher, preserving native volume/contrast edits and mirrored saves."
+                "All four layouts persist; L+R delivers gameplay before opening Settings, consumes held buttons through release, and preserves the native two-choice selector and mirrored saves."
             )
         elif scenario in ("wake", "battery"):
             for name in ("asleep", "ignored", "cancelled"):
@@ -525,6 +533,37 @@ def main() -> None:
                 "fixture_files_sha256": {
                     path.name: digest(path) for path in sorted((folder / "fixture-files").iterdir())
                 },
+            }
+        elif scenario in ("peer-transfer", "peer-play"):
+            report = (folder / "peer.txt").read_text()
+            if "complete=true error=None" not in report:
+                raise AssertionError(f"{scenario} failed:\n{report[:1500]}")
+            payload = saved_eeprom(
+                folder, tool, scenario_fixture[0], scenario_fixture[1].stat().st_size
+            )
+            if scenario == "peer-transfer":
+                if payload[0x8F00 : 0x8F00 + 10430] != course():
+                    raise AssertionError("DS put course differs after native commit/reset")
+                identity = (out / "fixture.eeprom").read_bytes()[0x83 : 0x83 + 40]
+                if payload[0xCC08:0xCC30] != identity:
+                    raise AssertionError("DS trainer record did not survive native commit/reset")
+                if "received_frames=135" not in report or "watts=0064" not in report:
+                    raise AssertionError(
+                        "DS put did not complete course/record writes and PHC/distribution reads"
+                    )
+            else:
+                identity = b"PUBLIC OPTICAL WALKER".ljust(40, b"\0")
+                if payload[0xDC00 + 548 + 8 : 0xDC00 + 548 + 48] != identity:
+                    raise AssertionError("Native peer completion did not persist peer history")
+                local = (folder / "fixture.eeprom").read_bytes()
+                for source, destination, length in ((0x91BE, 0xF400, 384), (0x993E, 0xF580, 320)):
+                    expected = bytes(byte ^ 0x5A for byte in local[source : source + length])
+                    if payload[destination : destination + length] != expected:
+                        raise AssertionError("Peer animation/name did not persist")
+            expect_screen(folder / "settings-after.png", "STICK SETTINGS")
+            evidence["scenarios"][scenario] = {
+                "result": "DS put/commit or native Walker peer exchange completes with retail baud, transmitter echo and instruction-cost timing; persisted state survives reset.",
+                "timing": "one-instruction quanta with opcode, branch, call and load-use costs; no analog/cache timing claim",
             }
         elif scenario == "peer":
             report = (folder / "peer.txt").read_text()

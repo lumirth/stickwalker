@@ -206,7 +206,8 @@ extern "C" void StickInputPoll(unsigned long milliseconds) {
     }
     return;
   }
-  if (!pw_stick::three_key(settings.layout) && power_action) {
+  if (controls.take_settings_hold() ||
+      (!pw_stick::three_key(settings.layout) && power_action)) {
     menu_requested = true;
     controls.require_release();
   }
@@ -334,14 +335,6 @@ extern "C" int StickMenuRequested(void) {
   const bool requested = menu_requested;
   menu_requested = false;
   return requested ? 1 : 0;
-}
-
-extern "C" int StickInputSettingsLauncher(void) {
-  if (!pw_stick::three_key(settings.layout) || menu_active ||
-      StickInputMOnlyWake()) return 0;
-  menu_requested = true;
-  controls.require_release();
-  return 1;
 }
 
 extern "C" void StickInputMenuMode(int enabled) {

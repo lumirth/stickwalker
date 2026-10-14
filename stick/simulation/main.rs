@@ -28,6 +28,13 @@ fn main() {
             .write_flash(args[5].parse().unwrap(), &std::fs::read(&args[6]).unwrap())
             .unwrap();
     }
+    if std::env::var_os("STICK_E2E_OPCODE_TIMING").is_some() {
+        machine.set_approximate_jit_timing(1, 1).unwrap();
+        machine.set_approximate_jit_frontiers(true).unwrap();
+        for core in &mut machine.cores {
+            core.price_control = true;
+        }
+    }
     machine.console.capture = true;
     machine.boot_rom();
     for line in std::fs::read_to_string(&args[3]).unwrap().lines() {
@@ -36,10 +43,21 @@ fn main() {
             continue;
         }
         match fields.as_slice() {
-            ["run", ms] | ["run-until-timer-wake", ms] => {
+            ["run", ms] | ["run-until-timer-wake", ms] | ["run-until-peer", ms] => {
                 let deadline = machine.bus.cycles + ms.parse::<u64>().unwrap() * 240_000;
                 let timer_wake = fields[0] == "run-until-timer-wake";
+                let peer_done = fields[0] == "run-until-peer";
                 loop {
+                    if peer_done
+                        && inputs
+                            .lock()
+                            .unwrap()
+                            .peer
+                            .as_ref()
+                            .is_some_and(|peer| peer.complete() || peer.error().is_some())
+                    {
+                        break;
+                    }
                     if timer_wake && machine.bus.periph.rtc.read(0x130) & 8 != 0 {
                         break;
                     }
@@ -47,7 +65,7 @@ fn main() {
                         assert!(!timer_wake, "RTC timer did not wake the CPU within {ms} ms");
                         break;
                     }
-                    let target = if timer_wake {
+                    let target = if timer_wake || peer_done {
                         (machine.bus.cycles + 240).min(deadline)
                     } else {
                         deadline
@@ -143,13 +161,45 @@ fn main() {
                 std::fs::write(out.join(format!("{name}.rate")), rate.to_string()).unwrap();
             }
             ["peer", "start"] => {
-                inputs.lock().unwrap().peer = Some(peer::DsPeer::new());
+                inputs.lock().unwrap().peer = Some(peer::OpticalPeer::new());
+            }
+            ["peer", "echo", enabled] => {
+                inputs.lock().unwrap().local_echo = *enabled == "on";
+            }
+            ["peer", "legacy-watts"] => {
+                inputs.lock().unwrap().peer.as_mut().unwrap().legacy_watts();
+            }
+            ["peer", "start", baud, turnaround] => {
+                inputs.lock().unwrap().peer = Some(
+                    peer::OpticalPeer::new()
+                        .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
+                );
+            }
+            ["peer", "put", path] => {
+                inputs.lock().unwrap().peer =
+                    Some(peer::OpticalPeer::with_put(std::fs::read(path).unwrap()));
+            }
+            ["peer", "put", path, baud, turnaround] => {
+                inputs.lock().unwrap().peer = Some(
+                    peer::OpticalPeer::with_put(std::fs::read(path).unwrap())
+                        .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
+                );
+            }
+            ["peer", "walker", path] => {
+                inputs.lock().unwrap().peer = Some(
+                    peer::OpticalPeer::with_walker(std::fs::read(path).unwrap())
+                        .timing(115760, 5000),
+                );
             }
             ["peer", mode @ ("write-page" | "read-page"), address] => {
                 let data = (0..128).map(|index| (index as u8) ^ 0x5a).collect();
                 inputs.lock().unwrap().peer = Some(
-                    peer::DsPeer::with_page(address.parse().unwrap(), data, *mode == "write-page")
-                        .unwrap(),
+                    peer::OpticalPeer::with_page(
+                        address.parse().unwrap(),
+                        data,
+                        *mode == "write-page",
+                    )
+                    .unwrap(),
                 );
             }
             ["peer", "stop"] => {

@@ -12,7 +12,8 @@ pub struct Inputs {
     pub optical: Vec<Vec<(u64, bool)>>,
     pub cycle: u64,
     pub vbus_mv: Option<u16>,
-    pub peer: Option<crate::peer::DsPeer>,
+    pub peer: Option<crate::peer::OpticalPeer>,
+    pub local_echo: bool,
 }
 
 enum Device {
@@ -289,6 +290,17 @@ impl BoardModel for StickS3 {
             "M" => Some(11),
             "R" => Some(12),
             _ => None,
+        }
+    }
+    fn rmt_symbol_at(&mut self, cycle: u64, pin: u8, pulses: &[(u64, bool)]) {
+        if pin != 46 || self.devices[0].1.lock().unwrap().regs[6] & 8 == 0 {
+            return;
+        }
+        let mut state = self.inputs.lock().unwrap();
+        if state.local_echo {
+            if let Some(peer) = state.peer.as_mut() {
+                peer.local_light(cycle, pulses);
+            }
         }
     }
     fn rmt_waveform(&mut self, pin: u8, pulses: &[(u64, bool)]) {

@@ -11,6 +11,12 @@ reversed three-key mapping. The display adapter applies rotation. Button mapping
 uses the selected layout.
 Game progress is stored in the EEPROM image.
 
+Three-key Settings access observes a one-second physical L+R hold in `Controls`;
+normal directional transitions continue until recognition. The input bridge
+then requests the overlay, clears pending Center activity and requires release
+at entry and closure. The native Settings renderer keeps its two original
+choices.
+
 `pw-display/dark` stores appearance. Unsaved installations default to Dark.
 A failed persistence write leaves the previous appearance active. A successful
 change repaints the overlay immediately and invalidates the game image so it
