@@ -111,14 +111,14 @@ def build(args) -> None:
         {},
     )
     if core.get("installed_version") != CORE:
-        raise InputError(f"Install m5stack:esp32@{CORE}; see stick/docs/build.md.")
+        raise InputError(f"Install m5stack:esp32@{CORE}; see docs/build.md.")
     installed = {
         row["library"]["name"]: row["library"]["version"]
         for row in query("lib", "list")["installed_libraries"]
     }
     for name, expected in LIBRARIES.items():
         if installed.get(name) != expected:
-            raise InputError(f"Install {name}@{expected}; see stick/docs/build.md.")
+            raise InputError(f"Install {name}@{expected}; see docs/build.md.")
     output = args.output_dir.resolve()
     # Never leave a successful manifest attached to a failed/replaced build.
     output.mkdir(parents=True, exist_ok=True)

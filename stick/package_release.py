@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package a committed production build without saves, retail artwork or diagnostics."""
+"""Package Stickwalker firmware, source and runtime archives."""
 
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ def validate_build(folder: Path, allow_ir_timing_change: bool = False) -> dict:
         if row.get("bytes") != expected["bytes"] or row.get("sha256") != expected["sha256"]:
             if not allow_ir_timing_change:
                 raise InputError(
-                    f"IR timing changed: {name}; use --allow-ir-timing-change for an unqualified prerelease."
+                    f"IR timing changed: {name}; use --allow-ir-timing-change for a prerelease."
                 )
     if not allow_ir_timing_change and not timing.get("passed"):
         raise InputError("IR timing verification did not pass.")
@@ -161,7 +161,6 @@ def package(args) -> None:
                 "git_commit": commit,
                 "hardware_qualified": False,
                 "ir_baseline_identical": read_json(args.build_dir / "ir-timing.json")["passed"],
-                "qualification": "See RELEASE.md; qualify these exact output hashes.",
                 "runtime_archive": runtime.name,
                 "runtime_sha256": digest(runtime),
             }
@@ -170,8 +169,6 @@ def package(args) -> None:
         for original, name in (
             ("LICENSE", "LICENSE"),
             ("stick/docs/install.md", "INSTALL.md"),
-            ("stick/docs/release.md", "RELEASE.md"),
-            ("stick/docs/playing.md", "PLAYING.md"),
             ("stick/docs/controls.md", "CONTROLS.md"),
             ("docs/third-party.md", "THIRD-PARTY.md"),
         ):
@@ -186,8 +183,6 @@ def package(args) -> None:
                 rel = source_target.resolve().relative_to(ROOT).as_posix()
                 bundled = {
                     "stick/docs/install.md": "INSTALL.md",
-                    "stick/docs/release.md": "RELEASE.md",
-                    "stick/docs/playing.md": "PLAYING.md",
                     "stick/docs/controls.md": "CONTROLS.md",
                     "docs/third-party.md": "THIRD-PARTY.md",
                     "LICENSE": "LICENSE",
@@ -229,7 +224,7 @@ def package(args) -> None:
     (output / "SHA256SUMS").write_text(
         "".join(f"{digest(p)}  {p.name}\n" for p in (source, firmware, runtime))
     )
-    print(f"Candidate prepared at {output}; hardware qualification remains open.")
+    print(f"Release archives: {output}")
 
 
 def main() -> int:
