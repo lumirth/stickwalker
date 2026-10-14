@@ -21,6 +21,13 @@ Use the [package drawing](https://www.vishay.com/docs/81503/bpv10nf.pdf#page=4) 
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT read-flash 0 0x800000 stickwalker-backup.bin
 ```
 
+## First installation
+
+```sh
+uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT --after no-reset erase-region 0x670000 0x180000
+uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x0 PwStick.ino.bootloader.bin 0x8000 PwStick.ino.partitions.bin 0xE000 boot_app0.bin 0x10000 PwStick.ino.bin
+```
+
 ## Update
 
 Return your Pokémon to HGSS first. Pre-release updates reset registration and walker progress. Button layout, rotation and appearance stay saved.
@@ -28,13 +35,6 @@ Return your Pokémon to HGSS first. Pre-release updates reset registration and w
 ```sh
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT --after no-reset erase-region 0x670000 0x180000
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x10000 PwStick.ino.bin
-```
-
-## First installation
-
-```sh
-uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT --after no-reset erase-region 0x670000 0x180000
-uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x0 PwStick.ino.bootloader.bin 0x8000 PwStick.ino.partitions.bin 0xE000 boot_app0.bin 0x10000 PwStick.ino.bin
 ```
 
 [Stick controls](controls.md).
