@@ -1,0 +1,24 @@
+run 6000
+press M
+press R
+run 50
+screen ready-0.png
+run 50
+screen ready-1.png
+run 50
+screen ready-2.png
+run 50
+screen ready-3.png
+run 50
+screen ready-4.png
+run 50
+screen ready-5.png
+run 50
+screen ready-6.png
+run 50
+screen ready-7.png
+release M
+release R
+run 5000
+screen finished.png
+diode report finished.txt

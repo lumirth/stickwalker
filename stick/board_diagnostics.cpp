@@ -161,9 +161,14 @@ int StickDiagnosticsService(void) {
   }
   while (Serial.available()) {
     const int command = Serial.read();
+    if (command == 'u' && !StickForegroundIsIr()) {
+      Serial.printf("PW_STICK_DIODE_BIAS_RESULT state=%u\n", StickDiodeBiasProbe());
+    }
     if (command == 'h' && !StickForegroundIsIr()) {
       const uint64_t started = uint64_t(esp_timer_get_time());
       const unsigned state = StickDiodeProbe();
+      Serial.printf("PW_STICK_DIODE_DISPLAY orientation=%u rotation=%u\n",
+                    StickInputOrientation(), StickBoardScreen()->getRotation());
       Serial.printf("PW_STICK_DIODE_PROBE state=%u elapsed_us=%llu\n",
                     state, (unsigned long long)(esp_timer_get_time() - started));
     }

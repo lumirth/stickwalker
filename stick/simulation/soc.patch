@@ -10,6 +10,73 @@ index 67738ae..e1f8c73 100644
      fn read8(&mut self, addr: u32) -> Result<u8, Fault>;
      fn read16(&mut self, addr: u32) -> Result<u16, Fault>;
      fn read32(&mut self, addr: u32) -> Result<u32, Fault>;
+diff --git a/esp-periph/src/analog.rs b/esp-periph/src/analog.rs
+index 8918636..bcaa1a0 100644
+--- a/esp-periph/src/analog.rs
++++ b/esp-periph/src/analog.rs
+@@ -9,6 +9,8 @@ use std::sync::Arc;
+ #[derive(Clone)]
+ pub enum AnalogSource {
+     Const(f32),
++    /// Voltages for no pulls, pull-down, pull-up, and both pulls.
++    Bias([f32; 4]),
+     /// `samples` volts at `rate_hz`, starting at `start_cycles`; before the start it reads the first
+     /// sample, after the end it holds the last one.
+     Wave { samples: Arc<Vec<f32>>, rate_hz: f64, start_cycles: u64 },
+@@ -17,6 +19,7 @@ impl std::fmt::Debug for AnalogSource {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         match self {
+             AnalogSource::Const(v) => write!(f, "Const({v} V)"),
++            AnalogSource::Bias(v) => write!(f, "Bias({v:?} V)"),
+             AnalogSource::Wave { samples, rate_hz, .. } => write!(f, "Wave({} samples @ {rate_hz} Hz)", samples.len()),
+         }
+     }
+@@ -27,7 +30,7 @@ impl std::fmt::Debug for AnalogSource {
+ pub struct AdcObservation { pub generation: u64, pub raw: u16 }
+ 
+ #[derive(Default)]
+-pub struct AnalogInputs { pins: HashMap<u8, AnalogSource>, raw: HashMap<u8, u16>, observed: HashMap<u8, AdcObservation>, pub cpu_hz: u64 }
++pub struct AnalogInputs { pins: HashMap<u8, AnalogSource>, raw: HashMap<u8, u16>, observed: HashMap<u8, AdcObservation>, pulls: HashMap<u8, usize>, pub cpu_hz: u64 }
+ impl AnalogInputs {
+     pub fn new(cpu_hz: u64) -> Self { AnalogInputs { cpu_hz, ..Default::default() } }
+     pub fn set(&mut self, pin: u8, src: AnalogSource) { self.raw.remove(&pin); self.pins.insert(pin, src); }
+@@ -36,6 +39,9 @@ impl AnalogInputs {
+         if raw > 4095 { return false; }
+         self.pins.remove(&pin); self.raw.insert(pin, raw); true
+     }
++    pub fn set_pulls(&mut self, pin: u8, up: bool, down: bool) {
++        self.pulls.insert(pin, usize::from(up) * 2 + usize::from(down));
++    }
+     pub fn observation(&self, pin: u8) -> AdcObservation { self.observed.get(&pin).copied().unwrap_or_default() }
+     /// Complete one sample. Reading or replacing a source never advances its generation.
+     pub(crate) fn convert(&mut self, pin: u8, now: u64, code: impl FnOnce(f32) -> u32) -> u32 {
+@@ -49,6 +55,7 @@ impl AnalogInputs {
+         match self.pins.get(&pin) {
+             None => 0.0,
+             Some(AnalogSource::Const(v)) => *v,
++            Some(AnalogSource::Bias(v)) => v[*self.pulls.get(&pin).unwrap_or(&0)],
+             Some(AnalogSource::Wave { samples, rate_hz, start_cycles }) => {
+                 if samples.is_empty() { return 0.0; }
+                 let dt = now_cycles.saturating_sub(*start_cycles) as f64 / self.cpu_hz.max(1) as f64;
+@@ -62,6 +69,18 @@ impl AnalogInputs {
+ mod tests {
+     use super::*;
+     #[test]
++    fn bias_source_follows_the_selected_pull_network() {
++        let mut a = AnalogInputs::new(1_000);
++        a.set(5, AnalogSource::Bias([0.0, 0.02, 0.54, 0.523]));
++        assert_eq!(a.volts(5, 0), 0.0);
++        a.set_pulls(5, true, false);
++        assert_eq!(a.volts(5, 0), 0.54);
++        a.set_pulls(5, true, true);
++        assert_eq!(a.volts(5, 0), 0.523);
++        a.set_pulls(5, false, true);
++        assert_eq!(a.volts(5, 0), 0.02);
++    }
++    #[test]
+     fn wave_follows_emulated_time_and_holds_the_ends() {
+         let mut a = AnalogInputs::new(1_000);
+         a.set(4, AnalogSource::Wave { samples: Arc::new(vec![0.1, 0.2, 0.3]), rate_hz: 10.0, start_cycles: 500 });
 diff --git a/esp-periph/src/rmt.rs b/esp-periph/src/rmt.rs
 index ad89f33..b44ab63 100644
 --- a/esp-periph/src/rmt.rs
@@ -84,7 +151,7 @@ index ad89f33..b44ab63 100644
                  c.rd += 1;
                  c.since_thr += 1;
 diff --git a/esp-periph/src/rtc_cntl.rs b/esp-periph/src/rtc_cntl.rs
-index 5c625c1..fc9cef3 100644
+index 5c625c1..82a1133 100644
 --- a/esp-periph/src/rtc_cntl.rs
 +++ b/esp-periph/src/rtc_cntl.rs
 @@ -15,9 +15,11 @@ pub fn reset_cause_name(c: u32) -> &'static str {
@@ -195,7 +262,7 @@ index 5c625c1..fc9cef3 100644
 +        self.ram.write(0x89c, 0);
 +        let mask = (self.ram.read(0x110) >> 10) & 0x7fff;
 +        if mask == 0 || self.touch_hang { self.touch_pending = None; return; }
-+        let high = ((control >> 6) & 3) | ((control & 0xc) << 0);
++        let high = ((control >> 6) & 3) | (control & 0xc);
 +        let window = usize::from(high >= 12);
 +        let cycles = f64::from((self.ram.read(0x108) >> 16) & 0xffff);
 +        let reference_pf = 5.0 + 1.4 * f64::from((control >> 9) & 7);
@@ -839,7 +906,7 @@ index 7639ba8..27deeb9 100644
 +    }
  }
 diff --git a/esp32s3/src/periph.rs b/esp32s3/src/periph.rs
-index d699cca..c9da39a 100644
+index d699cca..30a7985 100644
 --- a/esp32s3/src/periph.rs
 +++ b/esp32s3/src/periph.rs
 @@ -17,6 +17,7 @@ pub const SRC_UART0: usize = 27;
@@ -920,7 +987,7 @@ index d699cca..c9da39a 100644
              aes: Aes::new(), rsa: Rsa::new(), sha: Sha::new(), wdev: Wdev::new(), i2c_mst: I2cMst::new(), gdma: Gdma::new(), i2s0: I2s::new(CPU_HZ), i2s1: I2s::new(CPU_HZ), rmt: Rmt::new(CPU_HZ),
              io_mux: RegRam::new(), misc: Misc::new(), fake_reads: std::env::var("ESP_EMU_FAKE_READ").ok().map(|v| v.split(',').filter_map(|e| { let mut p = e.split(':'); let a = u32::from_str_radix(p.next()?.trim_start_matches("0x"), 16).ok()?; let o = u32::from_str_radix(p.next().unwrap_or("0").trim_start_matches("0x"), 16).ok()?; let m = u32::from_str_radix(p.next().unwrap_or("ffffffff").trim_start_matches("0x"), 16).ok()?; Some((a, (o, m))) }).collect()).unwrap_or_default(),
              clock: Self::new_clock(),
-@@ -551,7 +560,10 @@ impl Peripherals {
+@@ -551,7 +560,11 @@ impl Peripherals {
      pub fn write32(&mut self, addr: u32, v: u32) {
          // IDF v5.5.4 components/soc/esp32s3/register/soc/io_mux_reg.h:42-50 (FUN_PD/PU).
          if (0x60009004..=0x600090c4).contains(&addr) {
@@ -928,11 +995,12 @@ index d699cca..c9da39a 100644
 +            let pin = ((addr - 0x60009004) / 4) as u8;
 +            if pin >= 22 || self.rtc.ram.read(0x484 + u32::from(pin) * 4) & (1 << 19) == 0 {
 +                self.gpio.set_pad(pin, v);
++                self.rtc.analog.set_pulls(pin, v & (1 << 8) != 0, v & (1 << 7) != 0);
 +            }
          }
          if matches!(addr, 0x6001_3004 | 0x6002_7004) && v & (1 << 5) != 0 {
              let bus = usize::from(addr == 0x6002_7004);
-@@ -566,6 +578,13 @@ impl Peripherals {
+@@ -566,6 +579,20 @@ impl Peripherals {
              for (group, bit) in [17, 20].iter().enumerate() { if v & (1 << bit) != 0 { self.mcpwm[group] = Mcpwm::new(160 + group as u32 * 6, 9); } }
          }
          let fx = mmio::write32(self, addr, v);
@@ -940,13 +1008,20 @@ index d699cca..c9da39a 100644
 +            let pin = ((addr - 0x60008484) / 4) as u8;
 +            if v & (1 << 19) != 0 { self.gpio.set_pulls(pin, v & (1 << 27) != 0, v & (1 << 28) != 0); }
 +            else { self.gpio.set_pad(pin, self.io_mux.read(4 + u32::from(pin) * 4)); }
++            let pad = if v & (1 << 19) != 0 {
++                (v & (1 << 27) != 0, v & (1 << 28) != 0)
++            } else {
++                let digital = self.io_mux.read(4 + u32::from(pin) * 4);
++                (digital & (1 << 8) != 0, digital & (1 << 7) != 0)
++            };
++            self.rtc.analog.set_pulls(pin, pad.0, pad.1);
 +            self.rtc.gpio_input = self.gpio.input as u32;
 +            self.rtc.check_wakeup();
 +        }
          if fx.contains(WriteEffect::SPI_EXEC) { self.spi_exec = true; }
          if fx.contains(WriteEffect::INTMAP) { self.intmatrix_dirty = true; }
          // ESP-IDF v5.5.4 soc/system_reg.h: PERIP_CLK_EN1/RST_EN1 LCD_CAM bit 8.
-@@ -600,7 +619,19 @@ impl Peripherals {
+@@ -600,7 +627,19 @@ impl Peripherals {
      /// Advance device time by `cycles` CPU cycles (every clocked device gets its own clock's
      /// ticks), then route GPIO input edges to the pulse counters.
      pub fn tick(&mut self, cycles: u64) -> bool {
@@ -967,7 +1042,7 @@ index d699cca..c9da39a 100644
          if !self.gpio.input_changes.is_empty() {
              let before = self.pcnt.irq();
              let gpio = &mut self.gpio;
-@@ -626,7 +657,13 @@ impl Peripherals {
+@@ -626,7 +665,13 @@ impl Peripherals {
  
      /// Cycles until the next systimer or timer-group alarm can fire — the only device events
      /// firmware times precisely. Slightly conservative (one device tick early), never late.

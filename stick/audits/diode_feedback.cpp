@@ -90,20 +90,46 @@ int main()
   const int external_voltage[] = {3300, 3300, 3300};
   assert(diode_voltage_state(external_voltage) == DiodeState::Unknown);
 
+  const DiodeBiasWindow dark_junction[] = {{540, 523, 0}, {545, 526, 0}, {542, 524, 0}};
+  assert(diode_bias_state(dark_junction) == DiodeState::Reversed);
+  const DiodeBiasWindow bright_correct[] = {{540, 270, 0}, {545, 272, 0}, {542, 271, 0}};
+  assert(diode_bias_state(bright_correct) == DiodeState::Unknown);
+  const DiodeBiasWindow resistive[] = {{550, 471, 0}, {550, 471, 0}, {550, 471, 0}};
+  assert(diode_bias_state(resistive) == DiodeState::Unknown);
+  const DiodeBiasWindow short_circuit[] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+  assert(diode_bias_state(short_circuit) == DiodeState::Unknown);
+  const DiodeBiasWindow changing[] = {{540, 523, 0}, {640, 626, 0}, {542, 524, 0}};
+  assert(diode_bias_state(changing) == DiodeState::Unknown);
+
   DiodeFeedback feedback;
-  assert(feedback.state == DiodeState::Hidden &&
-         feedback.expires == UINT64_MAX);
-  feedback.show(DiodeState::Connected, 100);
-  assert(!feedback.expire(2000099));
-  assert(feedback.expire(2000100));
-  assert(feedback.state == DiodeState::Hidden &&
-         feedback.expires == UINT64_MAX);
-  feedback.show(DiodeState::Unknown, 3000000);
-  assert(feedback.state == DiodeState::Hidden &&
-         feedback.expires == UINT64_MAX);
-  assert(!feedback.expire(9000000));
-  feedback.show(DiodeState::Missing, 10000000);
-  assert(feedback.expire(16000000));
+  assert(feedback.visible(false) == DiodeState::Hidden);
+  feedback.begin();
+  feedback.observe(DiodeState::Connected);
+  assert(feedback.visible(false) == DiodeState::Connected);
+  feedback.end();
+  assert(feedback.visible(true) == DiodeState::Hidden);
+  for (auto fault : {DiodeState::Missing, DiodeState::Reversed}) {
+    feedback.begin();
+    feedback.observe(fault);
+    assert(feedback.visible(false) == fault);
+    feedback.end();
+    assert(feedback.visible(true) == fault);
+    assert(feedback.visible(false) == DiodeState::Hidden);
+    feedback.observe(DiodeState::Connected);
+    assert(feedback.visible(true) == DiodeState::Hidden);
+  }
+  feedback.begin();
+  feedback.observe(DiodeState::Unknown);
+  assert(feedback.visible(false) == DiodeState::Hidden);
+  feedback.end();
+  assert(feedback.visible(true) == DiodeState::Hidden);
+
+  assert(panel_rotation(unsigned(Orientation::LeftSideDown)) == 1);
+  assert(panel_rotation(unsigned(Orientation::RightSideDown)) == 3);
+  assert(diode_icon_x(unsigned(Orientation::LeftSideDown)) == 4);
+  assert(diode_icon_y(unsigned(Orientation::LeftSideDown)) == 4);
+  assert(diode_icon_x(unsigned(Orientation::RightSideDown)) == 220);
+  assert(diode_icon_y(unsigned(Orientation::RightSideDown)) == 115);
 
   // Both rotations leave four pixels between the icon and either edge.
   for (unsigned rotation : {0u, 1u}) {

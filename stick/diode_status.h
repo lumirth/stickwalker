@@ -16,6 +16,7 @@ void StickDiodeDraw(void);
 void StickDiodeInvalidate(void);
 #ifdef PW_STICK_BENCH_CONTROL
 unsigned StickDiodeProbe(void);
+unsigned StickDiodeBiasProbe(void);
 unsigned StickDiodeProbePin(unsigned pin);
 #endif
 #ifdef __cplusplus

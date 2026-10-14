@@ -1,5 +1,11 @@
 # A stalled touch scan must stay inconclusive and release both pins.
 touch timeout 1
+run 6000
+press M
+press R
+run 300
+release M
+release R
 run 5500
 screen unknown.png
 diode report timeout-bounded.txt

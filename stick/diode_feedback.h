@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "control_settings.h"
 
 namespace pw_stick {
 enum class DiodeState : uint8_t {
@@ -21,36 +22,31 @@ constexpr uint16_t kDiodeIcons[3][16] = {
 };
 
 struct DiodeFeedback {
-  DiodeState state = DiodeState::Hidden;
-  uint64_t expires = UINT64_MAX;
-  void show(DiodeState value, uint64_t now)
+  DiodeState measurement = DiodeState::Unknown;
+  bool transferring = false;
+
+  void begin() { measurement = DiodeState::Unknown; transferring = true; }
+  void observe(DiodeState value) { measurement = value; }
+  void end() { transferring = false; }
+  void clear() { measurement = DiodeState::Unknown; transferring = false; }
+  DiodeState visible(bool result_open) const
   {
-    // Uncertainty belongs to the detector, not to the user-facing status.
-    if (value == DiodeState::Unknown)
-      value = DiodeState::Hidden;
-    state = value;
-    expires =
-        value == DiodeState::Hidden
-            ? UINT64_MAX
-            : now + (value == DiodeState::Connected ? 2000000u : 6000000u);
-  }
-  bool expire(uint64_t now)
-  {
-    if (now < expires || state == DiodeState::Hidden)
-      return false;
-    show(DiodeState::Hidden, now);
-    return true;
+    if (!transferring && !result_open) return DiodeState::Hidden;
+    if (measurement == DiodeState::Missing || measurement == DiodeState::Reversed)
+      return measurement;
+    return transferring && measurement == DiodeState::Connected
+        ? DiodeState::Connected : DiodeState::Hidden;
   }
 };
 
 // Keep the connector corner and four pixels of padding after rotation.
-constexpr unsigned diode_icon_x(unsigned right_side_down)
+constexpr unsigned diode_icon_x(unsigned setting)
 {
-  return right_side_down ? 220 : 4;
+  return right_side_down(setting) ? 220 : 4;
 }
-constexpr unsigned diode_icon_y(unsigned right_side_down)
+constexpr unsigned diode_icon_y(unsigned setting)
 {
-  return right_side_down ? 115 : 4;
+  return right_side_down(setting) ? 115 : 4;
 }
 
 // With a weak pull-down, positive photocurrent into GPIO5 identifies an

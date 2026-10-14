@@ -7,10 +7,15 @@ release M
 release R
 run 100
 screen missing.png
-run 2500
+# An uncertain recheck must not erase a diagnosed fault.
+cap 5 15 14
+run 600
+screen missing-uncertain.png
+cap 5 11.8 11.2
+run 1900
 diode report missing-bounded.txt
 run 4000
-screen missing-expired.png
+screen missing-persist.png
 diode report missing-idle.txt
 press L
 run 100
@@ -20,6 +25,7 @@ press L
 run 100
 release L
 run 200
+screen missing-left.png
 press M
 press R
 run 300

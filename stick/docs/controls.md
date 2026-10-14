@@ -15,4 +15,4 @@ For two-key layouts, M+R window sets how much time you have to press the second 
 
 Contrast controls the Stick's backlight.
 
-The diode icon appears briefly by the connector: × means missing, arrows mean reverse the diode, and solid means connected.
+The diode icon appears by the connector when connecting: × means missing, arrows mean reverse the diode, and solid means connected.

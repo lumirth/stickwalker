@@ -10,7 +10,7 @@ The [BPV10NF datasheet](https://www.vishay.com/docs/81503/bpv10nf.pdf) gives 11 
 
 ## Physical measurements
 
-The final driver detected the connected GPIO5 diode on **4/4 checks**, and classified the unpopulated GPIO6 control as missing on **4/4 checks**. Checks took about 97 ms. GPIO7 and GPIO8 remained inconclusive where channel offsets or sample variation exceeded the acceptance bounds.
+The final driver detected the connected GPIO5 diode on **4/4 checks**, and classified the unpopulated GPIO6 control as missing on **4/4 checks**. Checks took about 129 ms. GPIO7 and GPIO8 remained inconclusive where channel offsets or sample variation exceeded the acceptance bounds.
 
 Representative connected counts, using 32 charge cycles:
 
@@ -27,6 +27,10 @@ Missing detection at the GPIO5 socket is inferred from the bare-control measurem
 
 ## Failure checks
 
-Weak pull-up checks precede touch excitation and strong GPIO precharge. A held-low input skips both. Stable positive photovoltage identifies an illuminated reversed diode; ambiguous readings produce no icon.
+Weak pull-up checks precede touch excitation and strong GPIO precharge. A held-low input skips both. The reversal check sweeps weak pull-up, both weak pulls, and weak pull-down. A reversed junction holds nearly the same forward voltage under the two positive biases, including in darkness; a correctly inserted diode under strong light drops substantially when the second pull is added. A short stays near zero. These distinctions follow the [illuminated-junction equations](https://www.vishay.com/docs/80086/physicstechnology.pdf).
 
-The IDF 5.5 one-shot routine can return success after a hardware measurement timeout, so the detector also latches its timeout callback. Hardware timeout, stalled scans, invalid references and unstable samples produce an internal inconclusive result with no icon. Every scan shuts down its controller and restores the GPIO without pulls. Simulator checks exercise both timeout paths, feedback expiry, bounded retries and connection recovery.
+On the inserted diode, three physical sweeps measured pull-up voltages of 3134/3131/3130 mV, both-pull voltages of 1397/1429/1413 mV, and pull-down voltages of 16/14/11 mV. This correctly rejects reversal. Dark-reversal and strong-light signatures are exercised through the production ADC path in the simulator; a physical reversed sweep was not captured.
+
+The S3 has independent digital and RTC pull controls. ADC channel setup selects the digital mux, so the sweep uses the digital weak pulls after configuration. [SDK GPIO implementation](https://github.com/espressif/esp-idf/blob/v5.5/components/esp_driver_gpio/src/gpio.c), [ADC setup](https://github.com/espressif/esp-idf/blob/v5.5/components/esp_adc/adc_oneshot.c).
+
+The IDF 5.5 one-shot routine can return success after a hardware measurement timeout, so the detector also latches its timeout callback. Hardware timeout, stalled scans, invalid references and samples without a repeatable cluster produce an internal inconclusive result with no icon. Every scan shuts down its controller and restores the GPIO without pulls. Simulator checks exercise both timeout paths, feedback clearing, bounded retries and connection recovery.

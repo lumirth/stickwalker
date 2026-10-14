@@ -41,5 +41,38 @@ inline DiodeState diode_cap_state(const DiodeCapWindow (&windows)[2])
   return DiodeState::Unknown;
 }
 
+struct DiodeBiasWindow {
+  int up = 0;
+  int both = 0;
+  int down = 0;
+};
+
+inline DiodeState diode_bias_state(const DiodeBiasWindow (&windows)[3])
+{
+  int photo[3];
+  int minimum = 10000, maximum = 0;
+  bool junction = true;
+  for (unsigned i = 0; i < 3; ++i) {
+    const auto &w = windows[i];
+    photo[i] = w.down;
+    if (w.up < minimum) minimum = w.up;
+    if (w.up > maximum) maximum = w.up;
+    // A forward-biased junction remains near its forward voltage when the
+    // second weak pull is added. Photocurrent and resistive loads drop more.
+    junction &= w.up >= 400 && w.up <= 1000 && w.down >= -30 &&
+                w.down <= 100 && w.up - w.both >= -20 &&
+                w.up - w.both <= 35;
+  }
+  if (diode_voltage_state(photo) == DiodeState::Reversed ||
+      (junction && maximum - minimum <= 40))
+    return DiodeState::Reversed;
+  return DiodeState::Unknown;
+}
+
+struct DiodeProbe {
+  DiodeState state = DiodeState::Unknown;
+  bool receive_safe = false;
+};
 DiodeState diode_presence_detect(unsigned sensor_pin = 5);
+DiodeProbe diode_probe(unsigned sensor_pin = 5);
 } // namespace pw_stick

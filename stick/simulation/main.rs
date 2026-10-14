@@ -142,6 +142,11 @@ fn main() {
                 pin.parse().unwrap(),
                 esp_periph::AnalogSource::Const(volts.parse().unwrap()),
             ),
+            ["adc-bias", pin, up, both, down] => machine.bus.analog_set(
+                pin.parse().unwrap(),
+                esp_periph::AnalogSource::Bias([0.0, down.parse().unwrap(),
+                    up.parse().unwrap(), both.parse().unwrap()]),
+            ),
             ["cap", pin, low, high] => {
                 machine.bus.periph.rtc.touch_caps[pin.parse::<usize>().unwrap()] =
                     [low.parse().unwrap(), high.parse().unwrap()];

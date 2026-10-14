@@ -11,7 +11,7 @@ extern "C" {
 /* Initialize after board setup. Present from the application task between
  * optical receive intervals. */
 int StickDisplayPanelInit(void);
-void StickDisplayPanelSetOrientation(unsigned right_side_down);
+void StickDisplayPanelSetOrientation(unsigned setting);
 void StickDisplayPanelSetBacklight(unsigned enabled);
 void StickDisplayPanelSetContrastDelta(unsigned delta);
 int StickDisplayPresent(const StickDisplaySnapshot *snapshot);

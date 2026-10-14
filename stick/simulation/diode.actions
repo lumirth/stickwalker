@@ -2,7 +2,7 @@ run 6000
 screen idle.png
 # Ambiguous held-low input: do not call it missing or backwards.
 gpio 5 0
-adc 5 0
+adc-bias 5 0 0 0
 press M
 press R
 run 300
@@ -14,8 +14,7 @@ diode report blocked.txt
 optical blocked.optical
 run 6500
 screen expired.png
-# Positive photocurrent with the pull-down confirms an illuminated reversal.
-adc 5 0.4
+adc-bias 5 0.54 0.27 0
 press L
 run 100
 release L
@@ -23,7 +22,42 @@ run 200
 press L
 run 100
 release L
+run 2500
+press M
+press R
+run 300
+release M
+release R
+run 100
+screen bright.png
+diode report bright.txt
+adc-bias 5 0.55 0.471 0
+press L
+run 100
+release L
 run 200
+press L
+run 100
+release L
+run 2500
+press M
+press R
+run 300
+release M
+release R
+run 100
+screen resistive.png
+diode report resistive.txt
+# A dark forward-biased junction confirms reversal without light.
+adc-bias 5 0.54 0.523 0
+press L
+run 100
+release L
+run 200
+press L
+run 100
+release L
+run 2500
 press M
 press R
 run 300
@@ -60,7 +94,7 @@ run 200
 press L
 run 100
 release L
-run 200
+run 2500
 gpio 5 0
 press M
 press R
@@ -71,4 +105,13 @@ run 100
 screen rotated.png
 diode report rotated.txt
 run 6500
-screen rotated-expired.png
+screen rotated-persist.png
+press L
+run 100
+release L
+run 200
+press L
+run 100
+release L
+run 200
+screen rotated-left.png

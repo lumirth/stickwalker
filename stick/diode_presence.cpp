@@ -5,6 +5,8 @@
 #include <driver/rtc_io.h>
 #include <driver/touch_sens.h>
 #include <esp_timer.h>
+#include <esp_adc/adc_cali_scheme.h>
+#include <esp_adc/adc_oneshot.h>
 #include <hal/touch_sensor_ll.h>
 #include <soc/gpio_struct.h>
 
@@ -21,6 +23,77 @@ void restore(unsigned pin)
   gpio_pulldown_dis(gpio);
 }
 
+bool can_charge(unsigned pin)
+{
+  const auto gpio = gpio_num_t(pin);
+  gpio_set_direction(gpio, GPIO_MODE_INPUT);
+  gpio_set_pull_mode(gpio, GPIO_PULLUP_ONLY);
+  unsigned highs = 0;
+  for (unsigned sample = 0; sample < 32; ++sample) {
+    delayMicroseconds(103 + (sample * 37) % 89);
+    highs = gpio_get_level(gpio) ? highs + 1 : 0;
+    if (highs == 4) break;
+  }
+  gpio_set_pull_mode(gpio, GPIO_FLOATING);
+  return highs == 4;
+}
+
+pw_stick::DiodeState bias_state(unsigned pin)
+{
+  adc_oneshot_unit_handle_t unit = nullptr;
+  adc_cali_handle_t calibration = nullptr;
+  const auto gpio = gpio_num_t(pin);
+  const auto adc_channel = adc_channel_t(pin - 1);
+  adc_oneshot_unit_init_cfg_t init = {};
+  init.unit_id = ADC_UNIT_1;
+  adc_oneshot_chan_cfg_t channel = {};
+  channel.atten = ADC_ATTEN_DB_12;
+  channel.bitwidth = ADC_BITWIDTH_12;
+  adc_cali_curve_fitting_config_t config = {};
+  config.unit_id = ADC_UNIT_1;
+  config.chan = adc_channel;
+  config.atten = channel.atten;
+  config.bitwidth = channel.bitwidth;
+  pw_stick::DiodeState state = pw_stick::DiodeState::Unknown;
+  bool ok = adc_oneshot_new_unit(&init, &unit) == ESP_OK;
+  if (ok) ok = adc_oneshot_config_channel(unit, adc_channel, &channel) == ESP_OK;
+  if (ok) ok = adc_cali_create_scheme_curve_fitting(&config, &calibration) == ESP_OK;
+  pw_stick::DiodeBiasWindow windows[3];
+  // ADC setup selects the digital mux on S3. Control its digital weak pulls,
+  // not the independent RTC pulls. Reverse sweep order to catch changing light.
+  for (unsigned sweep = 0; sweep < 3 && ok; ++sweep) {
+    const gpio_pull_mode_t modes[] = {GPIO_PULLUP_ONLY, GPIO_PULLUP_PULLDOWN,
+                                     GPIO_PULLDOWN_ONLY};
+    for (unsigned step = 0; step < 3 && ok; ++step) {
+      const unsigned bias = sweep & 1 ? 2 - step : step;
+      ok = gpio_set_pull_mode(gpio, modes[bias]) == ESP_OK;
+      delayMicroseconds(300);
+      int raw = 0, sum = 0;
+      if (ok) ok = adc_oneshot_read(unit, adc_channel, &raw) == ESP_OK;
+      for (unsigned sample = 0; sample < 8 && ok; ++sample) {
+        int mv = 0;
+        ok = adc_oneshot_read(unit, adc_channel, &raw) == ESP_OK &&
+             adc_cali_raw_to_voltage(calibration, raw, &mv) == ESP_OK;
+        sum += mv;
+        delayMicroseconds(31);
+      }
+      int *values[] = {&windows[sweep].up, &windows[sweep].both,
+                      &windows[sweep].down};
+      *values[bias] = sum / 8;
+    }
+#ifdef PW_STICK_BENCH_CONTROL
+    Serial.printf("PW_STICK_DIODE_BIAS pin=%u sweep=%u up=%d both=%d down=%d ok=%u\n",
+                  pin, sweep, windows[sweep].up, windows[sweep].both,
+                  windows[sweep].down, unsigned(ok));
+#endif
+  }
+  if (ok) state = pw_stick::diode_bias_state(windows);
+  if (calibration) adc_cali_delete_scheme_curve_fitting(calibration);
+  if (unit) adc_oneshot_del_unit(unit);
+  restore(pin);
+  return state;
+}
+
 bool IRAM_ATTR timed_out(touch_sensor_handle_t,
                         const touch_timeout_event_data_t *, void *context)
 {
@@ -29,7 +102,7 @@ bool IRAM_ATTR timed_out(touch_sensor_handle_t,
 }
 
 bool measure(unsigned pin, unsigned speed, unsigned window, unsigned cap,
-             uint32_t (&values)[2], int64_t deadline)
+             uint32_t (&values)[2], bool &noisy, int64_t deadline)
 {
   touch_sensor_handle_t controller = nullptr;
   touch_channel_handle_t channel = nullptr;
@@ -69,10 +142,9 @@ bool measure(unsigned pin, unsigned speed, unsigned window, unsigned cap,
     error = touch_sensor_enable(controller);
     enabled = error == ESP_OK;
   }
-  uint32_t sums[2] = {}, minimum[2] = {UINT32_MAX, UINT32_MAX};
-  uint32_t maximum[2] = {};
-  // Discard settling scans before comparing the three retained samples.
-  for (unsigned scan = 0; scan < 5 && error == ESP_OK; ++scan) {
+  uint32_t samples[2][5] = {};
+  // Discard settling scans before comparing five retained samples.
+  for (unsigned scan = 0; scan < 7 && error == ESP_OK; ++scan) {
     if (esp_timer_get_time() >= deadline) {
       error = ESP_ERR_TIMEOUT;
       break;
@@ -92,9 +164,7 @@ bool measure(unsigned pin, unsigned speed, unsigned window, unsigned cap,
         error = ESP_ERR_INVALID_RESPONSE;
         break;
       }
-      sums[i] += raw[i];
-      minimum[i] = raw[i] < minimum[i] ? raw[i] : minimum[i];
-      maximum[i] = raw[i] > maximum[i] ? raw[i] : maximum[i];
+      samples[i][scan - 2] = raw[i];
     }
   }
   if (enabled)
@@ -107,17 +177,21 @@ bool measure(unsigned pin, unsigned speed, unsigned window, unsigned cap,
   if (timeout || error != ESP_OK || esp_timer_get_time() >= deadline)
     return false;
   for (unsigned i = 0; i < 2; ++i) {
-    values[i] = sums[i] / 3;
-    // Fast, bare pads have a quantization floor of roughly one counter tick
-    // per charge cycle. Do not reject them using only a relative error bound.
-    if (maximum[i] - minimum[i] > values[i] / 25 + 32) {
-#ifdef PW_STICK_BENCH_CONTROL
-      Serial.printf("PW_STICK_DIODE_NOISE pin=%u speed=%u window=%u cap=%u "
-                    "sample=%u min=%u max=%u average=%u\n", pin, speed,
-                    window, cap, i, minimum[i], maximum[i], values[i]);
-#endif
-      return false;
-    }
+    for (unsigned a = 0; a < 5; ++a)
+      for (unsigned b = a + 1; b < 5; ++b)
+        if (samples[i][b] < samples[i][a]) {
+          const uint32_t temporary = samples[i][a];
+          samples[i][a] = samples[i][b];
+          samples[i][b] = temporary;
+        }
+    // Interrupted charge cycles can increase counts. Require a repeatable
+    // lower cluster, and never diagnose absence from a noisy measurement.
+    values[i] = (samples[i][0] + samples[i][1]) / 2;
+    const unsigned spread = values[i] / 25 + 32;
+    if (samples[i][1] - samples[i][0] > spread) return false;
+    const bool variable = samples[i][4] - samples[i][0] > spread;
+    if (i == 1 && variable) return false;
+    noisy |= variable;
   }
   return true;
 }
@@ -125,14 +199,15 @@ bool measure(unsigned pin, unsigned speed, unsigned window, unsigned cap,
 pw_stick::DiodeState profile(unsigned sensor_pin, unsigned speed, int64_t deadline)
 {
   pw_stick::DiodeCapWindow windows[2];
+  bool noisy = false;
   for (unsigned window = 0; window < 2; ++window) {
     uint32_t small[2][2], large[2][2];
     for (unsigned i = 0; i < 2; ++i) {
       // One enabled pad per controller avoids mixing partially completed
       // S3 software scans. The same path produced the original live traces.
       const unsigned pin = i ? sensor_pin : 4;
-      if (!measure(pin, speed, window, 0, small[i], deadline) ||
-          !measure(pin, speed, window, 7, large[i], deadline))
+      if (!measure(pin, speed, window, 0, small[i], noisy, deadline) ||
+          !measure(pin, speed, window, 7, large[i], noisy, deadline))
         return pw_stick::DiodeState::Unknown;
       const uint32_t difference = small[i][0] > large[i][0]
           ? small[i][0] - large[i][0] : large[i][0] - small[i][0];
@@ -150,11 +225,22 @@ pw_stick::DiodeState profile(unsigned sensor_pin, unsigned speed, int64_t deadli
                   w.diode, w.reference, w.internal_low, w.internal_high);
 #endif
   }
-  return pw_stick::diode_cap_state(windows);
+  const auto state = pw_stick::diode_cap_state(windows);
+  return noisy && state == pw_stick::DiodeState::Missing
+      ? pw_stick::DiodeState::Unknown : state;
 }
 } // namespace
 
 namespace pw_stick {
+DiodeProbe diode_probe(unsigned pin)
+{
+  if (pin < 5 || pin > 8) return {};
+  restore(pin);
+  if (!can_charge(pin)) return {bias_state(pin), false};
+  const DiodeState state = diode_presence_detect(pin);
+  return {state, state != DiodeState::Missing};
+}
+
 DiodeState diode_presence_detect(unsigned sensor_pin)
 {
   // GPIO4 is unused by Stickwalker and has a matching exposed Hat trace.
@@ -179,3 +265,10 @@ DiodeState diode_presence_detect(unsigned sensor_pin)
   return first == second ? first : DiodeState::Unknown;
 }
 } // namespace pw_stick
+
+#ifdef PW_STICK_BENCH_CONTROL
+extern "C" unsigned StickDiodeBiasProbe(void)
+{
+  return unsigned(bias_state(5));
+}
+#endif
