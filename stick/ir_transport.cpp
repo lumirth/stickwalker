@@ -5,6 +5,7 @@
 #include "ir_tx.h"
 #include "sound_bridge.h"
 #include "board_hal.h"
+#include "diode_status.h"
 
 #include <Arduino.h>
 #include <driver/dedic_gpio.h>
@@ -371,6 +372,11 @@ extern "C" void StickIrConfigure(void) {
     return;
   }
   const bool clock_ok = setCpuFrequencyMhz(240);
+  StickDiodeBegin();
+  if (clock_ok && !StickDiodePreflight()) {
+    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+    return;
+  }
   __atomic_store_n(&failed, !clock_ok || !pw_stick::prepare_ir_tx(),
                     __ATOMIC_RELEASE);
 }

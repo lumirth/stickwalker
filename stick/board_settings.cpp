@@ -3,6 +3,7 @@
 #include "battery_bridge.h"
 #include "board_hal.h"
 #include "controls.h"
+#include "control_settings.h"
 #include "display_bus.h"
 #include "display_palette.h"
 #include "display_panel.h"
@@ -55,7 +56,7 @@ void draw() {
       pw_stick::layout_name(pw_stick::Layout(StickInputLayout())));
   screen->setCursor(10, 55);
   screen->printf("%c Rotation: %s", row == 1 ? '>' : ' ',
-      StickInputOrientation() ? "Right side down" : "Left side down");
+      pw_stick::right_side_down(StickInputOrientation()) ? "Right side down" : "Left side down");
   screen->setCursor(10, 68);
   screen->printf("%c Appearance: %s", row == 2 ? '>' : ' ',
       StickDisplayIsDark() ? "Dark" : "Light");

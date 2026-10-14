@@ -138,6 +138,44 @@ fn main() {
             ["gpio", pin, level] => machine
                 .bus
                 .gpio_set_input(pin.parse().unwrap(), *level == "1"),
+            ["adc", pin, volts] => machine.bus.analog_set(
+                pin.parse().unwrap(),
+                esp_periph::AnalogSource::Const(volts.parse().unwrap()),
+            ),
+            ["adc-bias", pin, up, both, down] => machine.bus.analog_set(
+                pin.parse().unwrap(),
+                esp_periph::AnalogSource::Bias([0.0, down.parse().unwrap(),
+                    up.parse().unwrap(), both.parse().unwrap()]),
+            ),
+            ["cap", pin, low, high] => {
+                machine.bus.periph.rtc.touch_caps[pin.parse::<usize>().unwrap()] =
+                    [low.parse().unwrap(), high.parse().unwrap()];
+            }
+            ["touch", "timeout", value] => {
+                machine.bus.periph.rtc.touch_timeout = *value == "1";
+            }
+            ["touch", "hang", value] => {
+                machine.bus.periph.rtc.touch_hang = *value == "1";
+            }
+            ["diode", "report", name] => {
+                let state = inputs.lock().unwrap();
+                let touch_scans = machine.bus.periph.rtc.touch_scans;
+                let touch_timer = machine.bus.periph.rtc.read(0x10c) & (1 << 13) != 0;
+                let touch_mask = (machine.bus.periph.rtc.read(0x110) >> 10) & 0x7fff;
+                std::fs::write(
+                    out.join(name),
+                    format!(
+                        "high_drives={}\nreboots={}\noutput_enabled={}\ntouch_scans={}\ntouch_timer={}\ntouch_mask={}\n",
+                        state.diode_high_drives,
+                        machine.reboots,
+                        machine.bus.periph.gpio.enable & (1 << 5) != 0,
+                        touch_scans,
+                        touch_timer,
+                        touch_mask,
+                    ),
+                )
+                .unwrap();
+            }
             ["serial", text] => machine.bus.serial_input(text.as_bytes()),
             ["vbus", millivolts] => {
                 inputs.lock().unwrap().vbus_mv = Some(millivolts.parse().unwrap());

@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 int StickForegroundIsIr(void);
+int StickForegroundIsConnectionScreen(void);
 int StickForegroundIsMain(void);
 int StickForegroundIsBeep(void);
 int StickForegroundIsInactive(void);

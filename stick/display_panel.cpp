@@ -5,6 +5,8 @@
 #include "backlight.h"
 #include "peripheral_power.h"
 #include "display_palette.h"
+#include "diode_status.h"
+#include "control_settings.h"
 
 #include <M5Unified.h>
 #include <Arduino.h>
@@ -30,7 +32,7 @@ bool panel_awake = true;
 uint64_t valid_rows = 0;
 bool presentation_pending = true;
 unsigned panel_generation = 0;
-unsigned orientation = 3;
+unsigned orientation = pw_stick::panel_rotation(unsigned(pw_stick::Orientation::LeftSideDown));
 unsigned wake_stage = 0;
 int64_t wake_deadline_us = 0;
 int64_t wake_retry_us = 0;
@@ -51,7 +53,7 @@ extern "C" int StickDisplayPanelInit(void) {
   // pushImage(uint16_t*) buffer as pre-swapped RGB565, which turns neutral
   // grays into colored pixels while black and white appear unchanged.
   screen->setSwapBytes(true);
-  screen->setRotation(3);
+  screen->setRotation(orientation);
   screen->setBrightness(backlight_level);
   screen->fillScreen(StickDisplayBackground());
   panel_generation = StickPeripheralGeneration();
@@ -66,10 +68,10 @@ extern "C" int StickDisplayPanelInit(void) {
   return panel_pixels != nullptr;
 }
 
-extern "C" void StickDisplayPanelSetOrientation(unsigned right_side_down) {
+extern "C" void StickDisplayPanelSetOrientation(unsigned setting) {
   auto *screen = StickBoardScreen();
   if (!screen) return;
-  orientation = right_side_down ? 1 : 3;
+  orientation = pw_stick::panel_rotation(setting);
   if (panel_awake) {
     screen->setRotation(orientation);
     screen->fillScreen(StickDisplayBackground());
@@ -227,6 +229,7 @@ extern "C" uint64_t StickDisplayNextDeadline(void) {
 extern "C" void StickDisplayInvalidate(void) {
   valid_rows = 0;
   presentation_pending = true;
+  StickDiodeInvalidate();
 }
 
 extern "C" int StickDisplayPresentationPending(void) {

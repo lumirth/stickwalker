@@ -13,6 +13,7 @@
 #include "power_sleep.h"
 #include "backlight.h"
 #include "peripheral_power.h"
+#include "diode_status.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -50,7 +51,7 @@ uint64_t next_deadline() {
   for (const uint64_t candidate : {next_input, next_vbus_check,
        StickDisplayNextDeadline(), StickSoundNextDeadline(),
        StickPeripheralNextDeadline(), StickSleepNextDeadline(),
-       StickSettingsNextDeadline()})
+       StickSettingsNextDeadline(), StickDiodeNextDeadline()})
     if (candidate < deadline) deadline = candidate;
   return deadline;
 }
@@ -58,6 +59,7 @@ uint64_t next_deadline() {
 
 void StickPresentGame(int force) {
   if (StickSettingsIsOpen()) return;
+  StickDiodeDraw();
   if (force) StickDisplayInvalidate();
   const uint64_t revision = StickDisplayRevision();
   if (revision == presented_revision && !StickDisplayPresentationPending()) return;
@@ -137,6 +139,7 @@ extern "C" void StickPortLoop(void) {
   StickDiagnosticsSound(uint64_t(esp_timer_get_time()) - now);
   StickDisplayPowerService();
   StickPeripheralPowerService();
+  StickDiodeService();
 
   now = uint64_t(esp_timer_get_time());
   const unsigned task = StickNativeRun();

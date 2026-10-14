@@ -3,9 +3,16 @@
 #include "controls.h"
 
 namespace pw_stick {
+enum class Orientation : uint8_t { RightSideDown = 0, LeftSideDown = 1 };
+constexpr bool right_side_down(unsigned setting) {
+  return setting == unsigned(Orientation::RightSideDown);
+}
+constexpr unsigned panel_rotation(unsigned setting) {
+  return right_side_down(setting) ? 3 : 1;
+}
 struct ControlSettings {
   Layout layout = Layout::ThreeKeyLR;
-  uint8_t orientation = 0;
+  uint8_t orientation = uint8_t(Orientation::LeftSideDown);
   uint8_t chord_window = 0;
 };
 

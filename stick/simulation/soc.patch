@@ -10,6 +10,73 @@ index 67738ae..e1f8c73 100644
      fn read8(&mut self, addr: u32) -> Result<u8, Fault>;
      fn read16(&mut self, addr: u32) -> Result<u16, Fault>;
      fn read32(&mut self, addr: u32) -> Result<u32, Fault>;
+diff --git a/esp-periph/src/analog.rs b/esp-periph/src/analog.rs
+index 8918636..bcaa1a0 100644
+--- a/esp-periph/src/analog.rs
++++ b/esp-periph/src/analog.rs
+@@ -9,6 +9,8 @@ use std::sync::Arc;
+ #[derive(Clone)]
+ pub enum AnalogSource {
+     Const(f32),
++    /// Voltages for no pulls, pull-down, pull-up, and both pulls.
++    Bias([f32; 4]),
+     /// `samples` volts at `rate_hz`, starting at `start_cycles`; before the start it reads the first
+     /// sample, after the end it holds the last one.
+     Wave { samples: Arc<Vec<f32>>, rate_hz: f64, start_cycles: u64 },
+@@ -17,6 +19,7 @@ impl std::fmt::Debug for AnalogSource {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         match self {
+             AnalogSource::Const(v) => write!(f, "Const({v} V)"),
++            AnalogSource::Bias(v) => write!(f, "Bias({v:?} V)"),
+             AnalogSource::Wave { samples, rate_hz, .. } => write!(f, "Wave({} samples @ {rate_hz} Hz)", samples.len()),
+         }
+     }
+@@ -27,7 +30,7 @@ impl std::fmt::Debug for AnalogSource {
+ pub struct AdcObservation { pub generation: u64, pub raw: u16 }
+ 
+ #[derive(Default)]
+-pub struct AnalogInputs { pins: HashMap<u8, AnalogSource>, raw: HashMap<u8, u16>, observed: HashMap<u8, AdcObservation>, pub cpu_hz: u64 }
++pub struct AnalogInputs { pins: HashMap<u8, AnalogSource>, raw: HashMap<u8, u16>, observed: HashMap<u8, AdcObservation>, pulls: HashMap<u8, usize>, pub cpu_hz: u64 }
+ impl AnalogInputs {
+     pub fn new(cpu_hz: u64) -> Self { AnalogInputs { cpu_hz, ..Default::default() } }
+     pub fn set(&mut self, pin: u8, src: AnalogSource) { self.raw.remove(&pin); self.pins.insert(pin, src); }
+@@ -36,6 +39,9 @@ impl AnalogInputs {
+         if raw > 4095 { return false; }
+         self.pins.remove(&pin); self.raw.insert(pin, raw); true
+     }
++    pub fn set_pulls(&mut self, pin: u8, up: bool, down: bool) {
++        self.pulls.insert(pin, usize::from(up) * 2 + usize::from(down));
++    }
+     pub fn observation(&self, pin: u8) -> AdcObservation { self.observed.get(&pin).copied().unwrap_or_default() }
+     /// Complete one sample. Reading or replacing a source never advances its generation.
+     pub(crate) fn convert(&mut self, pin: u8, now: u64, code: impl FnOnce(f32) -> u32) -> u32 {
+@@ -49,6 +55,7 @@ impl AnalogInputs {
+         match self.pins.get(&pin) {
+             None => 0.0,
+             Some(AnalogSource::Const(v)) => *v,
++            Some(AnalogSource::Bias(v)) => v[*self.pulls.get(&pin).unwrap_or(&0)],
+             Some(AnalogSource::Wave { samples, rate_hz, start_cycles }) => {
+                 if samples.is_empty() { return 0.0; }
+                 let dt = now_cycles.saturating_sub(*start_cycles) as f64 / self.cpu_hz.max(1) as f64;
+@@ -62,6 +69,18 @@ impl AnalogInputs {
+ mod tests {
+     use super::*;
+     #[test]
++    fn bias_source_follows_the_selected_pull_network() {
++        let mut a = AnalogInputs::new(1_000);
++        a.set(5, AnalogSource::Bias([0.0, 0.02, 0.54, 0.523]));
++        assert_eq!(a.volts(5, 0), 0.0);
++        a.set_pulls(5, true, false);
++        assert_eq!(a.volts(5, 0), 0.54);
++        a.set_pulls(5, true, true);
++        assert_eq!(a.volts(5, 0), 0.523);
++        a.set_pulls(5, false, true);
++        assert_eq!(a.volts(5, 0), 0.02);
++    }
++    #[test]
+     fn wave_follows_emulated_time_and_holds_the_ends() {
+         let mut a = AnalogInputs::new(1_000);
+         a.set(4, AnalogSource::Wave { samples: Arc::new(vec![0.1, 0.2, 0.3]), rate_hz: 10.0, start_cycles: 500 });
 diff --git a/esp-periph/src/rmt.rs b/esp-periph/src/rmt.rs
 index ad89f33..b44ab63 100644
 --- a/esp-periph/src/rmt.rs
@@ -84,10 +151,10 @@ index ad89f33..b44ab63 100644
                  c.rd += 1;
                  c.since_thr += 1;
 diff --git a/esp-periph/src/rtc_cntl.rs b/esp-periph/src/rtc_cntl.rs
-index 5c625c1..16e17a0 100644
+index 5c625c1..82a1133 100644
 --- a/esp-periph/src/rtc_cntl.rs
 +++ b/esp-periph/src/rtc_cntl.rs
-@@ -15,6 +15,7 @@ pub fn reset_cause_name(c: u32) -> &'static str {
+@@ -15,9 +15,11 @@ pub fn reset_cause_name(c: u32) -> &'static str {
  /// WDTCONFIG0..WDTWPROTECT live at 0x98..0xb0 on S3 and 0x90..0xa8 on C3.
  /// `esp_restart()` on ESP-IDF 5.x arms this watchdog and spins until it resets the chip.
  pub struct RtcCntl { pub ram: RegRam, pub slow_ticks: u64, pub time_latch: u64, pub sw_reset: bool, pub reset_cause: u32,
@@ -95,7 +162,11 @@ index 5c625c1..16e17a0 100644
                       wdt_base: u32, wdt_count: u64, wdt_stage: usize, wdt_unlocked: bool,
                       /// S3 only: the SENS block at +0x800 converts on SAR_MEAS1_START (see `sens_meas`); the chip refreshes
                       /// `now_cycles` before each access so a waveform source is sampled at the right emulated time.
-@@ -26,6 +27,7 @@ impl RtcCntl {
++                     pub touch_caps: [[f32; 2]; 15], pub touch_hang: bool, pub touch_timeout: bool, pub touch_scans: u64, touch_pending: Option<(u64, u32)>, touch_cold: bool, touch_next: usize,
+                      pub sens_adc: bool, pub analog: crate::analog::AnalogInputs, pub now_cycles: u64 }
+ impl RtcCntl {
+     pub fn preset_after_bootloader(&mut self) { self.ram.write(0xc0, 0xFFD7_0028); self.ram.write(0xc4, 0xFF0F_00F0); }
+@@ -26,6 +28,7 @@ impl RtcCntl {
      pub fn wdt_tick(&mut self, ticks: u64) {
          let conf0 = self.ram.read(self.wdt_base);
          if conf0 & (1 << 31) == 0 { return; }
@@ -103,15 +174,21 @@ index 5c625c1..16e17a0 100644
          self.wdt_count += ticks;
          while self.wdt_stage < 4 {
              let timeout = self.ram.read(self.wdt_base + 4 + 4 * self.wdt_stage as u32) as u64;
-@@ -48,6 +50,7 @@ impl RtcCntl {
+@@ -44,10 +47,12 @@ impl RtcCntl {
+         }
+         if self.wdt_stage >= 4 { self.wdt_stage = 0; }
+     }
+-    pub fn new() -> Self { let mut r = Self::with_wdt_base(0x98); r.sens_adc = true; r }
++    pub fn new() -> Self { let mut r = Self::with_wdt_base(0x98); r.sens_adc = true; r.touch_caps[5] = [20.2, 17.9]; r }
      pub fn new_c3() -> Self { Self::with_wdt_base(0x90) }
      fn with_wdt_base(wdt_base: u32) -> Self {
          let mut r = RtcCntl { ram: RegRam::new(), slow_ticks: 0, time_latch: 0, sw_reset: false, reset_cause: RST_POWERON, wdt_base, wdt_count: 0, wdt_stage: 0, wdt_unlocked: false,
 +                              sleeping: false, gpio_input: 0x3fffff, alarm_armed: false,
++                              touch_caps: [[11.8, 11.2]; 15], touch_hang: false, touch_timeout: false, touch_scans: 0, touch_pending: None, touch_cold: true, touch_next: 1,
                                sens_adc: false, analog: crate::analog::AnalogInputs::new(240_000_000), now_cycles: 0 };
          r.ram.write(0x38, 1 | (1 << 6));           // RESET_STATE: reset cause POWERON for both CPUs
          r.ram.write(0x74, 0);                        // CLK_CONF
-@@ -55,6 +58,9 @@ impl RtcCntl {
+@@ -55,6 +60,9 @@ impl RtcCntl {
      }
      pub fn read(&mut self, off: u32) -> u32 {
          match off {
@@ -121,7 +198,7 @@ index 5c625c1..16e17a0 100644
              0x10 => self.time_latch as u32, 0x14 => (self.time_latch >> 32) as u32,
              0xc => self.ram.read(off) | (1 << 30),  // TIME_UPDATE: valid
              0x1fc => 0x2007270,
-@@ -66,7 +72,36 @@ impl RtcCntl {
+@@ -66,7 +74,51 @@ impl RtcCntl {
          let wdt = self.wdt_base;
          match off {
              0x0 => { if v & (1 << 31) != 0 { self.request_reset(RST_SW_SYS); } else if v & (1 << 5) != 0 { self.request_reset(RST_SW_CPU); } self.ram.write(off, v & !((1 << 31) | (1 << 5))); }   // OPTIONS0.SW_SYS_RST / SW_PROCPU_RST
@@ -155,13 +232,69 @@ index 5c625c1..16e17a0 100644
 +                if v & (1 << 22) != 0 { self.ram.write(0xe4, 0); }
 +                self.ram.write(off, v & !(1 << 22));
 +            }
++            0x138 if self.sens_adc => self.ram.write(0x40, self.ram.read(0x40) | v),
++            0x13c if self.sens_adc => self.ram.write(0x40, self.ram.read(0x40) & !v),
++            0x110 if self.sens_adc => {
++                if (v ^ self.ram.read(off)) & 0x01ff_fc00 != 0 { self.touch_next = 1; }
++                self.ram.write(off, v);
++            }
++            0x10c if self.sens_adc => {
++                let previous = self.ram.read(off);
++                self.ram.write(off, v);
++                if v & (1 << 29) != 0 { self.touch_cold = true; self.touch_pending = None; }
++                if v & (1 << 15) != 0 && previous & (1 << 15) == 0 { self.touch_start(v); }
++            }
++            0x89c if self.sens_adc => {
++                self.ram.write(off, self.ram.read(off) & (1 << 31));
++            }
              0x80c | 0x830 if self.sens_adc => self.sens_meas(off, v),
              _ if off == wdt + 0x18 => { self.wdt_unlocked = v == 0x50D8_3AA1; self.ram.write(off, v); }
              _ if (wdt..=wdt + 0x10).contains(&off) => { if self.wdt_unlocked { if off == wdt && (v ^ self.ram.read(wdt)) & (1 << 31) != 0 { self.wdt_count = 0; self.wdt_stage = 0; } self.ram.write(off, v); } }
-@@ -74,6 +109,44 @@ impl RtcCntl {
+@@ -74,6 +126,85 @@ impl RtcCntl {
              _ => self.ram.write(off, v),
          }
      }
++
++    // S3 one-shot touch scan. Counts use the measured bare-pad/reference scale;
++    // electrical scenarios supply capacitance, not a requested UI classification.
++    fn touch_start(&mut self, control: u32) {
++        self.touch_scans += 1;
++        self.ram.write(0x89c, 0);
++        let mask = (self.ram.read(0x110) >> 10) & 0x7fff;
++        if mask == 0 || self.touch_hang { self.touch_pending = None; return; }
++        let high = ((control >> 6) & 3) | (control & 0xc);
++        let window = usize::from(high >= 12);
++        let cycles = f64::from((self.ram.read(0x108) >> 16) & 0xffff);
++        let reference_pf = 5.0 + 1.4 * f64::from((control >> 9) & 7);
++        let speed = ((self.ram.read(0x14c) >> 29) & 7).max(1);
++        let gain = if window == 0 { 5.48 } else { 21.95 } * cycles / f64::from(speed);
++        let offset = if window == 0 { 8.73 } else { 31.17 } * cycles / f64::from(speed);
++        let reference = (offset + gain * reference_pf).round() as u32;
++        self.ram.write(0x860, reference);
++        let pin = (self.touch_next..15).chain(1..self.touch_next)
++            .find(|pin| mask & (1 << pin) != 0).unwrap();
++        self.touch_next = pin + 1;
++        // A timed-out ADC value is unspecified; inject plausible bare-pad data
++        // to ensure firmware uses the timeout signal instead of trusting it.
++        let measured_pin = if self.touch_timeout { 4 } else { pin };
++        let count = (offset + gain * f64::from(self.touch_caps[measured_pin][window])).round() as u32;
++        self.ram.write(0x8a0 + pin as u32 * 4,
++            if self.touch_cold { 0x3fffff } else { count });
++        if pin == (31 - mask.leading_zeros()) as usize { self.touch_cold = false; }
++        self.ram.write(0x8a0, (pin as u32) << 22 | reference);
++        // RTC_FAST=8MHz, RTC_SLOW=150kHz, including the denoise reference.
++        let ticks = if self.touch_timeout { 450 } else { (u64::from(count + reference + 2048) * 3 / 160).max(1) };
++        self.touch_pending = Some((self.slow_ticks + ticks, pin as u32));
++    }
++
++    fn touch_tick(&mut self) {
++        if self.touch_pending.is_some_and(|(deadline, _)| self.slow_ticks >= deadline) {
++            self.touch_pending = None;
++            self.ram.write(0x89c, 1 << 31);
++            self.ram.write(0x44, self.ram.read(0x44) | (1 << 4) | (1 << 6)
++                | if self.touch_timeout { 1 << 18 } else { 0 });
++        }
++    }
 +
 +    fn alarm_target(&self) -> u64 {
 +        u64::from(self.ram.read(0x4)) | (u64::from(self.ram.read(0x8) & 0xffff) << 32)
@@ -203,20 +336,27 @@ index 5c625c1..16e17a0 100644
  }
  
  impl RtcCntl {
-@@ -120,5 +193,19 @@ impl Device for RtcCntl {
+@@ -119,6 +250,26 @@ impl Default for RtcCntl { fn default() -> Self { Self::new() } }
+ impl Device for RtcCntl {
      fn read(&mut self, off: u32) -> u32 { RtcCntl::read(self, off) }
      fn write(&mut self, off: u32, v: u32) -> WriteEffect { RtcCntl::write(self, off, v); WriteEffect::NONE }
++    fn irq_sources(&self) -> u64 { u64::from(self.ram.read(0x44) & self.ram.read(0x40) != 0) }
      fn clock(&self) -> Option<ClockDomain> { Some(ClockDomain::RtcSlow) }
 -    fn tick(&mut self, ticks: u64) { self.slow_ticks += ticks; self.wdt_tick(ticks); }
 +    fn tick(&mut self, ticks: u64) {
 +        self.wdt_tick(ticks);
 +        self.slow_ticks += ticks;
 +        self.update_alarm();
++        self.touch_tick();
 +        self.check_wakeup();
 +    }
 +    fn has_deadline(&self) -> bool { true }
 +    fn next_deadline(&self) -> Option<u64> {
-+        let alarm = self.alarm_armed.then(|| self.alarm_target().saturating_sub(self.slow_ticks).max(1));
++        let mut alarm = self.alarm_armed.then(|| self.alarm_target().saturating_sub(self.slow_ticks).max(1));
++        if let Some((deadline, _)) = self.touch_pending {
++            let ticks = deadline.saturating_sub(self.slow_ticks).max(1);
++            alarm = Some(alarm.map_or(ticks, |current| current.min(ticks)));
++        }
 +        let conf0 = self.ram.read(self.wdt_base);
 +        if conf0 & (1 << 31) == 0 || (self.sleeping && conf0 & (1 << 9) != 0) { return alarm; }
 +        let timeout = u64::from(self.ram.read(self.wdt_base + 4 + 4 * self.wdt_stage as u32));
@@ -766,7 +906,7 @@ index 7639ba8..27deeb9 100644
 +    }
  }
 diff --git a/esp32s3/src/periph.rs b/esp32s3/src/periph.rs
-index d699cca..0eeed0d 100644
+index d699cca..30a7985 100644
 --- a/esp32s3/src/periph.rs
 +++ b/esp32s3/src/periph.rs
 @@ -17,6 +17,7 @@ pub const SRC_UART0: usize = 27;
@@ -777,7 +917,15 @@ index d699cca..0eeed0d 100644
  pub const SRC_PWM0: usize = 31;
  pub const SRC_PWM1: usize = 32;
  pub const SRC_LEDC: usize = 35;
-@@ -413,6 +414,7 @@ pub struct Peripherals {
+@@ -25,6 +26,7 @@ pub const SRC_AES: usize = 77;
+ pub const SRC_LCD_CAM: usize = 24;
+ pub const SRC_I2S0: usize = 25;
+ pub const SRC_I2S1: usize = 26;
++pub const SRC_RTC_CORE: usize = 39;
+ pub const SRC_RMT: usize = 40;
+ pub const SRC_I2C0: usize = 42;
+ pub const SRC_I2C1: usize = 43;
+@@ -413,6 +415,7 @@ pub struct Peripherals {
      pub i2c: [crate::i2c::I2c; 2],
      pub lcd_cam: LcdCam,
      pub spi2: GpSpi,
@@ -785,7 +933,7 @@ index d699cca..0eeed0d 100644
      pub pcnt: Pcnt,
      pub wifi: WifiMac,
      pub fe: FeIq,
-@@ -446,8 +448,8 @@ device_set! { Peripherals; clock: (clock) CPU_HZ, [(ClockDomain::Systimer, 15),
+@@ -446,14 +449,14 @@ device_set! { Peripherals; clock: (clock) CPU_HZ, [(ClockDomain::Systimer, 15),
      0x2e "UART2" (uart[2]) => [SRC_UART2];
      0x38 "USB_SERIAL_JTAG" (usb) => [SRC_USB_SERIAL_JTAG];
      0x23 "SYSTIMER" (systimer) => [SRC_SYSTIMER_T0, SRC_SYSTIMER_T1, SRC_SYSTIMER_T2];
@@ -796,7 +944,14 @@ index d699cca..0eeed0d 100644
      0x19 "LEDC" optional (ledc) => [SRC_LEDC];
      0x1e "MCPWM0" optional (mcpwm[0]) => [SRC_PWM0];
      0x2c "MCPWM1" optional (mcpwm[1]) => [SRC_PWM1];
-@@ -471,6 +473,7 @@ device_set! { Peripherals; clock: (clock) CPU_HZ, [(ClockDomain::Systimer, 15),
+     0xc2 "INTERRUPT" (intmatrix) => [];
+     0x04 "GPIO" (gpio) => [SRC_GPIO];
+-    0x08 "RTC" (rtc) => [];
++    0x08 "RTC" (rtc) => [SRC_RTC_CORE];
+     0x07 "EFUSE" (efuse) => [];
+     0xc0 "SYSTEM" (system) => [SRC_FROM_CPU0, SRC_FROM_CPU0 + 1, SRC_FROM_CPU0 + 2, SRC_FROM_CPU0 + 3];
+     0xc4 "EXTMEM" (extmem) => [];
+@@ -471,6 +474,7 @@ device_set! { Peripherals; clock: (clock) CPU_HZ, [(ClockDomain::Systimer, 15),
      0x27 "I2C1" (i2c[1]) => [SRC_I2C1];
      0x41 "LCD_CAM" (lcd_cam) => [SRC_LCD_CAM];
      0x24 "SPI2" (spi2) => [SRC_SPI2];
@@ -804,7 +959,7 @@ index d699cca..0eeed0d 100644
      0x17 "PCNT" (pcnt) => [SRC_PCNT];
      0x33 "WIFI_MAC" (wifi) => [SRC_WIFI_MAC];
      0x34 "WIFI_MAC" alias (wifi) delta 0x1000 => [];
-@@ -494,7 +497,11 @@ impl DeviceSet for Peripherals {
+@@ -494,7 +498,11 @@ impl DeviceSet for Peripherals {
          match block {
              0xc2 if !write => self.intmatrix.status = self.source_status(),   // INTERRUPT_*_STATUS reads the live sources
              0x35 => self.wifi.now_cycles = self.clock.cycles(),               // TSF timestamps
@@ -817,7 +972,7 @@ index d699cca..0eeed0d 100644
              0x06 => self.fe.done = self.wifi.link.ap().is_some(),                    // IQ estimation completes once there is an AP
              _ => {}
          }
-@@ -502,12 +509,13 @@ impl DeviceSet for Peripherals {
+@@ -502,12 +510,13 @@ impl DeviceSet for Peripherals {
  }
  
  impl Peripherals {
@@ -832,7 +987,7 @@ index d699cca..0eeed0d 100644
              aes: Aes::new(), rsa: Rsa::new(), sha: Sha::new(), wdev: Wdev::new(), i2c_mst: I2cMst::new(), gdma: Gdma::new(), i2s0: I2s::new(CPU_HZ), i2s1: I2s::new(CPU_HZ), rmt: Rmt::new(CPU_HZ),
              io_mux: RegRam::new(), misc: Misc::new(), fake_reads: std::env::var("ESP_EMU_FAKE_READ").ok().map(|v| v.split(',').filter_map(|e| { let mut p = e.split(':'); let a = u32::from_str_radix(p.next()?.trim_start_matches("0x"), 16).ok()?; let o = u32::from_str_radix(p.next().unwrap_or("0").trim_start_matches("0x"), 16).ok()?; let m = u32::from_str_radix(p.next().unwrap_or("ffffffff").trim_start_matches("0x"), 16).ok()?; Some((a, (o, m))) }).collect()).unwrap_or_default(),
              clock: Self::new_clock(),
-@@ -551,7 +559,10 @@ impl Peripherals {
+@@ -551,7 +560,11 @@ impl Peripherals {
      pub fn write32(&mut self, addr: u32, v: u32) {
          // IDF v5.5.4 components/soc/esp32s3/register/soc/io_mux_reg.h:42-50 (FUN_PD/PU).
          if (0x60009004..=0x600090c4).contains(&addr) {
@@ -840,11 +995,12 @@ index d699cca..0eeed0d 100644
 +            let pin = ((addr - 0x60009004) / 4) as u8;
 +            if pin >= 22 || self.rtc.ram.read(0x484 + u32::from(pin) * 4) & (1 << 19) == 0 {
 +                self.gpio.set_pad(pin, v);
++                self.rtc.analog.set_pulls(pin, v & (1 << 8) != 0, v & (1 << 7) != 0);
 +            }
          }
          if matches!(addr, 0x6001_3004 | 0x6002_7004) && v & (1 << 5) != 0 {
              let bus = usize::from(addr == 0x6002_7004);
-@@ -566,6 +577,13 @@ impl Peripherals {
+@@ -566,6 +579,20 @@ impl Peripherals {
              for (group, bit) in [17, 20].iter().enumerate() { if v & (1 << bit) != 0 { self.mcpwm[group] = Mcpwm::new(160 + group as u32 * 6, 9); } }
          }
          let fx = mmio::write32(self, addr, v);
@@ -852,13 +1008,20 @@ index d699cca..0eeed0d 100644
 +            let pin = ((addr - 0x60008484) / 4) as u8;
 +            if v & (1 << 19) != 0 { self.gpio.set_pulls(pin, v & (1 << 27) != 0, v & (1 << 28) != 0); }
 +            else { self.gpio.set_pad(pin, self.io_mux.read(4 + u32::from(pin) * 4)); }
++            let pad = if v & (1 << 19) != 0 {
++                (v & (1 << 27) != 0, v & (1 << 28) != 0)
++            } else {
++                let digital = self.io_mux.read(4 + u32::from(pin) * 4);
++                (digital & (1 << 8) != 0, digital & (1 << 7) != 0)
++            };
++            self.rtc.analog.set_pulls(pin, pad.0, pad.1);
 +            self.rtc.gpio_input = self.gpio.input as u32;
 +            self.rtc.check_wakeup();
 +        }
          if fx.contains(WriteEffect::SPI_EXEC) { self.spi_exec = true; }
          if fx.contains(WriteEffect::INTMAP) { self.intmatrix_dirty = true; }
          // ESP-IDF v5.5.4 soc/system_reg.h: PERIP_CLK_EN1/RST_EN1 LCD_CAM bit 8.
-@@ -600,7 +618,19 @@ impl Peripherals {
+@@ -600,7 +627,19 @@ impl Peripherals {
      /// Advance device time by `cycles` CPU cycles (every clocked device gets its own clock's
      /// ticks), then route GPIO input edges to the pulse counters.
      pub fn tick(&mut self, cycles: u64) -> bool {
@@ -879,7 +1042,7 @@ index d699cca..0eeed0d 100644
          if !self.gpio.input_changes.is_empty() {
              let before = self.pcnt.irq();
              let gpio = &mut self.gpio;
-@@ -626,7 +656,13 @@ impl Peripherals {
+@@ -626,7 +665,13 @@ impl Peripherals {
  
      /// Cycles until the next systimer or timer-group alarm can fire — the only device events
      /// firmware times precisely. Slightly conservative (one device tick early), never late.

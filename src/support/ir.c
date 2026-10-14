@@ -39,6 +39,7 @@ uint PacketChecksum(u8 *bytes, u32 length)
 #include "stick/eeprom_backend.h"
 #include "stick/board_runtime.h"
 #include "stick/ir_transport.h"
+#include "stick/diode_status.h"
 static u8 stickEepromSessionReady;
 #define IR_TIMER_NOW() StickIrTicks()
 #ifdef PW_STICK_BENCH_CONTROL
@@ -565,6 +566,7 @@ void IrProtocolTick(void)
     }
   }
 #ifdef PW_STICK_S3
+  StickDiodeReceivedPacket();
   if (IR_TIMER_ELAPSED(g_state.irTimerReference) <
       PW_IR_INACTIVITY_TICKS - 0x100) {
     StickPlatformPresentIr();
@@ -1324,6 +1326,9 @@ void IrFinish(void)
     if (!StickEepromHealthy())
       g_work.irc.work.completionAction = IR_ACTION_NONE;
   }
+  StickDiodeEnd(g_state.irResult == IR_RESULT_CONNECTION_ERROR ||
+                g_state.irResult == IR_RESULT_NO_RESPONSE ||
+                g_state.irResult == IR_RESULT_RECEIVE_OVERFLOW);
 #ifdef PW_STICK_BENCH_CONTROL
   StickPortTrace("PW_STICK_AFTER_IR_STOP");
 #endif

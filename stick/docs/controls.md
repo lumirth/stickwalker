@@ -14,3 +14,5 @@ Hold M for about half a second to wake the screen.
 For two-key layouts, M+R window sets how much time you have to press the second button.
 
 Contrast controls the Stick's backlight.
+
+The diode icon appears by the connector when connecting: × means missing, arrows mean reverse the diode, and solid means connected.
