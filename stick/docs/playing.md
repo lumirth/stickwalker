@@ -60,6 +60,6 @@ adjust alignment and distance. Keep both the Stick's transmitter and its
 photodiode pointed at the other device throughout the transfer.
 
 If an older Stickwalker says "cannot connect again" with a walker it has never
-met, [update its firmware](install.md#update-an-existing-stickwalker-installation).
-The October 10 update repairs the missing device ID on first boot and keeps
-your Pokémon and progress. Update both Sticks if both run older firmware.
+met, return its Pokémon to HGSS, then
+[update its firmware and initialize game data](install.md#update-a-pre-release-installation).
+Update both Sticks if both run older firmware.
