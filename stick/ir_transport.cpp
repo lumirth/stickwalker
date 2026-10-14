@@ -42,10 +42,12 @@ OpticalEvent events[kEventSlots];
 volatile uint32_t produced = 0;
 volatile uint32_t event_write = 0;
 volatile uint32_t event_read = 0;
+volatile uint32_t released_events = 0;
 volatile bool running = false;
 volatile bool stop_requested = false;
 volatile bool worker_ready = false;
 volatile bool worker_done = false;
+volatile bool tx_pending = false;
 volatile bool tx_busy = false;
 volatile bool failed = false;
 volatile bool passive_diagnostic = false;
@@ -134,7 +136,7 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
     uint8_t *bins, uint32_t first, uint32_t limit,
     pw_stick::GateHealth &health, uint32_t input_mask,
     bool detect_events, bool wake_events, bool session_idle_abort,
-    uint16_t align_us, TaskHandle_t caller) {
+    uint16_t align_us) {
   uint32_t next = aligned_next(align_us), fraction = 0;
   uint32_t first_low = 0, last_low = 0, last_service_gate = first;
   bool in_packet = false, self_echo = false;
@@ -144,7 +146,8 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
          !__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE);
        ++gate) {
     if (session_idle_abort && !in_packet &&
-        gate - last_service_gate >= kGateHz / 10) break;
+        gate - last_service_gate >= kGateHz / 10 &&
+        !__atomic_load_n(&tx_pending, __ATOMIC_ACQUIRE)) break;
     if (in_packet && gate - first_low >= pw_stick::kMaxBurstGates) {
       // Continuous light can keep a burst open. Reject it at the capture
       // limit so both cores resume their interrupts before the watchdog.
@@ -189,15 +192,10 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
         in_packet = false;
         core1_tick(true);
         if (wake_events && !self_echo) {
-          __atomic_store_n(&produced, gate + 1, __ATOMIC_RELEASE);
-          portENABLE_INTERRUPTS();
-          if (caller) xTaskNotifyGive(caller);
-          // The peer waits for our reply here, leaving time to service the
-          // idle task and watchdog.
-          vTaskDelay(1);
-          portDISABLE_INTERRUPTS();
-          next = aligned_next(align_us);
-          last_service_gate = gate;
+          // End at a complete burst. The worker owns notification and the
+          // storage handoff outside this timing-sensitive producer.
+          ++gate;
+          break;
         }
       }
     }
@@ -263,16 +261,24 @@ void sampler(void *) {
     } else {
       while (!__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE)) {
         gate = run_gate_segment(ring, gate, gate + kSegmentGates, health,
-                                input_mask, true, true, true, 250,
-                                protocol_handle);
+                                input_mask, true, true, true, 250);
         portENABLE_INTERRUPTS();
+        const uint32_t handoff = __atomic_load_n(&event_write, __ATOMIC_ACQUIRE);
 #ifdef PW_STICK_BENCH_CONTROL
         if (trace_enabled() && gate <= kSegmentGates)
           Serial.printf("PW_STICK_SEGMENT_END gate=%lu\n",
                         (unsigned long)gate);
 #endif
         if (protocol_handle) xTaskNotifyGive(protocol_handle);
-        vTaskDelay(1);
+        if (int32_t(__atomic_load_n(&released_events, __ATOMIC_ACQUIRE) -
+                    handoff) < 0) {
+          while (int32_t(__atomic_load_n(&released_events, __ATOMIC_ACQUIRE) -
+                         handoff) < 0 &&
+                 !__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE))
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        } else {
+          vTaskDelay(1);
+        }
         portDISABLE_INTERRUPTS();
       }
     }
@@ -293,6 +299,52 @@ finish:
 
 uint16_t ticks_from_us(int64_t us) {
   return uint16_t((uint64_t(us) * 32768u) / 1000000u);
+}
+
+bool resume_reception(bool transmitting) {
+  if (__atomic_load_n(&passive_diagnostic, __ATOMIC_ACQUIRE)) return true;
+  if (!worker_handle || !__atomic_load_n(&running, __ATOMIC_ACQUIRE) ||
+      __atomic_load_n(&failed, __ATOMIC_ACQUIRE) ||
+      __atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE)) return false;
+  const uint32_t release = __atomic_load_n(
+      transmitting ? &event_write : &event_read, __ATOMIC_ACQUIRE);
+  const uint32_t previous = __atomic_load_n(&released_events, __ATOMIC_ACQUIRE);
+  const bool advances = int32_t(release - previous) > 0;
+  if (!transmitting && !advances) return true;
+  // Observe fresh physical samples through the existing producer publication.
+  // Extra request/ack fences in the gate loop exceed its 65-cycle release
+  // margin with real branch/call costs and can turn light pulses into ones.
+  uint32_t sampled = __atomic_load_n(&produced, __ATOMIC_ACQUIRE);
+  uint32_t released = previous;
+  if (advances) {
+    __atomic_store_n(&released_events, release, __ATOMIC_RELEASE);
+    xTaskNotifyGive(worker_handle);
+    released = release;
+  }
+  const int64_t deadline = esp_timer_get_time() + 10000;
+  while (!__atomic_load_n(&failed, __ATOMIC_ACQUIRE) &&
+         !__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE) &&
+         !__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE) &&
+         esp_timer_get_time() < deadline) {
+    if (transmitting) {
+      const uint32_t newest = __atomic_load_n(&event_write, __ATOMIC_ACQUIRE);
+      if (int32_t(newest - released) > 0) {
+        sampled = __atomic_load_n(&produced, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&released_events, newest, __ATOMIC_RELEASE);
+        xTaskNotifyGive(worker_handle);
+        released = newest;
+      }
+    }
+    if (uint32_t(__atomic_load_n(&produced, __ATOMIC_ACQUIRE) - sampled) >= 32) break;
+    delayMicroseconds(5);
+  }
+  const bool ready =
+      uint32_t(__atomic_load_n(&produced, __ATOMIC_ACQUIRE) - sampled) >= 32 &&
+      !__atomic_load_n(&failed, __ATOMIC_ACQUIRE) &&
+      !__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE) &&
+      !__atomic_load_n(&worker_done, __ATOMIC_ACQUIRE);
+  if (!ready) __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+  return ready;
 }
 
 }  // namespace
@@ -371,6 +423,9 @@ extern "C" void StickIrStart(void) {
 #endif
   __atomic_store_n(&event_write, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&event_read, 0, __ATOMIC_RELEASE);
+  __atomic_store_n(&released_events, 0, __ATOMIC_RELEASE);
+  __atomic_store_n(&tx_pending, false, __ATOMIC_RELEASE);
+  __atomic_store_n(&tx_busy, false, __ATOMIC_RELEASE);
   __atomic_store_n(&stop_requested, false, __ATOMIC_RELEASE);
   __atomic_store_n(&worker_ready, false, __ATOMIC_RELEASE);
   __atomic_store_n(&worker_done, false, __ATOMIC_RELEASE);
@@ -396,11 +451,15 @@ extern "C" void StickIrStart(void) {
     return;
   }
   core1_tick(true);
+  __atomic_store_n(&tx_pending, true, __ATOMIC_RELEASE);
   __atomic_store_n(&running, true, __ATOMIC_RELEASE);
+  resume_reception(true);
+  __atomic_store_n(&tx_pending, false, __ATOMIC_RELEASE);
 }
 
 extern "C" void StickIrStop(void) {
   __atomic_store_n(&stop_requested, true, __ATOMIC_RELEASE);
+  if (worker_handle) xTaskNotifyGive(worker_handle);
   const int64_t deadline = esp_timer_get_time() + 500000;
   while (!worker_parked() && esp_timer_get_time() < deadline)
     delay(1);
@@ -534,7 +593,17 @@ extern "C" void StickIrDelayTicks(u16 ticks) {
   while (u16(StickIrTicks() - start) < ticks) {}
 }
 
+extern "C" void StickIrResumeReception(void) {
+  resume_reception(false);
+}
+
 extern "C" void StickIrSendFrame(const u8 *logical, u8 length) {
+  __atomic_store_n(&tx_pending, true, __ATOMIC_RELEASE);
+  if (!resume_reception(true)) {
+    __atomic_store_n(&tx_pending, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+    return;
+  }
   __atomic_store_n(&tx_busy, true, __ATOMIC_RELEASE);
 #ifdef PW_STICK_BENCH_CONTROL
   const int64_t started_us = esp_timer_get_time();
@@ -553,6 +622,7 @@ extern "C" void StickIrSendFrame(const u8 *logical, u8 length) {
   }
 #endif
   __atomic_store_n(&tx_busy, false, __ATOMIC_RELEASE);
+  __atomic_store_n(&tx_pending, false, __ATOMIC_RELEASE);
 }
 
 extern "C" void StickIrSendByte(u8 logical) {

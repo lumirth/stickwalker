@@ -34,9 +34,12 @@ uint PacketChecksum(u8 *bytes, u32 length)
 }
 
 #ifdef PW_STICK_S3
+#include "application/pw_home.h"
 #include "stick_wire_endian.h"
 #include "stick/eeprom_backend.h"
+#include "stick/board_runtime.h"
 #include "stick/ir_transport.h"
+static u8 stickEepromSessionReady;
 #define IR_TIMER_NOW() StickIrTicks()
 #ifdef PW_STICK_BENCH_CONTROL
 void StickPortTrace(const char *text);
@@ -110,6 +113,12 @@ void SendPacket(u8 payloadLength, u8 command, u8 argument)
   u16 transmitEndTicks;
 #endif
 
+#ifdef PW_STICK_S3
+  if (!StickEepromHealthy()) {
+    g_state.irResult = IR_RESULT_CONNECTION_ERROR;
+    return;
+  }
+#endif
   header = (IrcHeader *)g_work.irc.packet;
   header->command = command;
   header->argument = argument;
@@ -197,7 +206,6 @@ void IrHardwareStart(void)
 {
 #ifdef PW_STICK_S3
   IrConfigure();
-  StickEepromDefer(1);
   StickIrStart();
 #else
   u8 ssr3;
@@ -245,17 +253,20 @@ static u8 StickCompressedPageWellFormed(const u8 *packed, u8 length)
   u8 flags;
   u8 bit;
 
-  if (length < 5 || packed[1] != EEPROM_PAGE_BYTES) return 0;
+  if (length < 5 || packed[1] != EEPROM_PAGE_BYTES)
+    return 0;
   input = 4;
   output = 0;
   while (output < EEPROM_PAGE_BYTES) {
-    if (input >= length) return 0;
+    if (input >= length)
+      return 0;
     flags = packed[input++];
     for (bit = 0; bit < 8 && output < EEPROM_PAGE_BYTES; bit++) {
       if (flags & 0x80) {
         u16 count;
         u16 behind;
-        if (input + 1 >= length) return 0;
+        if (input + 1 >= length)
+          return 0;
         count = (packed[input] >> 4) + 3;
         behind = packed[input + 1] + 1;
         input += 2;
@@ -263,7 +274,8 @@ static u8 StickCompressedPageWellFormed(const u8 *packed, u8 length)
           return 0;
         output += count;
       } else {
-        if (input >= length) return 0;
+        if (input >= length)
+          return 0;
         input++;
         output++;
       }
@@ -287,6 +299,15 @@ typedef char IrcHeaderMatchesPayloadOffset[sizeof(IrcHeader) == IR_HEADER_BYTES
  * and send the one-byte connection probe. */
 void IrBegin(void)
 {
+#ifdef PW_STICK_S3
+  StickPlatformPrepareIr();
+  stickEepromSessionReady = StickEepromSessionBegin();
+  if (!stickEepromSessionReady) {
+    g_state.irResult = IR_RESULT_CONNECTION_ERROR;
+    g_work.irc.work.completionAction = IR_ACTION_NONE;
+    return;
+  }
+#endif
   IrHardwareStart();
   g_state.irResult = IR_RESULT_NONE;
   g_work.irc.work.localHandshakeToken = g_state.randomState;
@@ -408,7 +429,7 @@ void IrProtocolTick(void)
 
   WatchdogService();
 #ifdef PW_STICK_S3
-  if (StickIrFailed()) {
+  if (!StickEepromHealthy() || StickIrFailed()) {
     g_state.irResult = IR_RESULT_CONNECTION_ERROR;
     IrFinish();
     return;
@@ -416,8 +437,8 @@ void IrProtocolTick(void)
   {
     u8 length;
     u16 lastObservationTick;
-    if (StickIrTakeBurst(g_work.irc.packet, PW_IR_RX_WINDOW_CAPACITY,
-                         &length, &lastObservationTick)) {
+    if (StickIrTakeBurst(g_work.irc.packet, PW_IR_RX_WINDOW_CAPACITY, &length,
+                         &lastObservationTick)) {
       u16 index;
       g_state.irReceivedBytes = length;
       for (index = 0; index < length; index++)
@@ -465,6 +486,9 @@ void IrProtocolTick(void)
     while (IR_TIMER_ELAPSED(g_state.irTimerReference) < retryDelayTicks) {
     }
     g_work.irc.work.handshakePhase = IR_PHASE_PROBING;
+#ifdef PW_STICK_S3
+    StickPlatformPresentIr();
+#endif
     IrTransmitByte(IR_CONNECT);
     timerSample = IR_TIMER_NOW();
     /* Timer W bit 14 selects the raster bank. */
@@ -507,7 +531,7 @@ void IrProtocolTick(void)
   if (receivedChecksum != computedChecksum) {
 #ifdef PW_STICK_BENCH_CONTROL
     StickIrTraceChecksumFailure(g_work.irc.packet, g_state.irReceivedBytes,
-                               receivedChecksum, computedChecksum);
+                                receivedChecksum, computedChecksum);
 #endif
     g_state.irReceivedBytes = 0;
     g_work.irc.work.checksumFailureCount++;
@@ -540,6 +564,12 @@ void IrProtocolTick(void)
       goto packetDone;
     }
   }
+#ifdef PW_STICK_S3
+  if (IR_TIMER_ELAPSED(g_state.irTimerReference) <
+      PW_IR_INACTIVITY_TICKS - 0x100) {
+    StickPlatformPresentIr();
+  }
+#endif
   switch (command) {
   case IR_RESPONSE:
     if ((argument == IR_CONSOLE_PARAMETER) ||
@@ -752,8 +782,18 @@ void IrProtocolTick(void)
 #endif
     EepromMirrorWrite(EEPROM_SAVE_PRIMARY, EEPROM_SAVE_BACKUP,
                       (u8 *)&g_state.save, sizeof(SaveData));
+#ifdef PW_STICK_S3
+    {
+      u8 watts[2];
+
+      StickWriteBe16(watts, g_state.save.watts);
+      EepromWrite(PW_EEPROM_MEMBER_ADDRESS(EEPROM_WALK, WalkData, watts), watts,
+                  sizeof(watts));
+    }
+#else
     EepromWrite(PW_EEPROM_MEMBER_ADDRESS(EEPROM_WALK, WalkData, watts),
                 &g_state.save.watts, 2);
+#endif
     g_work.irc.statusB.status = *payloadStatus;
     SendPacket(sizeof(DeviceStatus), IR_CMD_STATUS_REPLY, IR_WALKER_PARAMETER);
     break;
@@ -1276,7 +1316,14 @@ packetDone:
 void IrFinish(void)
 {
 #ifdef PW_STICK_S3
-  StickIrStop();
+  if (stickEepromSessionReady)
+    StickIrStop();
+  stickEepromSessionReady = 0;
+  if (!StickEepromSessionEnd()) {
+    g_state.irResult = IR_RESULT_CONNECTION_ERROR;
+    if (!StickEepromHealthy())
+      g_work.irc.work.completionAction = IR_ACTION_NONE;
+  }
 #ifdef PW_STICK_BENCH_CONTROL
   StickPortTrace("PW_STICK_AFTER_IR_STOP");
 #endif
@@ -1292,9 +1339,12 @@ void IrFinish(void)
 #endif
   IrComplete();
 #ifdef PW_STICK_S3
-  /* WalkStartCommit copies the staged course and updates many records.
-   * Persist its complete result as one atomic EEPROM-image generation. */
-  StickEepromDefer(0);
+  if (!StickEepromHealthy()) {
+    g_state.events.bits.eepromError = 1;
+    g_state.irResult = IR_RESULT_CONNECTION_ERROR;
+    SetView(VIEW_IR_RESULT);
+    g_ui.view.presentation.frame = 0;
+  }
 #ifdef PW_STICK_BENCH_CONTROL
   StickPortTrace("PW_STICK_AFTER_EEPROM_COMMIT");
 #endif

@@ -3,5 +3,5 @@
 // The first expression adds a page to an EEPROM address. The battle subtraction
 // is unsigned and its subtrahend is capped at the current watt balance.
 // See docs/build.md.
-integerOverflow:src/startup/h8_resetprg.c:302
+integerOverflow:src/startup/h8_resetprg.c:371
 integerOverflowCond:src/application/pw_battle.c:443

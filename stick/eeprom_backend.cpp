@@ -1,10 +1,11 @@
 #include "eeprom_backend.h"
 #include "device_identity.h"
 
-#include <FS.h>
-#include <LittleFS.h>
 #include <esp_partition.h>
 #include <esp_mac.h>
+#include <esp_timer.h>
+#include <esp_log.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -15,84 +16,204 @@ namespace {
 
 constexpr unsigned kImageBytes = 65536;
 constexpr unsigned kPageBytes = 128;
-constexpr uint32_t kMagic = 0x50574531;  // PWE1
-constexpr const char *kSlots[2] = {"/pw-a.bin", "/pw-b.bin"};
-constexpr const char *kTemp = "/pw-next.tmp";
-constexpr const char *kJournal = "/pw-journal.bin";
-constexpr uint32_t kJournalMagic = 0x50574a31;  // PWJ1
+constexpr size_t kSectorBytes = 4096;
+constexpr size_t kCheckpointSpan = 0x11000;
+constexpr size_t kJournalOffset = 2 * kCheckpointSpan;
 constexpr size_t kJournalRecordMax = 4096;
-constexpr size_t kJournalLimit = 65536;
+constexpr size_t kJournalLimit = 262144;
+constexpr size_t kRecordAlignment = 256;
+constexpr uint32_t kMagic = 0x53574531;
+constexpr uint32_t kJournalMagic = 0x53574a31;
+constexpr uint32_t kCommitted = 0x54494d43;
+constexpr int64_t kServiceDeadlineUs = 97700;
 
 struct Header {
   uint32_t magic;
   uint32_t generation;
-  uint32_t crc;
-};
-
-struct JournalHeader {
-  uint32_t magic;
+  uint32_t sequence;
   uint32_t length;
   uint32_t crc;
+  uint32_t header_crc;
 };
+static_assert(sizeof(Header) == 24, "EEPROM header layout");
+constexpr size_t kPayloadOffset = sizeof(Header) + sizeof(kCommitted);
+static_assert(kPayloadOffset + kImageBytes <= kCheckpointSpan,
+               "Checkpoint fits its flash slot");
 
+const esp_partition_t *store = nullptr;
 uint8_t image[kImageBytes];
 uint32_t generation = 0;
+uint32_t sequence = 0;
 int active_slot = -1;
 bool mounted = false;
 bool dirty = false;
 bool deferred = false;
+bool session = false;
+bool failed = false;
+bool timing_failed = false;
 unsigned batch_depth = 0;
 uint8_t journal_record[kJournalRecordMax];
 size_t journal_record_length = 0;
 size_t journal_size = 0;
 bool journal_overflow = false;
-bool journal_poisoned = false;
+uint32_t append_count = 0;
+int64_t max_append_us = 0;
+uint32_t deadline_misses = 0;
 
-uint32_t crc32(const uint8_t *bytes, size_t count) {
-  uint32_t crc = 0xffffffff;
+uint32_t crc_update(uint32_t crc, const uint8_t *bytes, size_t count) {
   for (size_t i = 0; i < count; ++i) {
     crc ^= bytes[i];
     for (unsigned bit = 0; bit < 8; ++bit)
       crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
   }
-  return ~crc;
+  return crc;
 }
-
-bool partition_blank() {
-  const esp_partition_t *part = esp_partition_find_first(
-      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
-  if (!part) return false;
+uint32_t crc32(const void *bytes, size_t count) {
+  return ~crc_update(0xffffffff, static_cast<const uint8_t *>(bytes), count);
+}
+bool valid_header(const Header &header, uint32_t magic) {
+  return header.magic == magic && header.generation && header.sequence &&
+         header.header_crc == crc32(&header, offsetof(Header, header_crc));
+}
+Header make_header(uint32_t magic, uint32_t version, uint32_t serial,
+                   const uint8_t *bytes, size_t length) {
+  Header header = {magic, version, serial, uint32_t(length),
+                   crc32(bytes, length), 0};
+  header.header_crc = crc32(&header, offsetof(Header, header_crc));
+  return header;
+}
+size_t record_span(size_t length) {
+  return (kPayloadOffset + length + kRecordAlignment - 1) &
+         ~(kRecordAlignment - 1);
+}
+bool flash_read(size_t offset, void *bytes, size_t length) {
+  return esp_partition_read(store, offset, bytes, length) == ESP_OK;
+}
+bool region_blank(size_t offset, size_t length) {
   uint8_t block[256];
-  for (size_t offset = 0; offset < part->size; offset += sizeof(block)) {
-    const size_t count =
-        part->size - offset < sizeof(block) ? part->size - offset : sizeof(block);
-    if (esp_partition_read(part, offset, block, count) != ESP_OK) return false;
-    for (size_t i = 0; i < count; ++i)
-      if (block[i] != 0xff) return false;
+  while (length) {
+    const size_t count = length < sizeof(block) ? length : sizeof(block);
+    if (!flash_read(offset, block, count)) return false;
+    for (size_t i = 0; i < count; ++i) if (block[i] != 0xff) return false;
+    offset += count;
+    length -= count;
   }
   return true;
 }
-
-bool read_slot(unsigned slot, uint32_t &version) {
-  fs::File file = LittleFS.open(kSlots[slot], "r");
-  if (!file || file.size() != kImageBytes + sizeof(Header)) return false;
-  Header header;
-  if (file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) !=
-      sizeof(header))
-    return false;
-  if (header.magic != kMagic ||
-      file.read(image, sizeof(image)) != sizeof(image) ||
-      crc32(image, sizeof(image)) != header.crc)
-    return false;
-  version = header.generation;
+bool clear_region(size_t offset, size_t length) {
+  if (session || offset % kSectorBytes || length % kSectorBytes) return false;
+  for (size_t end = offset + length; offset < end; offset += kSectorBytes) {
+    if (!region_blank(offset, kSectorBytes) &&
+        esp_partition_erase_range(store, offset, kSectorBytes) != ESP_OK)
+      return false;
+    if (!region_blank(offset, kSectorBytes)) return false;
+  }
   return true;
 }
-
+bool clear_journal() {
+  if (!clear_region(kJournalOffset, kJournalLimit)) return false;
+  journal_size = 0;
+  return true;
+}
+bool write_committed(size_t offset, const Header &header, const uint8_t *bytes) {
+  // The SDK waits for NOR programming to complete. Header and body are checked
+  // independently before the final publication word; replies never erase flash.
+  if (esp_partition_write(store, offset + kPayloadOffset, bytes,
+                           header.length) != ESP_OK ||
+      esp_partition_write(store, offset, &header, sizeof(header)) != ESP_OK)
+    return false;
+  Header observed;
+  if (!flash_read(offset, &observed, sizeof(observed)) ||
+      memcmp(&observed, &header, sizeof(header))) return false;
+  uint8_t block[256];
+  for (size_t position = 0; position < header.length;) {
+    const size_t count = header.length - position < sizeof(block) ?
+                         header.length - position : sizeof(block);
+    if (!flash_read(offset + kPayloadOffset + position, block, count) ||
+        memcmp(block, bytes + position, count)) return false;
+    position += count;
+  }
+  uint32_t marker = kCommitted;
+  return esp_partition_write(store, offset + sizeof(Header), &marker,
+                               sizeof(marker)) == ESP_OK &&
+         flash_read(offset + sizeof(Header), &marker, sizeof(marker)) &&
+         marker == kCommitted;
+}
+bool read_payload(size_t offset, uint32_t expected_crc, bool load) {
+  uint8_t block[256];
+  uint32_t crc = 0xffffffff;
+  for (size_t position = 0; position < sizeof(image); position += sizeof(block)) {
+    if (!flash_read(offset + kPayloadOffset + position, block, sizeof(block)))
+      return false;
+    crc = crc_update(crc, block, sizeof(block));
+    if (load) memcpy(image + position, block, sizeof(block));
+  }
+  return ~crc == expected_crc;
+}
+bool read_checkpoint(unsigned slot, Header &header, bool load) {
+  const size_t offset = size_t(slot) * kCheckpointSpan;
+  uint32_t marker;
+  return flash_read(offset, &header, sizeof(header)) &&
+         flash_read(offset + sizeof(Header), &marker, sizeof(marker)) &&
+         marker == kCommitted && valid_header(header, kMagic) &&
+         header.length == sizeof(image) && read_payload(offset, header.crc, load);
+}
 bool range_ok(uint16_t address, uint16_t length) {
   return uint32_t(address) + length <= kImageBytes;
 }
-
-void storage_error() { StickEepromSetError(1); }
+void storage_error() {
+  if (!failed)
+    esp_log_write(ESP_LOG_ERROR, "pw-eeprom", "PW_EEPROM_FAILURE restart_required=1\n");
+  failed = true;
+  StickEepromSetError(1);
+}
+bool apply_patches(size_t length) {
+  size_t offset = 0;
+  while (offset < length) {
+    if (length - offset < 4) return false;
+    const unsigned address = unsigned(journal_record[offset]) |
+                             (unsigned(journal_record[offset + 1]) << 8);
+    const unsigned count = unsigned(journal_record[offset + 2]) |
+                           (unsigned(journal_record[offset + 3]) << 8);
+    offset += 4;
+    if (address + count > kImageBytes || length - offset < count) return false;
+    memcpy(image + address, journal_record + offset, count);
+    offset += count;
+  }
+  return true;
+}
+bool replay_journal() {
+  uint32_t previous = 0;
+  uint32_t journal_generation = 0;
+  while (journal_size < kJournalLimit) {
+    const size_t offset = kJournalOffset + journal_size;
+    Header header;
+    uint32_t marker;
+    if (!flash_read(offset, &header, sizeof(header)) ||
+        !flash_read(offset + sizeof(Header), &marker, sizeof(marker))) return false;
+    if (marker != kCommitted) break;
+    if (!valid_header(header, kJournalMagic) || !header.length ||
+        header.length > sizeof(journal_record) ||
+        record_span(header.length) > kJournalLimit - journal_size) return false;
+    if (previous && (previous == UINT32_MAX || header.sequence != previous + 1 ||
+                     header.generation != journal_generation)) return false;
+    previous = header.sequence;
+    journal_generation = header.generation;
+    if (header.generation > generation ||
+        !flash_read(offset + kPayloadOffset, journal_record, header.length) ||
+        crc32(journal_record, header.length) != header.crc) return false;
+    journal_size += record_span(header.length);
+    if (header.sequence <= sequence) {
+      if (header.generation >= generation) return false;
+      continue;
+    }
+    if (header.generation != generation || sequence == UINT32_MAX ||
+        header.sequence != sequence + 1 || !apply_patches(header.length)) return false;
+    sequence = header.sequence;
+    dirty = true;
+  }
+  return true;
+}
 
 bool append_patch(uint16_t address, uint16_t length) {
   if (journal_record_length + 4u + length > sizeof(journal_record)) {
@@ -109,164 +230,123 @@ bool append_patch(uint16_t address, uint16_t length) {
   return true;
 }
 
-bool append_journal() {
-  if (journal_poisoned || journal_overflow ||
-      journal_size + sizeof(JournalHeader) + journal_record_length >
-          kJournalLimit)
-    return StickEepromCommit();
+bool append_journal_record() {
+  if (failed || sequence == UINT32_MAX) return false;
+  if (journal_overflow || journal_size + record_span(journal_record_length) >
+                              kJournalLimit)
+    return !session && StickEepromCommit();
   if (!journal_record_length) return true;
-  const JournalHeader header = {kJournalMagic,
-                                uint32_t(journal_record_length),
-                                crc32(journal_record, journal_record_length)};
-  fs::File file = LittleFS.open(kJournal, "a");
-  if (!file) return false;
-  const size_t before = file.size();
-  const bool written =
-      file.write(reinterpret_cast<const uint8_t *>(&header),
-                 sizeof(header)) == sizeof(header) &&
-      file.write(journal_record, journal_record_length) ==
-          journal_record_length;
-  file.flush();
-  file.close();
-  if (!written) { journal_poisoned = true; return false; }
-  // Read the completed record back before reporting a source EEPROM write.
-  fs::File verify = LittleFS.open(kJournal, "r");
-  JournalHeader observed;
-  const bool valid_header = verify &&
-      verify.size() == before + sizeof(header) + journal_record_length &&
-      verify.seek(before) &&
-      verify.read(reinterpret_cast<uint8_t *>(&observed),
-                  sizeof(observed)) == sizeof(observed) &&
-      observed.magic == header.magic && observed.length == header.length &&
-      observed.crc == header.crc;
-  uint8_t block[256];
-  uint32_t check = 0xffffffff;
-  size_t remaining = journal_record_length;
-  while (valid_header && remaining) {
-    const size_t count = remaining < sizeof(block) ? remaining : sizeof(block);
-    if (verify.read(block, count) != count) break;
-    for (size_t i = 0; i < count; ++i) {
-      check ^= block[i];
-      for (unsigned bit = 0; bit < 8; ++bit)
-        check = (check >> 1) ^ (0xedb88320u & (0u - (check & 1u)));
-    }
-    remaining -= count;
-  }
-  verify.close();
-  if (!valid_header || remaining || ~check != header.crc) {
-    journal_poisoned = true;
-    return false;
-  }
-  journal_size = before + sizeof(header) + journal_record_length;
+  const Header header = make_header(kJournalMagic, generation, sequence + 1,
+                                    journal_record, journal_record_length);
+  const size_t span = record_span(header.length);
+  if (journal_size + span > kJournalLimit) return !session && StickEepromCommit();
+  const size_t offset = kJournalOffset + journal_size;
+  if (!region_blank(offset, span) ||
+      !write_committed(offset, header, journal_record)) return false;
+  sequence = header.sequence;
+  journal_size += span;
   journal_record_length = 0;
   return true;
 }
 
-bool replay_journal() {
-  if (!LittleFS.exists(kJournal)) return true;
-  fs::File file = LittleFS.open(kJournal, "r");
-  if (!file) return false;
-  journal_size = file.size();
-  dirty = true;
-  while (file.position() < journal_size) {
-    JournalHeader header;
-    const size_t remaining = journal_size - file.position();
-    if (remaining < sizeof(header)) break;  // Interrupted append.
-    if (file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) !=
-        sizeof(header)) return false;
-    if (header.magic != kJournalMagic ||
-        header.length > sizeof(journal_record)) return false;
-    if (journal_size - file.position() < header.length) break;
-    if (file.read(journal_record, header.length) != header.length ||
-        crc32(journal_record, header.length) != header.crc) return false;
-    size_t offset = 0;
-    while (offset < header.length) {
-      if (header.length - offset < 4) return false;
-      const unsigned address = unsigned(journal_record[offset]) |
-                               (unsigned(journal_record[offset + 1]) << 8);
-      const unsigned length = unsigned(journal_record[offset + 2]) |
-                              (unsigned(journal_record[offset + 3]) << 8);
-      offset += 4;
-      if (address + length > kImageBytes ||
-          header.length - offset < length) return false;
-      memcpy(image + address, journal_record + offset, length);
-      offset += length;
+bool append_journal() {
+  if (!journal_record_length && !journal_overflow) return !failed;
+  const int64_t start = esp_timer_get_time();
+  const bool result = append_journal_record();
+  if (session) {
+    const int64_t elapsed = esp_timer_get_time() - start;
+    ++append_count;
+    if (elapsed > max_append_us) max_append_us = elapsed;
+    if (elapsed >= kServiceDeadlineUs) {
+      ++deadline_misses;
+      timing_failed = true;
+      StickEepromSetError(1);
     }
-    dirty = true;
   }
-  file.close();
-  // Checkpoint the replayed journal and remove its incomplete tail before
-  // accepting new writes.
-  return StickEepromCommit();
+  return result;
 }
 
 bool write_span(uint16_t address, const void *source, uint16_t length) {
-  if (!mounted || !source || !range_ok(address, length)) {
+  if (!mounted || failed || !source || !range_ok(address, length)) {
     storage_error();
     return false;
   }
-  if (memcmp(image + address, source, length)) {
-    memcpy(image + address, source, length);
-    dirty = true;
-    if (!deferred) {
-      if (!batch_depth) journal_record_length = 0;
-      append_patch(address, length);
+  if (!memcmp(image + address, source, length)) return true;
+  memcpy(image + address, source, length);
+  dirty = true;
+  if (!deferred) {
+    if (!batch_depth) {
+      journal_record_length = 0;
+      journal_overflow = false;
     }
-  } else {
-    return true;
-  }
-  if (!deferred && !batch_depth && !append_journal()) {
-    storage_error();
-    return false;
+    append_patch(address, length);
+    if (!batch_depth && !append_journal()) {
+      storage_error();
+      return false;
+    }
   }
   return true;
 }
 
-}  // namespace
+bool load_image() {
+  Header first = {}, second = {};
+  const bool a = read_checkpoint(0, first, false);
+  const bool b = read_checkpoint(1, second, false);
+  uint32_t first_marker, second_marker;
+  if (!flash_read(sizeof(Header), &first_marker, sizeof(first_marker)) ||
+      !flash_read(kCheckpointSpan + sizeof(Header), &second_marker,
+                   sizeof(second_marker)) ||
+      (first_marker == kCommitted && !a) ||
+      (second_marker == kCommitted && !b)) return false;
+  if (a || b) {
+    if (a && b &&
+        ((first.generation == second.generation &&
+          memcmp(&first, &second, sizeof(first))) ||
+         (first.generation > second.generation && first.sequence <= second.sequence) ||
+         (second.generation > first.generation && second.sequence <= first.sequence)))
+      return false;
+    active_slot = a && (!b || first.generation > second.generation) ? 0 : 1;
+    Header selected;
+    if (!read_checkpoint(active_slot, selected, true)) return false;
+    generation = selected.generation;
+    sequence = selected.sequence;
+    return replay_journal();
+  }
+  // An unsupported or damaged store needs explicit initialization. Only blank
+  // flash creates a new walker; no save readers or conversions are retained.
+  if (!region_blank(0, store->size)) return false;
+  memset(image, 0xff, sizeof(image));
+  dirty = true;
+  return true;
+}
+
+}
 
 extern "C" int StickEepromMount(void) {
-  if (mounted) return 1;
-  if (!LittleFS.begin(false)) {
-    if (!partition_blank() || !LittleFS.begin(true)) return 0;
-  }
-  uint32_t first_version = 0, second_version = 0;
-  const bool first = read_slot(0, first_version);
-  const bool second = read_slot(1, second_version);
-  if (first && (!second || int32_t(first_version - second_version) > 0)) {
-    read_slot(0, generation);
-    active_slot = 0;
-  } else if (second) {
-    read_slot(1, generation);
-    active_slot = 1;
-  } else {
-    // Existing save files with invalid headers or checksums need recovery.
-    // Initialize a fresh image when all save files are absent.
-    if (LittleFS.exists(kSlots[0]) || LittleFS.exists(kSlots[1]) ||
-        LittleFS.exists(kJournal)) return 0;
-    memset(image, 0xff, sizeof(image));
-    dirty = true;
-  }
-  mounted = true;
-  if (dirty && !StickEepromCommit()) return 0;
-  if (!replay_journal()) return 0;
+  if (mounted) return !failed;
+  if (failed) return 0;
+  store = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                   ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+  if (!store || store->size < kJournalOffset + kJournalLimit) return 0;
+  if (!load_image()) { storage_error(); return 0; }
   uint8_t factory_mac[6];
   if (esp_efuse_mac_get_default(factory_mac) != ESP_OK) return 0;
-  if (StickIdentityRepair(image, factory_mac)) {
-    dirty = true;
-    // Save all repaired identity copies in one checkpoint before boot. On
-    // failure, the previous slot remains available for recovery.
-    if (!StickEepromCommit()) return 0;
+  dirty |= StickIdentityRepair(image, factory_mac) != 0;
+  mounted = true;
+  const bool existing_checkpoint = !dirty;
+  if (!StickEepromCommit() || (existing_checkpoint && !clear_journal())) {
+    storage_error(); mounted = false; return 0;
   }
   return 1;
 }
 
 #ifdef PW_STICK_BENCH_CONTROL
 extern "C" const unsigned char *StickEepromSnapshot(void) {
-  return mounted && !deferred ? image : nullptr;
+  return mounted && !deferred && !session && !failed ? image : nullptr;
 }
 
 extern "C" int StickEepromBenchErase(void) {
-  if (!mounted || deferred) return 0;
+  if (!mounted || deferred || session || failed) return 0;
   memset(image, 0xff, sizeof(image));
   dirty = true;
   return StickEepromCommit();
@@ -274,9 +354,38 @@ extern "C" int StickEepromBenchErase(void) {
 #endif
 
 extern "C" void StickEepromDefer(int enabled) {
+  if (session || batch_depth) { storage_error(); return; }
   deferred = enabled != 0;
-  if (!deferred && !batch_depth && dirty && !StickEepromCommit())
+  if (!deferred && !StickEepromCommit()) storage_error();
+}
+
+extern "C" int StickEepromSessionBegin(void) {
+  if (!mounted || failed || session || deferred || batch_depth ||
+      !StickEepromCommit()) {
     storage_error();
+    return 0;
+  }
+  session = true;
+  timing_failed = false;
+  append_count = 0;
+  max_append_us = 0;
+  deadline_misses = 0;
+  return 1;
+}
+
+extern "C" int StickEepromSessionEnd(void) {
+  session = false;
+  esp_log_write(failed || timing_failed ? ESP_LOG_ERROR : ESP_LOG_INFO,
+                "pw-eeprom",
+                "PW_EEPROM_SESSION appends=%lu max_us=%lld deadline_misses=%lu failed=%d\n",
+                static_cast<unsigned long>(append_count),
+                static_cast<long long>(max_append_us),
+                static_cast<unsigned long>(deadline_misses), int(failed));
+  return !failed && !timing_failed;
+}
+
+extern "C" int StickEepromHealthy(void) {
+  return mounted && !failed;
 }
 
 extern "C" void StickEepromBatchBegin(void) {
@@ -287,67 +396,58 @@ extern "C" void StickEepromBatchBegin(void) {
 extern "C" int StickEepromBatchEnd(void) {
   if (!batch_depth) { storage_error(); return 0; }
   --batch_depth;
-  if (!batch_depth && !deferred && !append_journal()) {
+  if (failed || (!batch_depth && !deferred && !append_journal())) {
     storage_error();
     return 0;
   }
   return 1;
 }
 
-extern "C" int StickEepromCommit(void) {
-  if (!mounted) return 0;
+static int checkpoint_image() {
+  if (!mounted || failed || session) return 0;
   if (!dirty) return 1;
+  if (generation == UINT32_MAX || sequence == UINT32_MAX) return 0;
   const int next = active_slot == 0 ? 1 : 0;
-  const Header header = {kMagic, generation + 1, crc32(image, sizeof(image))};
-  LittleFS.remove(kTemp);
-  fs::File file = LittleFS.open(kTemp, "w");
-  if (!file) return 0;
-  const bool written =
-      file.write(reinterpret_cast<const uint8_t *>(&header),
-                 sizeof(header)) == sizeof(header) &&
-      file.write(image, sizeof(image)) == sizeof(image);
-  file.flush();
-  file.close();
-  if (!written) return 0;
-  // Validate the temporary image independently before replacing a slot.
-  fs::File verify = LittleFS.open(kTemp, "r");
-  Header observed;
-  bool valid = verify &&
-      verify.read(reinterpret_cast<uint8_t *>(&observed), sizeof(observed)) ==
-          sizeof(observed) &&
-      observed.magic == kMagic && observed.generation == header.generation &&
-      observed.crc == header.crc;
-  uint32_t check = 0xffffffff;
-  uint8_t block[256];
-  size_t remaining = kImageBytes;
-  while (valid && remaining) {
-    const size_t count = remaining < sizeof(block) ? remaining : sizeof(block);
-    if (verify.read(block, count) != count) { valid = false; break; }
-    for (size_t i = 0; i < count; ++i) {
-      check ^= block[i];
-      for (unsigned bit = 0; bit < 8; ++bit)
-        check = (check >> 1) ^ (0xedb88320u & (0u - (check & 1u)));
-    }
-    remaining -= count;
+  const size_t offset = size_t(next) * kCheckpointSpan;
+  const Header header = make_header(kMagic, generation + 1, sequence + 1,
+                                    image, sizeof(image));
+  // Retire the inactive slot before erasing it. A reset during replacement
+  // leaves the active checkpoint usable instead of a published torn body.
+  uint32_t marker;
+  if (!flash_read(offset + sizeof(Header), &marker, sizeof(marker))) return 0;
+  if (marker == kCommitted) {
+    marker = 0;
+    if (esp_partition_write(store, offset + sizeof(Header), &marker,
+                             sizeof(marker)) != ESP_OK ||
+        !flash_read(offset + sizeof(Header), &marker, sizeof(marker)) || marker)
+      return 0;
   }
-  verify.close();
-  if (!valid || ~check != header.crc) return 0;
-  LittleFS.remove(kSlots[next]);
-  if (!LittleFS.rename(kTemp, kSlots[next])) return 0;
+  if (!clear_region(offset, kCheckpointSpan) ||
+      !write_committed(offset, header, image)) return 0;
+  Header observed;
+  if (!read_checkpoint(next, observed, false) ||
+      memcmp(&observed, &header, sizeof(header))) return 0;
+  // Publication precedes erasure. A reset here replays/skips old records using
+  // the published generation/sequence, then clears every dirty journal sector.
   active_slot = next;
   generation = header.generation;
+  sequence = header.sequence;
+  if (!clear_journal()) return 0;
   dirty = false;
-  if (LittleFS.exists(kJournal) && !LittleFS.remove(kJournal)) return 0;
-  journal_size = 0;
-  journal_poisoned = false;
   journal_overflow = false;
   journal_record_length = 0;
   return 1;
 }
 
+extern "C" int StickEepromCommit(void) {
+  if (checkpoint_image()) return 1;
+  storage_error();
+  return 0;
+}
+
 extern "C" void EepromRead(uint16_t address, void *destination,
                             uint16_t length) {
-  StickEepromSetError(0);
+  StickEepromSetError(failed || timing_failed);
   if (!mounted || !destination || !range_ok(address, length)) {
     storage_error();
     if (destination) memset(destination, 0xff, length);
@@ -357,7 +457,7 @@ extern "C" void EepromRead(uint16_t address, void *destination,
 }
 
 extern "C" void EepromWrite(uint16_t address, void *source, uint16_t length) {
-  StickEepromSetError(0);
+  StickEepromSetError(failed || timing_failed);
   write_span(address, source, length);
 }
 
@@ -379,23 +479,20 @@ extern "C" void EepromFillPage(uint16_t address, uint8_t value) {
 }
 
 extern "C" void EepromFill(uint16_t address, uint16_t count, uint8_t value) {
-  StickEepromSetError(0);
-  if (!mounted || !range_ok(address, count)) {
+  StickEepromSetError(failed || timing_failed);
+  if (!mounted || failed || !range_ok(address, count)) {
     storage_error();
     return;
   }
-  bool changed = false;
-  for (unsigned i = 0; i < count; ++i) {
-    changed |= image[address + i] != value;
-    image[address + i] = value;
+  uint8_t bytes[kPageBytes];
+  memset(bytes, value, sizeof(bytes));
+  StickEepromBatchBegin();
+  for (unsigned offset = 0; offset < count; offset += sizeof(bytes)) {
+    const uint16_t length = count - offset < sizeof(bytes)
+                                ? count - offset : sizeof(bytes);
+    if (!write_span(address + offset, bytes, length)) break;
   }
-  dirty |= changed;
-  if (changed && !deferred) {
-    if (!batch_depth) journal_record_length = 0;
-    append_patch(address, count);
-  }
-  if (changed && !deferred && !batch_depth && !append_journal())
-    storage_error();
+  StickEepromBatchEnd();
 }
 
 extern "C" void EepromWritePage(uint16_t address, uint8_t *source) {

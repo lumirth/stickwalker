@@ -2,12 +2,17 @@
 #define PW_STICK_SOUND_BRIDGE_H
 
 #include "types.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void StickSoundInit(void);
+int StickSoundPrepare(void);
+int StickSoundIsReady(void);
+void StickSoundSuspend(void);
+uint64_t StickSoundNextDeadline(void);
 void StickSoundEnable(void);
 void StickSoundDisable(void);
 void StickSoundPeriod(u16 compare, u8 outputMode);
@@ -15,8 +20,6 @@ void StickSoundSilencePeriod(u16 compare);
 void StickSoundMute(void);
 void StickSoundQuiesceForIr(void);
 void StickSoundService(void);
-/* Includes the amplifier warm hold; the I2S clock must run until this returns
- * false. */
 int StickSoundIsBusy(void);
 int StickSoundTestTone(void);
 #ifdef PW_STICK_BENCH_CONTROL

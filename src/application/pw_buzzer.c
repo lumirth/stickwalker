@@ -6,6 +6,7 @@
 #include "application/pw_builtin.h"
 #include "application/pw_eeprom_m95512.h"
 #ifdef PW_STICK_S3
+#include "stick/native_runtime.h"
 #include "stick/sound_bridge.h"
 #endif
 
@@ -54,6 +55,8 @@ void BeepInit(void)
   g_ui.durationDivisor = 0x78;
   g_ui.outputMode = 0;
 #ifdef PW_STICK_S3
+  StickNativeTimerWDisable();
+  StickNativeTimerWSetCompare(0);
   StickSoundInit();
 #else
   IO.PCR8 |= 0x0c;
@@ -92,7 +95,9 @@ void BeepLoadScore(u8 sequenceId)
   if (g_ui.outputMode == 0) {
     return;
   }
-#ifndef PW_STICK_S3
+#ifdef PW_STICK_S3
+  StickNativeTimerWInterruptEnable(0);
+#else
   TW.TIERW.BIT.IMIEA = 0;
 #endif
   id = sequenceId;
@@ -126,7 +131,9 @@ void BeepLoadScore(u8 sequenceId)
       g_ui.separatorPeriodsRemaining = 0;
     }
   }
-#ifndef PW_STICK_S3
+#ifdef PW_STICK_S3
+  StickNativeTimerWInterruptEnable(1);
+#else
   TW.TIERW.BIT.IMIEA = 1;
 #endif
 }
@@ -143,6 +150,7 @@ void BeepSelectScore(const Note *score)
 void BeepEnableTimer(void)
 {
 #ifdef PW_STICK_S3
+  StickNativeTimerWEnable();
   StickSoundEnable();
 #else
   CKSTPR2.BYTE |= 0x40;
@@ -161,6 +169,7 @@ void BeepEnableTimer(void)
 void BeepDisableTimer(void)
 {
 #ifdef PW_STICK_S3
+  StickNativeTimerWDisable();
   StickSoundDisable();
 #else
   TW.TIERW.BIT.IMIEA = 0;
@@ -190,6 +199,7 @@ void BeepSetOutputMode(u8 mode)
 void BeepSetPeriod(u8 compareValue)
 {
 #ifdef PW_STICK_S3
+  StickNativeTimerWSetCompare(compareValue);
   StickSoundPeriod(compareValue, g_ui.outputMode);
 #else
   switch (g_ui.outputMode) {
@@ -245,6 +255,7 @@ void BeepAdvance(void)
     goto playNote;
   } else {
 #ifdef PW_STICK_S3
+    StickNativeTimerWSetCompare(BEEPER_SEPARATOR_COMPARE);
     StickSoundSilencePeriod(BEEPER_SEPARATOR_COMPARE);
 #else
     TW.GRA = BEEPER_SEPARATOR_COMPARE;

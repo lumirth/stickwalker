@@ -14,8 +14,8 @@ If a Pokémon from this save is out on another walker, return it first.
 1. Start the game and choose **Connect to Pokéwalker** from the main menu, then
    **Go for a Stroll**.
 2. Choose a Pokémon from your PC Boxes and a route.
-3. On the Stick, choose **Connect**. With the default buttons, M moves left,
-   R moves right, and M+R together confirms.
+3. On the Stick, choose **Connect**. With the default buttons, L moves left,
+   R moves right, and M confirms.
 4. Aim the Stick's infrared transmitter and photodiode at the Game Card's
    infrared window. Hold them still until both sides finish.
 
@@ -60,6 +60,6 @@ adjust alignment and distance. Keep both the Stick's transmitter and its
 photodiode pointed at the other device throughout the transfer.
 
 If an older Stickwalker says "cannot connect again" with a walker it has never
-met, [update its firmware](install.md#update-an-existing-stickwalker-installation).
-The October 10 update repairs the missing device ID on first boot and keeps
-your Pokémon and progress. Update both Sticks if both run older firmware.
+met, return its Pokémon to HGSS, then
+[update its firmware and initialize game data](install.md#update-a-pre-release-installation).
+Update both Sticks if both run older firmware.

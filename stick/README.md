@@ -1,6 +1,6 @@
 # Developing Stickwalker
 
-The [build guide](docs/build.md) covers toolchain setup, host tests and compiling
+The [build guide](docs/build.md) covers toolchain setup, firmware checks and compiling
 firmware. For installing a release on your Stick, use the
 [installation guide](docs/install.md).
 
@@ -11,16 +11,19 @@ and the infrared protocol. The adapters here connect that application to M5Stick
 
 | Change | Start here |
 | --- | --- |
-| Game scheduling and the Settings overlay | [board_runtime.cpp](board_runtime.cpp) |
+| Native timing and foreground scheduling | [native_runtime.cpp](native_runtime.cpp), [foreground_bridge.c](foreground_bridge.c) |
+| Board coordination and Settings overlay | [board_runtime.cpp](board_runtime.cpp), [board_settings.cpp](board_settings.cpp) |
 | Button acquisition and native control mapping | [input_bridge.cpp](input_bridge.cpp), [controls.cpp](controls.cpp) |
 | Panel, palette, rotation and backlight | [display_panel.cpp](display_panel.cpp), [display_bus.cpp](display_bus.cpp) |
 | Optical capture, receive decoding and transmission | [ir_transport.cpp](ir_transport.cpp), [ir_rx_core.cpp](ir_rx_core.cpp), [ir_gate.h](ir_gate.h) |
 | Motion samples and sensor scaling | [motion_sample.cpp](motion_sample.cpp), [accel_bridge.cpp](accel_bridge.cpp) |
-| Audio scheduling and codec supply | [sound_bridge.cpp](sound_bridge.cpp) |
+| Physical audio readiness and codec supply | [sound_bridge.cpp](sound_bridge.cpp) |
 | Game-data persistence and recovery | [eeprom_backend.cpp](eeprom_backend.cpp), [device_identity.c](device_identity.c) |
 | Board supplies, PMIC setup and processor sleep | [board_hal.cpp](board_hal.cpp), [power_sleep.cpp](power_sleep.cpp) |
 
 The [player guide](docs/playing.md) describes the complete walk and transfer flow.
+The [native platform guide](docs/native-platform.md) describes ownership,
+readiness boundaries, input cancellation and storage recovery.
 The [motion guide](docs/motion.md) explains the sensor adaptation.
 The [source guide](../docs/source.md) follows the native application across
 modules. [CONTEXT.md](../CONTEXT.md) defines motion, display and power terms.
@@ -57,6 +60,7 @@ boot. Repair changes the identity fields and their checksums; the game data
 stays intact. `CommitStagedWalk` also copies the current ID into the trainer
 record, including when boot finishes a transfer interrupted on older firmware.
 
-The identity and peer tests cover save preservation, interrupted checkpoints,
-journal replay, repeat encounters and day rollover. They run with
-`uv run python stick/check.py`.
+The production workflows exercise journal recovery, stale-checkpoint records,
+optical status/page exchange and persistence across reset. Run them with
+`uv run python stick/check.py`. Repeat encounters, day rollover and complete
+retail transfers still need the device checks in the release guide.

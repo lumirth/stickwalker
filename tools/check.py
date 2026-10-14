@@ -1,4 +1,4 @@
-"""Check source formatting, target-aware static analysis, and utility tests."""
+"""Check source formatting and target-aware static analysis."""
 
 from __future__ import annotations
 
@@ -64,8 +64,7 @@ def main() -> int:
             ],
             check=True,
         )
-        subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], check=True)
-        print("Formatting, static analysis, and utility tests passed.")
+        print("Formatting and static analysis passed. Run stick/check.py for firmware E2E checks.")
     except (InputError, OSError, subprocess.SubprocessError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1

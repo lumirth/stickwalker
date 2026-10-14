@@ -19,21 +19,21 @@ constexpr unsigned kNativeWidth = 96;
 constexpr unsigned kNativeHeight = 64;
 constexpr unsigned kScale = 2;
 constexpr unsigned kPanelWidth = kNativeWidth * kScale;
-constexpr unsigned kPanelHeight = kNativeHeight * kScale;
+constexpr unsigned kTransferRows = 8;
 bool dark_appearance = true;
 
-uint8_t native_pixels[kNativeWidth * kNativeHeight];
 uint8_t presented_pixels[kNativeWidth * kNativeHeight];
 uint16_t *panel_pixels = nullptr;
 bool backlight_on = true;
 uint8_t backlight_level = 68;
 bool panel_awake = true;
-bool image_valid = false;
+uint64_t valid_rows = 0;
+bool presentation_pending = true;
 unsigned panel_generation = 0;
 unsigned orientation = 3;
-int64_t can_sleep_us = 0;
 unsigned wake_stage = 0;
 int64_t wake_deadline_us = 0;
+int64_t wake_retry_us = 0;
 int64_t prewarm_until_us = 0;
 bool reset_required = false;
 
@@ -56,11 +56,11 @@ extern "C" int StickDisplayPanelInit(void) {
   screen->fillScreen(StickDisplayBackground());
   panel_generation = StickPeripheralGeneration();
   panel_awake = true;
-  image_valid = false;
+  StickDisplayInvalidate();
   StickDisplayBusInit();
   if (!panel_pixels) {
     panel_pixels = static_cast<uint16_t *>(heap_caps_malloc(
-        sizeof(uint16_t) * kPanelWidth * kPanelHeight,
+        sizeof(uint16_t) * kPanelWidth * kTransferRows * kScale,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   return panel_pixels != nullptr;
@@ -74,7 +74,7 @@ extern "C" void StickDisplayPanelSetOrientation(unsigned right_side_down) {
     screen->setRotation(orientation);
     screen->fillScreen(StickDisplayBackground());
   }
-  image_valid = false;
+  StickDisplayInvalidate();
 }
 
 extern "C" void StickDisplayPanelSetBacklight(unsigned enabled) {
@@ -96,12 +96,15 @@ extern "C" void StickDisplayPrepareWake(void) {
   if (!screen) return;
   prewarm_until_us = esp_timer_get_time() + 750000;
   if (panel_awake || wake_stage) return;
+  if (esp_timer_get_time() < wake_retry_us) return;
   if (!StickPeripheralAcquire(StickPeripheral::Display)) {
     // Acquire records the supply request before writing the PMIC. Release
     // that request if panel preparation fails.
     StickPeripheralRelease(StickPeripheral::Display);
+    wake_retry_us = esp_timer_get_time() + 1000000;
     return;
   }
+  wake_retry_us = 0;
   if (reset_required || panel_generation != StickPeripheralGeneration()) {
     reset_required = true;
     StickBoardDisplayReset(false);
@@ -109,7 +112,13 @@ extern "C" void StickDisplayPrepareWake(void) {
     wake_deadline_us = esp_timer_get_time() + 8000;
   } else {
     screen->getPanel()->initBus();
-    StickBacklightInit(0);
+    if (!StickBacklightInit(0)) {
+      screen->getPanel()->releaseBus();
+      StickBacklightSuspend();
+      StickPeripheralRelease(StickPeripheral::Display);
+      wake_retry_us = esp_timer_get_time() + 1000000;
+      return;
+    }
     screen->wakeup();
     wake_stage = 3;
     wake_deadline_us = esp_timer_get_time() + 130000;
@@ -119,6 +128,7 @@ extern "C" void StickDisplayPrepareWake(void) {
 extern "C" void StickDisplayCancelPreparedWake(void) {
   if (backlight_on) return;
   prewarm_until_us = 0;
+  wake_retry_us = 0;
   if (wake_stage == 1 || wake_stage == 2) {
     // Reset preparation has not issued Sleep-out. Abort now, and remember
     // that reset lost controller state even if audio keeps the rail powered.
@@ -140,6 +150,11 @@ extern "C" void StickDisplayPowerService(void) {
   auto *screen = StickBoardScreen();
   if (!screen) return;
   const int64_t now = esp_timer_get_time();
+  if (!panel_awake && !wake_stage && wake_retry_us &&
+      now >= wake_retry_us) {
+    if (backlight_on || now < prewarm_until_us) StickDisplayPrepareWake();
+    else wake_retry_us = 0;
+  }
   if (wake_stage && now >= wake_deadline_us) {
     if (wake_stage == 1) {
       StickBoardDisplayReset(true);
@@ -148,13 +163,16 @@ extern "C" void StickDisplayPowerService(void) {
     } else if (wake_stage == 2) {
       if (!StickBoardDisplayInitRegisters()) {
         wake_stage = 0;
+        screen->getPanel()->releaseBus();
+        StickBacklightSuspend();
         StickPeripheralRelease(StickPeripheral::Display);
+        wake_retry_us = esp_timer_get_time() + 1000000;
         return;
       }
       screen->wakeup();
       wake_stage = 3;
       wake_deadline_us = esp_timer_get_time() + 130000;
-    } else {
+    } else if (wake_stage == 3) {
       if (!backlight_on && now >= prewarm_until_us) {
         wake_stage = 0;
         panel_awake = true;  // Sleep-out completed; Sleep-in is now legal.
@@ -165,30 +183,34 @@ extern "C" void StickDisplayPowerService(void) {
         screen->writeCommand(0x38);  // IDMOFF
         screen->writeCommand(0x29);  // DISPON
         screen->endWrite();
+        screen->setRotation(orientation);
         if (reset_required || panel_generation != StickPeripheralGeneration()) {
           screen->setSwapBytes(true);
           screen->invertDisplay(screen->getPanel()->getInvert());
           screen->setColorDepth(16);
-          screen->setRotation(orientation);
           screen->fillScreen(StickDisplayBackground());
           panel_generation = StickPeripheralGeneration();
           reset_required = false;
-          image_valid = false;
+          StickDisplayInvalidate();
         }
         wake_stage = 0;
         panel_awake = true;
         screen->setBrightness(backlight_on ? backlight_level : 0);
       }
+    } else {
+      screen->getPanel()->releaseBus();
+      StickBacklightSuspend();
+      wake_stage = 0;
+      StickPeripheralRelease(StickPeripheral::Display);
+      if (backlight_on || now < prewarm_until_us) StickDisplayPrepareWake();
     }
   }
   if (!wake_stage && !backlight_on && panel_awake &&
-      now >= can_sleep_us && now >= prewarm_until_us) {
+      now >= prewarm_until_us) {
     screen->sleep();
-    delay(5);
-    screen->getPanel()->releaseBus();
-    StickBacklightSuspend();
     panel_awake = false;
-    StickPeripheralRelease(StickPeripheral::Display);
+    wake_stage = 4;
+    wake_deadline_us = esp_timer_get_time() + 5000;
   }
 }
 
@@ -196,15 +218,20 @@ extern "C" int StickDisplayPanelIsReady(void) { return panel_awake; }
 
 extern "C" uint64_t StickDisplayNextDeadline(void) {
   if (wake_stage) return uint64_t(wake_deadline_us);
-  if (!backlight_on && panel_awake) {
-    const int64_t deadline = can_sleep_us > prewarm_until_us ?
-                             can_sleep_us : prewarm_until_us;
-    return uint64_t(deadline);
-  }
+  if (!backlight_on && panel_awake) return uint64_t(prewarm_until_us);
+  if (wake_retry_us && (backlight_on ||
+      esp_timer_get_time() < prewarm_until_us)) return uint64_t(wake_retry_us);
   return UINT64_MAX;
 }
 
-extern "C" void StickDisplayInvalidate(void) { image_valid = false; }
+extern "C" void StickDisplayInvalidate(void) {
+  valid_rows = 0;
+  presentation_pending = true;
+}
+
+extern "C" int StickDisplayPresentationPending(void) {
+  return presentation_pending;
+}
 
 extern "C" unsigned StickDisplayIsDark(void) { return dark_appearance; }
 extern "C" uint16_t StickDisplayBackground(void) {
@@ -222,7 +249,7 @@ extern "C" int StickDisplaySetDark(unsigned dark) {
   preferences.end();
   if (written != 1) return 0;
   dark_appearance = dark;
-  image_valid = false;
+  StickDisplayInvalidate();
   if (panel_awake) StickBoardScreen()->fillScreen(StickDisplayBackground());
   return 1;
 }
@@ -232,29 +259,38 @@ extern "C" void StickDisplayPanelSetContrastDelta(unsigned delta) {
   if (delta > 9) delta = 9;
   // Map the game's Contrast setting to backlight brightness.
   backlight_level = uint8_t(24 + 11 * delta);
-  if (screen && backlight_on) screen->setBrightness(backlight_level);
+  if (screen && backlight_on && panel_awake)
+    screen->setBrightness(backlight_level);
 }
 
-extern "C" int StickDisplayPresent(void) {
-  if (!panel_pixels) return 0;
-  if (!StickDisplayIsPowered()) {
+extern "C" int StickDisplayPresent(const StickDisplaySnapshot *snapshot) {
+  if (!panel_pixels || !snapshot) return 0;
+  if (!snapshot->powered) {
     StickDisplayPanelSetBacklight(0);
+    presentation_pending = false;
     return 1;
   }
   StickDisplayPanelSetBacklight(1);
+  presentation_pending = true;
   if (!panel_awake) return 0;
-  StickDisplayFrame(native_pixels, sizeof(native_pixels));
+  const uint8_t *native_pixels = snapshot->pixels;
   unsigned x0 = kNativeWidth, y0 = kNativeHeight, x1 = 0, y1 = 0;
   for (unsigned y = 0; y < kNativeHeight; ++y)
     for (unsigned x = 0; x < kNativeWidth; ++x)
-      if (!image_valid || native_pixels[y * kNativeWidth + x] !=
-                          presented_pixels[y * kNativeWidth + x]) {
+      if (!(valid_rows & (UINT64_C(1) << y)) ||
+          native_pixels[y * kNativeWidth + x] !=
+              presented_pixels[y * kNativeWidth + x]) {
         if (x < x0) x0 = x;
         if (y < y0) y0 = y;
         if (x + 1 > x1) x1 = x + 1;
         if (y + 1 > y1) y1 = y + 1;
       }
-  if (x0 == kNativeWidth) return 1;
+  if (x0 == kNativeWidth) {
+    presentation_pending = false;
+    return 1;
+  }
+  const unsigned end = y1;
+  if (y1 > y0 + kTransferRows) y1 = y0 + kTransferRows;
   const unsigned width = (x1 - x0) * kScale;
   for (unsigned y = y0; y < y1; ++y) {
     for (unsigned x = x0; x < x1; ++x) {
@@ -267,7 +303,11 @@ extern "C" int StickDisplayPresent(void) {
   }
   StickBoardScreen()->pushImage(24 + x0 * kScale, 3 + y0 * kScale,
                                width, (y1 - y0) * kScale, panel_pixels);
-  std::memcpy(presented_pixels, native_pixels, sizeof(native_pixels));
-  image_valid = true;
-  return 1;
+  for (unsigned y = y0; y < y1; ++y) {
+    std::memcpy(presented_pixels + y * kNativeWidth + x0,
+                native_pixels + y * kNativeWidth + x0, x1 - x0);
+    valid_rows |= UINT64_C(1) << y;
+  }
+  presentation_pending = y1 < end;
+  return !presentation_pending;
 }

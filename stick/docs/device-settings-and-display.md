@@ -5,11 +5,17 @@ covers persistence and pixel presentation for changes to the adapters.
 
 ## Persist settings
 
-`pw-controls/layout-v2` stores layout, rotation and the two-key window. Migration
-maps each legacy configuration to its directional behavior, including the
-reversed three-key mapping. The display adapter applies rotation. Button mapping
-uses the selected layout.
+`pw-controls/layout-v2` stores layout, rotation and the two-key window.
+The display adapter applies rotation. Button mapping uses the selected layout.
+Older configuration keys are ignored.
+Without a saved setting, the layout is three-key L/M/R and rotation is left-side-down.
 Game progress is stored in the EEPROM image.
+
+Three-key Settings access observes a one-second physical L+R hold in `Controls`;
+normal directional transitions continue until recognition. The input bridge
+then requests the overlay, clears pending Center activity and requires release
+at entry and closure. The native Settings renderer keeps its two original
+choices.
 
 `pw-display/dark` stores appearance. Unsaved installations default to Dark.
 A failed persistence write leaves the previous appearance active. A successful
@@ -43,7 +49,12 @@ to backlight brightness.
 
 ## Check changes
 
-`uv run python stick/check.py` covers layout migration, input gestures, palette
-ordering/reversal, persistence failure and full repaint after the overlay.
+The presenter consumes an immutable native LCD snapshot and revision. A call
+transfers at most eight native rows and finishes with SPI idle, retaining no
+caller pointer. Remaining strips are scheduled independently of native refresh;
+appearance, rotation and overlay changes also invalidate presentation.
+
+`uv run python stick/check.py` exercises production input gestures, layout and
+appearance persistence, and returning from Settings to the native screen.
 After a display change, check the four shades and Settings on the board in both
 appearances and after wake.

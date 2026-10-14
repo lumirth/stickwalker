@@ -1,0 +1,13 @@
+run 4000
+press M
+run 30
+release M
+run 300
+screen before-reset.png
+reset
+run 4000
+press M
+run 30
+release M
+run 300
+screen after-reset.png

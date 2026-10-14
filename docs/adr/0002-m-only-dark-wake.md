@@ -1,6 +1,9 @@
 # Use M to wake the screen
 
-Holding physical M for 500 ms wakes the Stick in every layout and rotation.
+Holding physical M through native Center qualification wakes the Stick in every
+layout and rotation, roughly half a second. The native firmware also retains
+its social-offer opportunity; the adapter no longer starts interactive mode
+from a separate 500 ms wall-clock threshold.
 L and R resume their configured roles after wake. Releasing M early cancels
 panel preparation. A held L or R still allows M to wake the display.
 
@@ -10,8 +13,8 @@ and waits for all buttons to be released. A successful PMIC read is required
 to establish that L has been released.
 
 When the game or Settings is visible, the front buttons can wake the CPU and
-sleep is capped at 100 ms for L polling. Awake polls run every 5 ms. Walking
-and interactive game work normally supply a 62.5 ms deadline.
+required button polls supply a 5 ms deadline. Walking and interactive game work
+retain their native timing instead of accelerating to consume queued input.
 
 ## GPIO restoration
 
@@ -22,7 +25,8 @@ keep the CPU awake until a scheduled retry.
 
 ## Checks
 
-Host tests cover the adapter branches and sleep API calls. The
+Production-firmware simulation covers timeout, canceled and qualified M holds,
+held-input suppression, RTC timer/EXT1 wake and digital GPIO restoration. The
 [device test records](../../stick/docs/history/power-and-wake.md) record the
 button, panel and boot trials. USB keeps the CPU awake during bench commands;
 test physical sleep and wake on battery.

@@ -8,6 +8,7 @@
 #include "support/scratch.h"
 #ifdef PW_STICK_S3
 #include "stick_wire_endian.h"
+#include "stick/native_runtime.h"
 #endif
 
 void PokemonMinuteTick(void);
@@ -157,6 +158,10 @@ void RtcSetTime(u32 seconds)
   u8 hourBcd;
   u8 component;
 
+#ifdef PW_STICK_S3
+  StickNativeRtcSet(seconds);
+#endif
+
   component = (seconds % sixty);
   secondBcd = BinaryToBcd(component);
   seconds = seconds / sixty;
@@ -191,9 +196,7 @@ void RtcSetTime(u32 seconds)
 void RtcReadStable(u8 *secondOut, u8 *minuteOut, u8 *hourOut)
 {
 #ifdef PW_STICK_S3
-  *secondOut = g_state.time.secondBcd;
-  *minuteOut = g_state.time.minuteBcd;
-  *hourOut = g_state.time.hourBcd24h;
+  StickNativeRtcRead(secondOut, minuteOut, hourOut);
 #else
   u8 snapshot[6];
   u8 sample;
@@ -245,14 +248,11 @@ void RtcSecondInterrupt(void)
 {
   u16 socialSeconds;
 #ifdef PW_STICK_S3
-  u32 next = g_state.save.rtcSeconds + 1;
-  g_state.save.rtcSeconds = next;
-  RtcSetTime(next);
-  if (next % SECONDS_PER_MINUTE == 0) {
-    RtcMinuteInterrupt();
-    if (next % RTC_ONE_HOUR_SECONDS == 0)
-      RtcHourInterrupt();
-  }
+  u8 second, minute, hour;
+
+  StickNativeRtcRead(&second, &minute, &hour);
+  g_state.time.secondBcd = second;
+  g_state.save.rtcSeconds++;
 #else
   u8 second;
 
@@ -281,7 +281,12 @@ void RtcSecondInterrupt(void)
 #pragma interrupt(RtcMinuteInterrupt(vect = 26))
 void RtcMinuteInterrupt(void)
 {
-#ifndef PW_STICK_S3
+#ifdef PW_STICK_S3
+  u8 second, minute, hour;
+
+  StickNativeRtcRead(&second, &minute, &hour);
+  g_state.time.minuteBcd = minute;
+#else
   u8 minute;
 
   minute = RTC.RMINDR.BYTE;
@@ -298,7 +303,12 @@ void RtcMinuteInterrupt(void)
 #pragma interrupt(RtcHourInterrupt(vect = 27))
 void RtcHourInterrupt(void)
 {
-#ifndef PW_STICK_S3
+#ifdef PW_STICK_S3
+  u8 second, minute, hour;
+
+  StickNativeRtcRead(&second, &minute, &hour);
+  g_state.time.hourBcd24h = hour;
+#else
   u8 hour;
 
   hour = RTC.RHRDR.BYTE;

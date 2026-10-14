@@ -619,8 +619,10 @@ void *ScratchAlloc(u16 byteCount)
 #ifdef PW_STICK_S3
   u8 *base = g_work.motion.scratch.layout.scratch;
   u8 *old = portScratchCursor;
-  if (old == 0) old = base;
-  if ((size_t)(old - base) + byteCount > 0x400u) __builtin_trap();
+  if (old == 0)
+    old = base;
+  if ((size_t)(old - base) + byteCount > 0x400u)
+    __builtin_trap();
   portScratchCursor = old + byteCount;
   return old;
 #else

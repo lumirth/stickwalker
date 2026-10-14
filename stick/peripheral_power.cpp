@@ -47,3 +47,7 @@ void StickPeripheralPowerService(void) {
 }
 
 unsigned StickPeripheralGeneration(void) { return generation; }
+
+uint64_t StickPeripheralNextDeadline(void) {
+  return retry_us ? uint64_t(retry_us) : UINT64_MAX;
+}

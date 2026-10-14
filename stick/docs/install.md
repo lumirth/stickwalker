@@ -30,36 +30,42 @@ settings. Check that it is exactly 8,388,608 bytes before proceeding. If the
 board won't connect, enter its USB download mode using M5Stack's
 [StickS3 instructions](https://docs.m5stack.com/en/core/StickS3).
 
-## Update an existing Stickwalker installation
+## Update a pre-release installation
 
-An app-only update keeps your Pokémon, registration, steps, Watts, items and
-settings. The October 10 update also repairs missing device IDs on first boot.
+Return your Pokémon to HGSS before updating. Pre-release builds do not promise
+save compatibility. Keep the flash backup, then initialize the game-data region
+for the new firmware. This resets registration, steps, Watts, items and other
+walker progress; the Pokémon is already safe in your game. Device settings in
+NVS and resident artwork are separate from this region.
 
-Check that the installed partition layout matches the release before updating:
+Check that the installed partition layout matches the new build:
 
 ```sh
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT read-flash 0x8000 0xC00 /path/to/installed-partitions.bin
 ```
 
-Compare those bytes with `PwStick.ino.partitions.bin`, for example with `cmp`
-on macOS/Linux or `fc /b` on Windows. Proceed with the app-only
-update only if they match and the existing installation runs from app0:
+Compare those bytes with `PwStick.ino.partitions.bin`, using `cmp` on macOS/Linux
+or `fc /b` on Windows. For the matching app0 layout used by this guide:
 
 ```sh
+uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT --after no-reset erase-region 0x670000 0x180000
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x10000 PwStick.ino.bin
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT verify-flash 0x10000 PwStick.ino.bin
 ```
 
-Use these esptool commands for updates. Arduino's Upload command also rewrites
-the bootloader, partition table and boot selection. If the board previously ran
-OTA firmware from app1, inspect its boot selection before using the app0 address.
-Stickwalker installations made with this guide use app0.
+The backend supports only the current flash-record format. It starts a new
+walker on blank storage; unsupported or damaged storage reports a fault rather
+than converting an old save. After installation, connect HGSS to start a stroll.
+
+Use these commands for updates. Arduino's Upload command also rewrites the
+bootloader, partition table and boot selection. If the installed layout differs
+or app1 is active, inspect that installation before choosing an application
+address. These instructions use app0 at `0x10000`.
 
 ## First installation
 
 After making a backup, initialize the region where Stickwalker will store its
-game data, then install the firmware. This starts a new walker; use the app-only
-update above to keep an existing Stickwalker save.
+game data, then install the firmware. This starts a new walker.
 
 ```sh
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT erase-region 0x670000 0x180000
@@ -72,13 +78,14 @@ uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x0 PwS
 ```
 
 The selected layout has app0 at `0x10000` (size `0x330000`), app1 at `0x340000`,
-LittleFS at `0x670000` (size `0x180000`), and coredump at `0x7F0000`. NVS starts
-at `0x9000`. On first boot, Stickwalker creates its filesystem in the erased
-game-data region.
+game-data storage at `0x670000` (size `0x180000`), and coredump at `0x7F0000`.
+NVS starts at `0x9000`. On first boot, Stickwalker publishes its initial
+checkpoint in the erased game-data region.
 
-After boot, check the display and controls, open Settings and test sound. For an
-update, confirm the previous registration, Pokémon and settings remain. Unplug
-USB, let the screen go dark, and verify a 500 ms M hold wakes it. You can now
+After boot, check the display and controls, open Settings and test sound.
+Confirm the device settings, then connect HGSS to register the new walker.
+Unplug USB, let the screen go dark, and hold M until it wakes, roughly half a
+second. You can now
 [connect to your game and take a Pokémon for a walk](playing.md). The
 [controls guide](controls.md) covers button layouts and device settings.
 

@@ -24,6 +24,12 @@ The timing check compares `measure_ir_gate`, `aligned_next` and `run_gate_segmen
 with the production reference. The report records the new ELF hash and whether
 each function's instruction bytes match.
 
+The native-platform redesign changes the receiver handoff and its gate-loop
+machine code. The frozen reference is intentionally unchanged. A differing
+report is a physical requalification requirement, not permission to replace the
+reference with the candidate's hashes. Simulator protocol checks alone cannot
+qualify this candidate for a stable release.
+
 ## Assemble the runtime kit
 
 Use the source archives and `sources.json` from the previous release's runtime
@@ -50,12 +56,17 @@ to use it with a modified Arduino runtime.
 Commit the final source and documentation, then run from that clean checkout:
 
 ```sh
-uv run python stick/package_release.py --build-dir stick/.build/candidate --runtime-dir stick/.build/runtime --output-dir stick/.build/release
+uv run python stick/package_release.py --build-dir stick/.build/candidate --runtime-dir stick/.build/runtime --output-dir stick/.build/release --allow-ir-timing-change
 ```
 
 Packaging verifies the source inventory, firmware hashes, production mode,
 placeholder artwork, absence of diagnostic markers, infrared timing report and
 runtime kit. It produces three archives and `SHA256SUMS`:
+
+`--allow-ir-timing-change` permits a prerelease with changed IR instruction bytes;
+the original timing report is bundled and the manifest remains unqualified.
+Omit the flag to require the frozen machine-byte reference. Neither mode replaces
+physical qualification for a stable release.
 
 - The firmware ZIP contains the binaries, symbols, installation and player
   guides, manifests, timing result and dependency notices.
@@ -73,9 +84,10 @@ Run these checks on the firmware you intend to publish. Record the setup,
 observations and failures.
 
 1. [Back up and install](install.md) the candidate. Read back the app and compare
-   its hash. For an app-only update, confirm registration,
-   Pokémon, settings and valid EEPROM mirrors survive.
-2. Disconnect USB. Exercise the 500 ms M wake in every layout and rotation,
+   its hash. Return the Pokémon to HGSS before pre-release updates, initialize
+   game data, and confirm device settings, new registration and valid EEPROM
+   mirrors.
+2. Disconnect USB. Exercise native M-hold wake in every layout and rotation,
    ignored dark L/R, abandoned short M taps, navigation after release, Settings,
    display restoration, short sounds and clock progression.
 3. Repeat retail walk-start and return transfers on that image. Record
@@ -86,10 +98,7 @@ observations and failures.
    USB disconnected. Record the time spent walking, idle and using the screen.
 5. Interrupt EEPROM journal/image writes on hardware and verify recovery
    without losing the last completed save.
-6. Update a paired installation from the September 30 firmware with a Pokémon
-   still on it. Confirm identity repair preserves its Pokémon, steps, Watts,
-   items and registration, then return the Pokémon to its Game Card.
-7. With the [photodiode connected](install.md#infrared-receiver), peer-connect
+6. With the [photodiode connected](install.md#infrared-receiver), peer-connect
    with an original Pokéwalker and with another Stickwalker. Check first contact,
    same-day repeat rejection, a different peer and reconnection after day
    rollover. Record each device's firmware and game language.

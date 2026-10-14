@@ -43,11 +43,13 @@ Pokéwalker. [How step counting works](stick/docs/motion.md) explains the detail
 The original 96×64 screen appears at twice its size on the Stick's display.
 You can rotate it and choose a light or dark appearance. The speaker plays the
 original tone sequences. Your Pokémon, route and progress stay saved across
-restarts and firmware updates.
+restarts. Return your Pokémon to HGSS before updating pre-release firmware;
+updates can require resetting game data.
 
 Walking continues while the screen is off. Hold M for half a second to wake it.
-With the default controls, M moves left, R moves right, and M+R together
-confirms. L opens Stick Settings. See [controls and settings](stick/docs/controls.md)
+With the default controls, L moves left, M confirms, and R moves right.
+The screen starts left-side-down. Hold L+R for one second to open Stick Settings.
+See [controls and settings](stick/docs/controls.md)
 for the other button layouts.
 
 ## Help and contribute

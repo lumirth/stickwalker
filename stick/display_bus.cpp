@@ -1,4 +1,5 @@
 #include "display_bus.h"
+#include "native_runtime.h"
 
 #include <string.h>
 
@@ -19,10 +20,13 @@ uint8_t start_line = 0;
 bool start_line_parameter = false;
 bool contrast_parameter = false;
 bool screen_enabled = true;
+uint64_t revision = 0;
 
 void command(uint8_t value) {
   if (start_line_parameter) {
-    start_line = value & 0x7f;
+    const uint8_t next = value & 0x7f;
+    if (start_line != next) ++revision;
+    start_line = next;
     start_line_parameter = false;
     return;
   }
@@ -44,14 +48,28 @@ void command(uint8_t value) {
     column = uint8_t((column & 0xf0) | value);
     plane = 0;
   } else if (value == 0xa9) {
+    if (screen_enabled) ++revision;
     screen_enabled = false;
   } else if (value == 0xe1 || value == 0xaf) {
+    if (!screen_enabled) ++revision;
     screen_enabled = true;
   }
 }
 
 void data(uint8_t value) {
-  if (page < kPages && column < kColumns) ram[page][column][plane] = value;
+  if (page < kPages && column < kColumns) {
+    const uint8_t changed = ram[page][column][plane] ^ value;
+    ram[page][column][plane] = value;
+    if (screen_enabled && changed) {
+      for (unsigned bit = 0; bit < 8; ++bit) {
+        if ((changed & (1u << bit)) &&
+            ((page * 8u + bit - start_line) & 127u) < 64) {
+          ++revision;
+          break;
+        }
+      }
+    }
+  }
   plane ^= 1;
   if (!plane) ++column;
 }
@@ -67,11 +85,21 @@ extern "C" void StickDisplayBusInit(void) {
   page = column = plane = start_line = 0;
   start_line_parameter = contrast_parameter = false;
   screen_enabled = true;
+  ++revision;
 }
 
 extern "C" int StickDisplayIsPowered(void) { return screen_enabled; }
+extern "C" uint64_t StickDisplayRevision(void) { return revision; }
+
+extern "C" void StickDisplayCapture(StickDisplaySnapshot *snapshot) {
+  if (!snapshot) return;
+  snapshot->revision = revision;
+  snapshot->powered = screen_enabled;
+  StickDisplayFrame(snapshot->pixels, sizeof(snapshot->pixels));
+}
 
 extern "C" void StickDisplayWrite(u8 value) {
+  StickNativeService();
   if (IO.PDR1.BIT.B1) data(value);
   else command(value);
 }

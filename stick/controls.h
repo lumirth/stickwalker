@@ -24,21 +24,26 @@ constexpr const char *layout_name(Layout layout) {
   return "2-key M/R";
 }
 
-// Converts physical M/R/L levels into native Pokewalker button levels. Each
-// queued transition is held for one native input scan, including short taps.
 class Controls {
  public:
+  static constexpr uint32_t kMaximumPendingAgeMs = 250;
+  static constexpr uint8_t kCapacity = 32;
   struct Diagnostic {
     uint8_t gesture, stable, desired, delivered, queued, wait_release;
-    uint32_t emitted, consumed, overflow;
+    uint32_t emitted, consumed, overflow, expired, cancelled;
   };
   void configure(Layout layout);
   void set_chord_window(uint16_t milliseconds);
   void sample(uint32_t now_ms, bool main_pressed, bool side_pressed,
-              bool power_pressed);
-  uint8_t next_scan();
+              bool power_pressed, bool captured = false,
+              bool power_press_latched = false);
+  uint8_t next_scan(uint32_t now_ms);
   bool idle() const;
-  bool menu_requested();
+  uint8_t stable_buttons() const;
+  uint8_t pressed_buttons() const;
+  bool take_center_press();
+  bool take_center_press(uint32_t now_ms);
+  bool take_settings_hold();
   void require_release();
   Diagnostic diagnostic() const;
 
@@ -54,6 +59,7 @@ class Controls {
     void update(uint32_t now_ms, bool value);
   };
   void emit(uint8_t value);
+  void expire(uint32_t now_ms);
   uint8_t direction(bool main_button) const;
 
   Layout layout_ = Layout::TwoKeyMR;
@@ -65,13 +71,23 @@ class Controls {
   uint8_t chord_first_ = 0;
   uint8_t desired_ = 0;
   uint8_t delivered_ = 0;
-  uint8_t queue_[32] = {};
+  struct Transition {
+    uint32_t milliseconds;
+    uint8_t value;
+  };
+  Transition queue_[kCapacity] = {};
   uint8_t head_ = 0;
   uint8_t count_ = 0;
-  bool menu_ = false;
-  bool power_was_down_ = false;
+  uint32_t now_ms_ = 0;
+  uint8_t pressed_ = 0;
+  bool center_notified_ = false;
+  bool faulted_ = false;
   bool wait_release_ = true;
+  bool settings_hold_tracking_ = false;
+  bool settings_hold_requested_ = false;
+  uint32_t settings_hold_since_ms_ = 0;
   uint32_t emitted_ = 0, consumed_ = 0, overflow_ = 0;
+  uint32_t expired_ = 0, cancelled_ = 0;
 };
 
 }  // namespace pw_stick

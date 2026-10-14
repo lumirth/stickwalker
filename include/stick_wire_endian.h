@@ -7,8 +7,8 @@
  * documented with a Le suffix remain raw forwarded bytes instead. */
 static inline u32 StickReadBe32(const u8 *bytes)
 {
-  return ((u32)bytes[0] << 24) | ((u32)bytes[1] << 16) |
-         ((u32)bytes[2] << 8) | bytes[3];
+  return ((u32)bytes[0] << 24) | ((u32)bytes[1] << 16) | ((u32)bytes[2] << 8) |
+         bytes[3];
 }
 
 static inline u16 StickReadBe16(const u8 *bytes)

@@ -154,7 +154,7 @@ This requires the exact retail size and SHA-256 and writes `verified.json` on
 success. Run it under **both 6.02.01 and 6.02.02** for accepted matching-source
 changes. The build records also check that the image came from the current
 source, assets and compiler files. They catch stale objects even when timestamps
-have been preserved. Host tests and formatting complement this check.
+have been preserved. Firmware E2E checks and formatting complement this check.
 
 ## Clean, recover and work offline
 
@@ -211,8 +211,9 @@ Cppcheck 2.21.0 separately, then run:
 uv run --group dev -m tools.check
 ```
 
-This checks C formatting, Python formatting and lint, Cppcheck with the H8 target
-model, and the utility tests. To apply formatting:
+This checks C formatting, Python formatting and lint, and Cppcheck with the H8
+target model. Run `uv run python stick/check.py` separately for the production
+firmware workflows. To apply formatting:
 
 ```sh
 uv run --group dev -m tools.check --format
@@ -221,11 +222,7 @@ uv run --group dev -m tools.check --format
 Formatting includes nested source and header directories. The accepted HEW
 device header at `include/startup/iodefine.h` keeps its original formatting.
 Cppcheck has two narrow suppressions for arithmetic whose evaluation follows
-the target's 16-bit rules. To run only the utility tests:
-
-```sh
-uv run -m unittest discover -s tests
-```
+the target's 16-bit rules.
 
 `uv` is a convenience for a reproducible host environment. An existing Python
 environment with Ninja and Pillow can also run `python configure.py` and `ninja`;

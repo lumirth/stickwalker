@@ -18,6 +18,7 @@ void StickIrConfigure(void);
 void StickIrStart(void);
 void StickIrPassiveDiagnostic(int enabled);
 void StickIrStop(void);
+void StickIrResumeReception(void);
 u16 StickIrTicks(void);
 void StickIrDelayTicks(u16 ticks);
 void StickIrSendByte(u8 logical);

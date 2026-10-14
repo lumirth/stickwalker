@@ -2,6 +2,7 @@
 #define PW_STICK_DISPLAY_BUS_H
 
 #include "types.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +25,13 @@ extern StickDisplaySsu SSU;
 void StickDisplayWrite(u8 value);
 void StickDisplayBusInit(void);
 int StickDisplayIsPowered(void);
+typedef struct {
+  uint64_t revision;
+  u8 powered;
+  u8 pixels[96 * 64];
+} StickDisplaySnapshot;
+uint64_t StickDisplayRevision(void);
+void StickDisplayCapture(StickDisplaySnapshot *snapshot);
 /* Read the panel's selected 96x64 view as four-shade palette indexes. */
 void StickDisplayFrame(u8 *pixels, u16 byteCount);
 

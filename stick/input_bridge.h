@@ -2,6 +2,7 @@
 #define PW_STICK_INPUT_BRIDGE_H
 
 #include "types.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,12 +13,13 @@ void StickInputInit(void);
 void StickInputPoll(unsigned long milliseconds);
 /* Consume one native Pokewalker input scan, returning BUTTON_* bits. */
 u8 StickInputLevels(void);
-/* True while a physical press or a queued gesture needs prompt native scans. */
 int StickInputWakeScanActive(void);
+uint64_t StickInputNextDeadline(void);
 /* True when the game screen is off and Settings is closed; M starts the wake
  * gesture. */
 int StickInputMOnlyWake(void);
 int StickMenuRequested(void);
+void StickInputRequireRelease(void);
 /* Device overlay consumes physical M/R/L without sending game input. */
 void StickInputMenuMode(int enabled);
 u8 StickInputTakeMenuButtons(void);
@@ -42,7 +44,8 @@ void StickInputPathDiagnostic(unsigned *stable, unsigned *gesture,
                              unsigned *queued, unsigned *wait_release,
                              unsigned *emitted, unsigned *consumed,
                              unsigned *overflow, unsigned *left_edges,
-                             unsigned *right_edges, unsigned *center_edges);
+                             unsigned *right_edges, unsigned *center_edges,
+                             unsigned *expired, unsigned *cancelled);
 #endif
 
 #ifdef __cplusplus

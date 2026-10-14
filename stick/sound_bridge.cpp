@@ -4,19 +4,18 @@
 #include "peripheral_power.h"
 
 #include <M5Unified.h>
+#include <esp_log.h>
 #include <esp_timer.h>
-
-extern "C" void BeepAdvance(void);
 
 namespace {
 bool enabled = false;
+bool prepare_requested = false;
 bool speaker_ready = false;
 bool codec_on = false;
 u16 compare_value = 0;
 u8 output_mode = 0;
-int64_t next_period_us = 0;
 int64_t test_tone_end_us = 0;
-int64_t amplifier_hold_end_us = 0;
+int64_t prepare_retry_us = 0;
 int64_t shutdown_retry_us = 0;
 bool codec_configured = false;
 bool codec_image_valid = false;
@@ -31,11 +30,6 @@ uint8_t codec_image[sizeof(kSuspendRegisters)] = {};
 constexpr uint8_t kPiezoCycle[16] = {
     255, 255, 255, 255, 255, 255, 255, 255,
       0,   0,   0,   0,   0,   0,   0,   0};
-// Prepare cold output for 200 ms before starting a score. Acoustic checks
-// captured the full 52 ms cue with this interval; ADC startup obscured it at
-// 65 ms. Warm playback skips preparation.
-constexpr int64_t kOutputStartupUs = 200000;
-constexpr int64_t kAmplifierHoldUs = 500000;
 #ifdef PW_STICK_BENCH_CONTROL
 unsigned begin_count = 0, begin_failures = 0, power_failures = 0;
 unsigned tone_count = 0, tone_failures = 0;
@@ -52,18 +46,6 @@ void finish_tone_measurement() {
   last_tone_us = 0;
 }
 #endif
-
-int64_t period_us() {
-  return (int64_t(compare_value + 1) * 1000000 + 32767) / 32768;
-}
-
-void anchor_output_period() {
-  // Start each note's timer at its output transition. Carrying overdue
-  // drawing time into this timer can end a short note before the speaker task
-  // plays it.
-  const int64_t now = esp_timer_get_time();
-  if (next_period_us < now) next_period_us = now;
-}
 
 bool speaker_power(void *, bool on) {
   using P = m5::M5PM1_Class;
@@ -148,7 +130,6 @@ void stop_tone() {
 void stop_output() {
   stop_tone();
   test_tone_end_us = 0;
-  amplifier_hold_end_us = 0;
   const bool off = speaker_power(nullptr, false);
   codec_on = false;
   if (speaker_ready) M5.Speaker.end();
@@ -156,7 +137,10 @@ void stop_output() {
   if (off) {
     shutdown_retry_us = 0;
     StickPeripheralRelease(StickPeripheral::Sound);
-  } else shutdown_retry_us = esp_timer_get_time() + 1000000;
+  } else {
+    shutdown_retry_us = esp_timer_get_time() + 1000000;
+    ESP_LOGE("StickSound", "Codec shutdown failed; retaining sound supply");
+  }
 }
 
 bool start_output() {
@@ -177,6 +161,7 @@ bool start_output() {
   if (speaker_ready && !codec_on) codec_on = speaker_power(nullptr, true);
   if (!speaker_ready || !codec_on) { stop_output(); return false; }
   shutdown_retry_us = 0;
+  prepare_retry_us = 0;
   return true;
 }
 }  // namespace
@@ -203,10 +188,10 @@ extern "C" void StickSoundInit(void) {
   config.use_dac = false;
   config.dac_zero_level = 0;
   M5.Speaker.config(config);
-  // Start I2S with the first score. Even an idle I2S task on the sampler core
-  // changes optical timing.
   speaker_ready = false;
   enabled = false;
+  prepare_requested = false;
+  prepare_retry_us = 0;
   compare_value = 0;
   output_mode = 0;
   // Quiet the powered codec even when sound is disabled in the native save
@@ -215,18 +200,59 @@ extern "C" void StickSoundInit(void) {
   codec_image_valid = false;
   codec_configured = StickPeripheralAcquire(StickPeripheral::Sound);
   stop_output();
+  StickSoundPrepare();
+}
+
+extern "C" int StickSoundPrepare(void) {
+  prepare_requested = true;
+  if (StickSoundIsReady()) return 1;
+  if (shutdown_retry_us ||
+      (prepare_retry_us && esp_timer_get_time() < prepare_retry_us)) return 0;
+  if (!start_output()) {
+    prepare_retry_us = esp_timer_get_time() + 1000000;
+    ESP_LOGE("StickSound", "Output preparation failed");
+    return 0;
+  }
+  prepare_retry_us = 0;
+  return 1;
+}
+
+extern "C" int StickSoundIsReady(void) {
+  return speaker_ready && codec_on && !shutdown_retry_us;
+}
+
+extern "C" void StickSoundSuspend(void) {
+  prepare_requested = false;
+  prepare_retry_us = 0;
+  if (speaker_ready || codec_on ||
+      (codec_configured && !shutdown_retry_us) ||
+      (shutdown_retry_us && esp_timer_get_time() >= shutdown_retry_us))
+    stop_output();
+}
+
+extern "C" uint64_t StickSoundNextDeadline(void) {
+  uint64_t deadline = UINT64_MAX;
+  if (test_tone_end_us) deadline = uint64_t(test_tone_end_us);
+  if (shutdown_retry_us && uint64_t(shutdown_retry_us) < deadline)
+    deadline = uint64_t(shutdown_retry_us);
+  if (!shutdown_retry_us && prepare_retry_us &&
+      uint64_t(prepare_retry_us) < deadline)
+    deadline = uint64_t(prepare_retry_us);
+  return deadline;
 }
 
 extern "C" void StickSoundEnable(void) {
 #ifndef PW_STICK_BENCH_CONTROL
-  if (test_tone_end_us) stop_output();
+  if (test_tone_end_us) {
+    stop_tone();
+    test_tone_end_us = 0;
+  }
 #endif
-  const bool cold_amp = !codec_on;
-  start_output();
-  amplifier_hold_end_us = 0;
   enabled = true;
-  next_period_us = esp_timer_get_time() +
-                   (cold_amp && codec_on ? kOutputStartupUs : 0);
+  if (!StickSoundIsReady()) {
+    ESP_LOGW("StickSound", "Score enabled before output preparation");
+    StickSoundPrepare();
+  }
 }
 
 extern "C" void StickSoundDisable(void) {
@@ -235,10 +261,6 @@ extern "C" void StickSoundDisable(void) {
   if (test_tone_end_us) return;
 #endif
   stop_tone();
-  // A short game cue is often followed by another button press. Leave the
-  // amplifier ready briefly, then switch it off without a blocking delay.
-  amplifier_hold_end_us = codec_on ? esp_timer_get_time() +
-                                      kAmplifierHoldUs : 0;
 }
 
 extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
@@ -252,14 +274,13 @@ extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
 #endif
   if (!enabled || !compare || !output_mode) {
     stop_tone();
-    anchor_output_period();
     return;
   }
   // H8 output modes select progressively stronger drive. The M5 speaker's
   // default master level is only 64/255 and made level 2 effectively silent.
   M5.Speaker.setVolume(output_mode == 1 ? 100 :
                        output_mode == 2 ? 170 : 235);
-  if (speaker_ready && codec_on) {
+  if (StickSoundIsReady()) {
     const bool started = M5.Speaker.tone(
         // Timer W is one voice. Automatic channel allocation would leave
         // preceding pitches playing on other channels until the score ends.
@@ -269,11 +290,14 @@ extern "C" void StickSoundPeriod(u16 compare, u8 mode) {
     ++tone_count;
     tone_failures += !started;
     if (started) last_tone_us = uint64_t(esp_timer_get_time());
-#else
-    (void)started;
 #endif
+    if (!started) ESP_LOGE("StickSound", "Tone submission failed");
+  } else {
+#ifdef PW_STICK_BENCH_CONTROL
+    ++tone_failures;
+#endif
+    ESP_LOGE("StickSound", "Tone requested while output is not ready");
   }
-  anchor_output_period();
 }
 
 extern "C" void StickSoundSilencePeriod(u16 compare) {
@@ -282,7 +306,6 @@ extern "C" void StickSoundSilencePeriod(u16 compare) {
   if (test_tone_end_us) return;
 #endif
   stop_tone();
-  anchor_output_period();
 }
 
 extern "C" void StickSoundMute(void) {
@@ -293,56 +316,63 @@ extern "C" void StickSoundMute(void) {
 }
 
 extern "C" void StickSoundQuiesceForIr(void) {
-  stop_output();
+  StickSoundSuspend();
 }
 
 extern "C" int StickSoundIsBusy(void) {
-  return enabled || test_tone_end_us || speaker_ready;
+  return speaker_ready || codec_on || codec_configured || shutdown_retry_us;
 }
 
 extern "C" void StickSoundService(void) {
-  if (!enabled && shutdown_retry_us &&
-      esp_timer_get_time() >= shutdown_retry_us) stop_output();
-  if (test_tone_end_us && esp_timer_get_time() >= test_tone_end_us)
-    stop_output();
-  if (!enabled && amplifier_hold_end_us &&
-      esp_timer_get_time() >= amplifier_hold_end_us)
-    stop_output();
-  if (!enabled) return;
   const int64_t now = esp_timer_get_time();
-  unsigned serviced = 0;
-  while (next_period_us <= now && serviced < 256) {
-    BeepAdvance();
-    next_period_us += period_us();
-    ++serviced;
+  if (shutdown_retry_us && now >= shutdown_retry_us)
+    stop_output();
+  if (prepare_requested && !StickSoundIsReady() && !shutdown_retry_us &&
+      (!prepare_retry_us || now >= prepare_retry_us))
+    StickSoundPrepare();
+  if (test_tone_end_us && now >= test_tone_end_us) {
+    if (prepare_requested) {
+      stop_tone();
+      test_tone_end_us = 0;
+    } else stop_output();
   }
-  if (serviced == 256 && next_period_us <= now)
-    next_period_us = now + period_us();
 }
 
 extern "C" int StickSoundTestTone(void) {
   if (enabled) return 0;
-  if (!start_output()) return 0;
+  if (shutdown_retry_us || !start_output()) {
+    ESP_LOGE("StickSound", "Speaker test preparation failed");
+    return 0;
+  }
   M5.Speaker.setVolume(170);
-  const bool started = M5.Speaker.tone(880.0f, 1000);
+  const bool started = M5.Speaker.tone(880.0f, 1000, 0, true);
 #ifdef PW_STICK_BENCH_CONTROL
   ++tone_count;
   tone_failures += !started;
 #endif
   if (started) test_tone_end_us = esp_timer_get_time() + 1000000;
-  else stop_output();
+  else {
+    ESP_LOGE("StickSound", "Speaker test tone submission failed");
+    stop_output();
+  }
   return started ? 1 : 0;
 }
 
 #ifdef PW_STICK_BENCH_CONTROL
 extern "C" int StickSoundBenchTone(void) {
-  if (!start_output()) return 0;
+  if (shutdown_retry_us || !start_output()) {
+    ESP_LOGE("StickSound", "Bench tone preparation failed");
+    return 0;
+  }
   M5.Speaker.setVolume(170);
-  const bool started = M5.Speaker.tone(880.0f, 8000);
+  const bool started = M5.Speaker.tone(880.0f, 8000, 0, true);
   ++tone_count;
   tone_failures += !started;
   if (started) test_tone_end_us = esp_timer_get_time() + 8000000;
-  else stop_output();
+  else {
+    ESP_LOGE("StickSound", "Bench tone submission failed");
+    stop_output();
+  }
   return started ? 1 : 0;
 }
 
