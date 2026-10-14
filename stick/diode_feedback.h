@@ -11,15 +11,13 @@ enum class DiodeState : uint8_t {
   Unknown
 };
 
-constexpr uint16_t kDiodeIcons[4][16] = {
+constexpr uint16_t kDiodeIcons[3][16] = {
     {0x0000, 0x0078, 0x0084, 0x0102, 0x0102, 0x0102, 0x0102, 0x01fe, 0x0048,
      0x0048, 0x4448, 0x2848, 0x1048, 0x2848, 0x4400, 0x0000},
     {0x0000, 0x0078, 0x00fc, 0x01f6, 0x01f6, 0x01fe, 0x01fe, 0x01fe, 0x0048,
      0x4048, 0xfc48, 0x4048, 0x0048, 0x0848, 0xfc00, 0x0800},
     {0x0000, 0x0078, 0x00fc, 0x01f6, 0x01f6, 0x01fe, 0x01fe, 0x01fe, 0x0048,
      0x0048, 0x0048, 0x0048, 0x0048, 0x0048, 0x0000, 0x0000},
-    {0x0000, 0x0078, 0x0084, 0x0102, 0x0102, 0x0102, 0x0102, 0x01fe, 0x0048,
-     0x3848, 0x4448, 0x4048, 0x2048, 0x1048, 0x0000, 0x1000},
 };
 
 struct DiodeFeedback {
@@ -27,6 +25,9 @@ struct DiodeFeedback {
   uint64_t expires = UINT64_MAX;
   void show(DiodeState value, uint64_t now)
   {
+    // Uncertainty belongs to the detector, not to the user-facing status.
+    if (value == DiodeState::Unknown)
+      value = DiodeState::Hidden;
     state = value;
     expires =
         value == DiodeState::Hidden
@@ -42,12 +43,15 @@ struct DiodeFeedback {
   }
 };
 
-// The icon stays at the Hat end and remains upright after a 180-degree flip.
+// Keep the connector corner and four pixels of padding after rotation.
 constexpr unsigned diode_icon_x(unsigned right_side_down)
 {
   return right_side_down ? 220 : 4;
 }
-constexpr unsigned kDiodeIconY = 59;
+constexpr unsigned diode_icon_y(unsigned right_side_down)
+{
+  return right_side_down ? 115 : 4;
+}
 
 // With a weak pull-down, positive photocurrent into GPIO5 identifies an
 // illuminated reversed diode. Correct polarity sinks photocurrent instead.

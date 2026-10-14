@@ -1,0 +1,38 @@
+# Same bare-pad capacitance at the socket: an electrically empty input.
+cap 5 11.8 11.2
+press M
+press R
+run 300
+release M
+release R
+run 100
+screen missing.png
+run 2500
+diode report missing-bounded.txt
+run 4000
+screen missing-expired.png
+diode report missing-idle.txt
+press L
+run 100
+release L
+run 200
+press L
+run 100
+release L
+run 200
+press M
+press R
+run 300
+release M
+release R
+run 100
+screen missing-connect.png
+diode report missing-connect.txt
+optical missing.optical
+# Plugging the diode in during the bounded correction window.
+cap 5 20.2 17.9
+run 600
+screen inserted.png
+run 2500
+screen inserted-expired.png
+diode report restored.txt

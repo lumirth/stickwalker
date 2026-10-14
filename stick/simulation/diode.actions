@@ -32,7 +32,7 @@ release R
 run 100
 screen reversed.png
 diode report reversed.txt
-# Correcting the input clears the fault during the bounded recheck window.
+# Correcting the input briefly confirms the inserted diode.
 gpio 5 1
 run 600
 screen corrected.png

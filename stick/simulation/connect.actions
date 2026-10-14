@@ -18,6 +18,8 @@ screen settings-after.png
 optical first.optical
 # Retry with the input held high: wait for the ordinary no-reply result.
 gpio 5 1
+# An inconclusive electrical check must not turn no reply into a diode warning.
+cap 5 15 14
 press L
 run 100
 release L
@@ -27,7 +29,9 @@ press R
 run 300
 release M
 release R
-run 10000
+run 5000
+screen no-peer.png
+run 5000
 press L
 run 100
 release L

@@ -1,6 +1,7 @@
 #include "diode_status.h"
 
 #include "diode_feedback.h"
+#include "diode_presence.h"
 #include "board_hal.h"
 #include "board_settings.h"
 #include "display_bus.h"
@@ -21,6 +22,7 @@ pw_stick::DiodeFeedback feedback;
 bool dirty = false;
 bool confirmed = false;
 bool blocked = false;
+DiodeState presence = DiodeState::Unknown;
 DiodeState fault = DiodeState::Hidden;
 unsigned rechecks = 0;
 uint64_t next_check = UINT64_MAX;
@@ -86,23 +88,28 @@ DiodeState voltage_state()
   return result;
 }
 
-bool can_charge()
+bool can_charge(gpio_num_t pin = GPIO_NUM_5)
 {
-  gpio_set_direction(GPIO_NUM_5, GPIO_MODE_INPUT);
-  gpio_pulldown_dis(GPIO_NUM_5);
-  gpio_pullup_en(GPIO_NUM_5);
+  gpio_set_direction(pin, GPIO_MODE_INPUT);
+  gpio_pulldown_dis(pin);
+  gpio_pullup_en(pin);
   unsigned high_samples = 0;
   // A transmitting peer must have dark gaps between its short SIR pulses.
   // Vary sample spacing to avoid repeatedly landing on the same UART phase.
   for (unsigned sample = 0; sample < 32; ++sample) {
     delayMicroseconds(103 + (sample * 37) % 89);
-    high_samples = gpio_get_level(GPIO_NUM_5) ? high_samples + 1 : 0;
+    high_samples = gpio_get_level(pin) ? high_samples + 1 : 0;
     if (high_samples == 4) {
       break;
     }
   }
-  gpio_pullup_dis(GPIO_NUM_5);
+  gpio_pullup_dis(pin);
   return high_samples == 4;
+}
+
+DiodeState inspect()
+{
+  return can_charge() ? pw_stick::diode_presence_detect() : voltage_state();
 }
 
 void show(DiodeState state)
@@ -116,6 +123,7 @@ extern "C" void StickDiodeBegin(void)
 {
   confirmed = false;
   blocked = false;
+  presence = DiodeState::Unknown;
   fault = DiodeState::Hidden;
   next_check = UINT64_MAX;
   rechecks = 0;
@@ -125,6 +133,16 @@ extern "C" void StickDiodeBegin(void)
 extern "C" int StickDiodePreflight(void)
 {
   if (can_charge()) {
+    presence = pw_stick::diode_presence_detect();
+    if (presence == DiodeState::Connected)
+      show(presence);
+    if (presence == DiodeState::Missing) {
+      blocked = true;
+      fault = presence;
+      show(fault);
+      draw();
+      return 0;
+    }
     draw();
     return 1;
   }
@@ -140,18 +158,12 @@ extern "C" void StickDiodeReceivedPacket(void)
   confirmed = true;
 }
 
-extern "C" void StickDiodeEnd(unsigned connection_error)
+extern "C" void StickDiodeEnd(unsigned)
 {
-  if (confirmed) {
+  if (confirmed || presence == DiodeState::Connected) {
     show(DiodeState::Connected);
     return;
   }
-  if (fault == DiodeState::Hidden && !connection_error) {
-    show(DiodeState::Hidden);
-    return;
-  }
-  if (fault == DiodeState::Hidden)
-    fault = DiodeState::Unknown;
   show(fault);
   // Three rechecks, only after a blocked input, only while the screen is awake.
   if (blocked) {
@@ -178,8 +190,9 @@ extern "C" void StickDiodeService(void)
     return;
   if (wake_check) {
     wake_check = false;
-    if (!can_charge()) {
-      show(voltage_state());
+    const DiodeState state = inspect();
+    show(state);
+    if (state != DiodeState::Connected) {
       rechecks = 3;
       next_check = uint64_t(esp_timer_get_time()) + 500000;
     }
@@ -192,12 +205,28 @@ extern "C" void StickDiodeService(void)
   if (now < next_check)
     return;
   --rechecks;
-  if (can_charge()) {
-    show(DiodeState::Hidden);
+  const DiodeState state = inspect();
+  if (state == DiodeState::Connected) {
+    show(state);
     rechecks = 0;
+  } else if (state != feedback.state) {
+    show(state);
   }
   next_check = rechecks ? now + 500000 : UINT64_MAX;
 }
+
+#ifdef PW_STICK_BENCH_CONTROL
+extern "C" unsigned StickDiodeProbe(void)
+{
+  return unsigned(inspect());
+}
+extern "C" unsigned StickDiodeProbePin(unsigned pin)
+{
+  if (pin < 6 || pin > 8 || !can_charge(gpio_num_t(pin)))
+    return unsigned(DiodeState::Unknown);
+  return unsigned(pw_stick::diode_presence_detect(pin));
+}
+#endif
 
 extern "C" uint64_t StickDiodeNextDeadline(void)
 {
@@ -216,7 +245,7 @@ void draw()
     return;
   auto *screen = StickBoardScreen();
   const unsigned x = pw_stick::diode_icon_x(StickInputOrientation());
-  const unsigned y = pw_stick::kDiodeIconY;
+  const unsigned y = pw_stick::diode_icon_y(StickInputOrientation());
   uint16_t pixels[16 * 16];
   const uint16_t background = StickDisplayBackground();
   const uint16_t foreground = StickDisplayForeground();

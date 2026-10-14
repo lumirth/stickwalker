@@ -15,6 +15,7 @@
 #include "power_sleep.h"
 #include "backlight.h"
 #include "native_runtime.h"
+#include "diode_status.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -160,6 +161,20 @@ int StickDiagnosticsService(void) {
   }
   while (Serial.available()) {
     const int command = Serial.read();
+    if (command == 'h' && !StickForegroundIsIr()) {
+      const uint64_t started = uint64_t(esp_timer_get_time());
+      const unsigned state = StickDiodeProbe();
+      Serial.printf("PW_STICK_DIODE_PROBE state=%u elapsed_us=%llu\n",
+                    state, (unsigned long long)(esp_timer_get_time() - started));
+    }
+    if (command == 'm' && !StickForegroundIsIr()) {
+      for (unsigned pin = 6; pin <= 8; ++pin) {
+        const uint64_t started = uint64_t(esp_timer_get_time());
+        const unsigned state = StickDiodeProbePin(pin);
+        Serial.printf("PW_STICK_DIODE_PROBE pin=%u state=%u elapsed_us=%llu\n",
+                      pin, state, (unsigned long long)(esp_timer_get_time() - started));
+      }
+    }
     if (command == 'c' && !StickForegroundIsIr()) {
       StickIrBenchTrace(1);
       StickForegroundRequestIr();

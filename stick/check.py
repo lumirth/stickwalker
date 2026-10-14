@@ -29,6 +29,9 @@ SCENARIOS = (
     "connect",
     "diode",
     "diode-peer",
+    "diode-presence",
+    "diode-timeout",
+    "diode-stall",
     "controls",
     "layouts",
     "wake",
@@ -79,6 +82,29 @@ def expect_appearance(path: Path, light: bool) -> None:
     brightness = statistics.median(Image.open(path).convert("L").tobytes())
     if (brightness >= 128) != light:
         raise AssertionError(f"{path}: selected appearance does not match the visible background")
+
+
+def expect_diode(path: Path, state: str | None) -> None:
+    image = Image.open(path).rotate(-90, expand=True).convert("L")
+    bits = bytes(image.getpixel((4 + col, 4 + row)) >= 128
+                 for row in range(16) for col in range(16))
+    hashes = {
+        "missing": "9dd801c7cf41981ecdab05068b9aafad57b6991fd9086bc5b3d115556ae61325",
+        "connected": "59df9fbf1e7334530d2c4dfdb0f6abd4aea4de8f585b714e208583cacc793cbd",
+    }
+    if state is None:
+        assert not any(bits), f"{path}: diode feedback did not expire"
+    else:
+        assert hashlib.sha256(bits).hexdigest() == hashes[state], f"{path}: expected {state}"
+
+
+def diode_report(path: Path) -> dict[str, str]:
+    report = dict(line.split("=", 1) for line in path.read_text().splitlines())
+    assert report["reboots"] == "0", f"{path}: diode check rebooted"
+    assert report["output_enabled"] == "false", f"{path}: GPIO5 output remains enabled"
+    assert report["touch_timer"] == "false", f"{path}: continuous touch scans enabled"
+    assert report["touch_mask"] == "0", f"{path}: touch controller left enabled"
+    return report
 
 
 def optical_frames(path: Path) -> list[bytes]:
@@ -315,6 +341,8 @@ def main() -> None:
             "stick/simulation/connect.actions",
             "stick/simulation/diode.actions",
             "stick/simulation/diode-peer.actions",
+            "stick/simulation/diode-presence.actions",
+            "stick/simulation/diode-timeout.actions",
             "stick/simulation/controls.actions",
             "stick/simulation/layouts.actions",
             "stick/simulation/wake.actions",
@@ -331,7 +359,8 @@ def main() -> None:
     }
     scenarios = args.scenario or SCENARIOS
     fixture = None
-    if any(name not in ("settings", "connect", "diode") for name in scenarios):
+    bare_scenarios = ("settings", "connect", "diode", "diode-presence", "diode-timeout", "diode-stall")
+    if any(name not in bare_scenarios for name in scenarios):
         fixture = storage(build / "PwStick.ino.partitions.bin", out)
         evidence["fixture_sha256"] = digest(out / "fixture.eeprom")
     (out / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
@@ -342,6 +371,8 @@ def main() -> None:
         if scenario.startswith("recovery-") or scenario == "peer-play":
             scenario_fixture = storage(build / "PwStick.ino.partitions.bin", folder, scenario)
         action = "recovery" if scenario.startswith("recovery-") else scenario
+        if scenario == "diode-stall":
+            action = "diode-timeout"
         script = ROOT / f"stick/simulation/{action}.actions"
         if scenario in ("peer-transfer", "peer-transfer-compressed", "peer-play"):
             script = folder / f"{scenario}.actions"
@@ -362,6 +393,8 @@ def main() -> None:
         # Exercise the unsaved three-key default, then explicitly select the
         # two-key layout used by the established navigation/rollover scripts.
         actions = script.read_text()
+        if scenario == "diode-stall":
+            actions = actions.replace("touch timeout 1", "touch hang 1")
         script = folder / "configured.actions"
         script.write_text(
             "run 8000\npress L\npress R\nrun 1200\nrelease L\nrelease R\n"
@@ -370,6 +403,8 @@ def main() -> None:
             "press R\nrun 70\nrelease R\nrun 300\n"
             "press L\nrun 70\nrelease L\nrun 300\n" + actions
         )
+        if scenario in ("diode-timeout", "diode-stall"):
+            script.write_text(actions)
         with (folder / "run.log").open("w") as log:
             subprocess.run(
                 [
@@ -381,7 +416,7 @@ def main() -> None:
                 ]
                 + (
                     [str(scenario_fixture[0]), str(scenario_fixture[1])]
-                    if scenario not in ("settings", "connect", "diode")
+                    if scenario not in bare_scenarios
                     else []
                 ),
                 stdout=log,
@@ -410,6 +445,7 @@ def main() -> None:
                 "Unsaved controls use L/M/R and left-side-down; buttons change rotation and appearance, and reset retains both."
             )
         elif scenario == "connect":
+            expect_diode(folder / "no-peer.png", None)
             expect_screen(folder / "settings-after.png", "STICK SETTINGS")
             expect_screen(folder / "settings-retry.png", "STICK SETTINGS")
             if (folder / "first.optical").read_text().strip():
@@ -418,7 +454,7 @@ def main() -> None:
             if bytes([0xFC]) not in retry:
                 raise AssertionError("Retry after clearing the input must advertise")
             evidence["scenarios"][scenario] = {
-                "result": "Held-low input is rejected before transmission; clearing the input permits retry and Settings remains usable.",
+                "result": "Held-low input is rejected before transmission; an inconclusive diode check permits retry without a hardware warning on no reply; Settings remains usable.",
                 "logical_frames": [frame.hex() for frame in retry],
             }
         elif scenario == "diode":
@@ -433,13 +469,13 @@ def main() -> None:
             # Match the approved artwork, including its empty pixels. The hash
             # covers a 16x16 binary raster, independent of theme and rotation.
             icons = {
-                "unknown": "85deec01f7e986eca65f2bd5d332ebecac69e21dd3e4db85a0a004b402e7bb44",
                 "reversed": "2ece536104eb88144176747b280c66d0c111d76b56ca6f912fd0b4cd59c67d6d",
+                "connected": "59df9fbf1e7334530d2c4dfdb0f6abd4aea4de8f585b714e208583cacc793cbd",
             }
             for name, state, rotated in (
-                ("unknown", "unknown", False),
                 ("reversed", "reversed", False),
                 ("rotated", "reversed", True),
+                ("corrected", "connected", False),
             ):
                 image = (
                     Image.open(folder / f"{name}.png")
@@ -447,11 +483,12 @@ def main() -> None:
                     .convert("L")
                 )
                 x = 220 if rotated else 4
+                y = 115 if rotated else 4
                 bits = bytes(
                     (
-                        image.getpixel((x + col, 59 + row)) < 128
+                        image.getpixel((x + col, y + row)) < 128
                         if rotated
-                        else image.getpixel((x + col, 59 + row)) >= 128
+                        else image.getpixel((x + col, y + row)) >= 128
                     )
                     for row in range(16)
                     for col in range(16)
@@ -460,8 +497,8 @@ def main() -> None:
                     raise AssertionError(f"{name}: diode icon differs from approved artwork")
             for name, rotated in (
                 ("idle", False),
+                ("unknown", False),
                 ("expired", False),
-                ("corrected", False),
                 ("rotated-expired", True),
             ):
                 image = (
@@ -470,11 +507,12 @@ def main() -> None:
                     .convert("L")
                 )
                 x = 220 if rotated else 4
+                y = 115 if rotated else 4
                 if any(
                     (
-                        image.getpixel((x + col, 59 + row)) < 128
+                        image.getpixel((x + col, y + row)) < 128
                         if rotated
-                        else image.getpixel((x + col, 59 + row)) >= 128
+                        else image.getpixel((x + col, y + row)) >= 128
                     )
                     for row in range(16)
                     for col in range(16)
@@ -483,7 +521,7 @@ def main() -> None:
             evidence["scenarios"][scenario] = (
                 "Ambiguous and illuminated-reversed inputs never drive GPIO5 high or reboot; "
                 "approved icons occupy the diode margin in both rotations and themes, "
-                "and clear after correction or timeout."
+                "uncertain inputs stay quiet, and confirmations clear after their timeout."
             )
         elif scenario == "diode-peer":
             peer = (folder / "peer.txt").read_text()
@@ -491,7 +529,7 @@ def main() -> None:
                 raise AssertionError(f"Optical peer did not complete: {peer}")
             image = Image.open(folder / "connected.png").rotate(-90, expand=True).convert("L")
             bits = bytes(
-                image.getpixel((4 + col, 59 + row)) >= 128 for row in range(16) for col in range(16)
+                image.getpixel((4 + col, 4 + row)) >= 128 for row in range(16) for col in range(16)
             )
             if (
                 hashlib.sha256(bits).hexdigest()
@@ -502,11 +540,37 @@ def main() -> None:
                 )
             image = Image.open(folder / "expired.png").rotate(-90, expand=True).convert("L")
             if any(
-                image.getpixel((4 + col, 59 + row)) >= 128 for row in range(16) for col in range(16)
+                image.getpixel((4 + col, 4 + row)) >= 128 for row in range(16) for col in range(16)
             ):
                 raise AssertionError("Connected confirmation did not expire")
             evidence["scenarios"][scenario] = (
                 "Validated peer packets confirm the diode briefly; the icon clears after two seconds."
+            )
+        elif scenario == "diode-presence":
+            for name in ("missing", "missing-connect"):
+                expect_diode(folder / f"{name}.png", "missing")
+            expect_diode(folder / "inserted.png", "connected")
+            for name in ("missing-expired", "inserted-expired"):
+                expect_diode(folder / f"{name}.png", None)
+            bounded = diode_report(folder / "missing-bounded.txt")
+            idle = diode_report(folder / "missing-idle.txt")
+            assert bounded["touch_scans"] == idle["touch_scans"], "Missing detection kept polling"
+            blocked = diode_report(folder / "missing-connect.txt")
+            assert blocked["high_drives"] == "0", "Empty socket was strongly precharged"
+            assert not (folder / "missing.optical").read_text().strip(), "Empty socket transmitted"
+            diode_report(folder / "restored.txt")
+            evidence["scenarios"][scenario] = (
+                "Empty capacitance shows the approved missing icon and blocks reception startup; "
+                "insertion confirms the diode, icons expire and rechecks stop."
+            )
+        elif scenario in ("diode-timeout", "diode-stall"):
+            expect_diode(folder / "unknown.png", None)
+            expect_diode(folder / "unknown-expired.png", None)
+            bounded = diode_report(folder / "timeout-bounded.txt")
+            idle = diode_report(folder / "timeout-idle.txt")
+            assert bounded["touch_scans"] == idle["touch_scans"], "Timed-out probe kept polling"
+            evidence["scenarios"][scenario] = (
+                "Stalled scans remain inconclusive, return within the deadline and release the controller."
             )
         elif scenario == "controls":
             for name, label in (

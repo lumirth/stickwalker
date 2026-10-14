@@ -14,6 +14,10 @@ void StickDiodeService(void);
 uint64_t StickDiodeNextDeadline(void);
 void StickDiodeDraw(void);
 void StickDiodeInvalidate(void);
+#ifdef PW_STICK_BENCH_CONTROL
+unsigned StickDiodeProbe(void);
+unsigned StickDiodeProbePin(unsigned pin);
+#endif
 #ifdef __cplusplus
 }
 #endif
