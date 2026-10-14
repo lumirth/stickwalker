@@ -6,6 +6,8 @@
 
 Stickwalker ports my [matching Pokéwalker firmware reconstruction](https://github.com/lumirth/pw) to the M5Stack Stick S3.
 
+For the full write-up and user guide, visit [my website](https://kukas.me/stickwalker/).
+
 ## Install
 
 You need a Stick S3, a BPV10NF photodiode and a USB-C data cable. Connect the photodiode's anode to GND and cathode to G5.
