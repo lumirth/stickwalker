@@ -79,8 +79,9 @@ Run these checks on the firmware you intend to publish. Record the setup,
 observations and failures.
 
 1. [Back up and install](install.md) the candidate. Read back the app and compare
-   its hash. For an app-only update, confirm registration,
-   Pokémon, settings and valid EEPROM mirrors survive.
+   its hash. Return the Pokémon to HGSS before pre-release updates, initialize
+   game data, and confirm device settings, new registration and valid EEPROM
+   mirrors.
 2. Disconnect USB. Exercise native M-hold wake in every layout and rotation,
    ignored dark L/R, abandoned short M taps, navigation after release, Settings,
    display restoration, short sounds and clock progression.

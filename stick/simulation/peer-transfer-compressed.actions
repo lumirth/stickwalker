@@ -1,0 +1,25 @@
+run 4000
+peer put-compressed PUBLIC_FIXTURE 115760 5000
+peer echo on
+press M
+press R
+run 100
+release M
+release R
+run 300
+press M
+press R
+run 100
+release M
+release R
+run-until-peer 15000
+peer report peer.txt
+run 1000
+peer stop
+reset
+run 4000
+press L
+run 100
+release L
+run 200
+screen settings-after.png

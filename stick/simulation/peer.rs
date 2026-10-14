@@ -5,6 +5,7 @@ const CPU_HZ: u64 = 240_000_000;
 const BAUD: u64 = 115_200;
 const TURNAROUND: u64 = CPU_HZ / 1000;
 const TIMEOUT: u64 = CPU_HZ / 10;
+const FIXTURE_WATTS: [u8; 2] = [0, 100];
 const TOKEN: [u8; 4] = [0x13, 0x57, 0x9b, 0xdf];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +44,7 @@ struct Page {
 }
 
 struct Put {
+    compressed: bool,
     bytes: Vec<u8>,
     offset: usize,
     records: Vec<u8>,
@@ -94,7 +96,6 @@ pub struct OpticalPeer {
     echoes: VecDeque<LightPulse>,
     put: Option<Put>,
     status: Vec<u8>,
-    expected_watts: [u8; 2],
     walker: Option<Walker>,
 }
 
@@ -125,7 +126,6 @@ impl OpticalPeer {
             echoes: VecDeque::new(),
             put: None,
             status: Vec::new(),
-            expected_watts: [0, 100],
             walker: None,
         }
     }
@@ -141,6 +141,7 @@ impl OpticalPeer {
         assert_eq!(bytes.len(), 10_430);
         let mut peer = Self::new();
         peer.put = Some(Put {
+            compressed: false,
             bytes,
             offset: 0,
             records: vec![0; 548],
@@ -153,8 +154,10 @@ impl OpticalPeer {
         peer
     }
 
-    pub fn legacy_watts(&mut self) {
-        self.expected_watts = [100, 0];
+    pub fn with_compressed_put(bytes: Vec<u8>) -> Self {
+        let mut peer = Self::with_put(bytes);
+        peer.put.as_mut().unwrap().compressed = true;
+        peer
     }
 
     pub fn with_walker(mut image: Vec<u8>) -> Self {
@@ -254,13 +257,21 @@ impl OpticalPeer {
                 (address, bytes)
             };
             put.last_address = address as u16;
+            let mut command = 0x02 | (address as u8 & 0x80);
+            let mut bytes = bytes;
+            if put.compressed {
+                // HGSS compresses complete pages independently. Its size table
+                // marks the final partial page as an uncompressed 128-byte page.
+                let complete_page = bytes.len() == 128;
+                bytes.resize(128, 0);
+                let packed = compress_lz_page(&bytes);
+                if complete_page && packed.len() < 128 {
+                    command &= 0x80;
+                    bytes = packed;
+                }
+            }
             self.phase = Phase::PutPage;
-            self.send(
-                0x02 | (address as u8 & 0x80),
-                (address >> 8) as u8,
-                self.session,
-                &bytes,
-            );
+            self.send(command, (address >> 8) as u8, self.session, &bytes);
         }
     }
 
@@ -335,6 +346,13 @@ impl OpticalPeer {
             .flatten()
             .map(|pulse| pulse.start.max(self.now))
             .min()
+    }
+
+    pub fn reply_pending(&self) -> bool {
+        !matches!(
+            self.phase,
+            Phase::Probe | Phase::Shutdown | Phase::Complete | Phase::Failed
+        )
     }
 
     pub fn local_light(&mut self, cycle: u64, pulses: &[(u64, bool)]) {
@@ -526,7 +544,7 @@ impl OpticalPeer {
             }
             Phase::Watts if command == 0x0e && argument == 2 && payload.len() == 2 => {
                 self.watts = Some(payload.try_into().unwrap());
-                if payload != self.expected_watts {
+                if payload != FIXTURE_WATTS {
                     self.fail(format!(
                         "expected fixture Watts 0064, received {}",
                         hex(payload)
@@ -588,9 +606,7 @@ impl OpticalPeer {
                     self.fail("DS PHC/distribution read has the wrong length".into());
                     return;
                 }
-                if put.read_segment == 0
-                    && put.read_offset == 0
-                    && payload[10..12] != self.expected_watts
+                if put.read_segment == 0 && put.read_offset == 0 && payload[10..12] != FIXTURE_WATTS
                 {
                     self.fail("DS PHCData contains incorrectly ordered Watts".into());
                     return;
@@ -719,4 +735,46 @@ fn decode(pulses: &[(u64, bool)]) -> Result<Vec<u8>, String> {
         result.push(wire ^ 0xaa);
     }
     Ok(result)
+}
+
+// Nintendo LZ10: an advertised 128-byte page, MSB-first flags, and 3..18-byte
+// phrases from earlier output. The peer chooses raw transfer when it grows.
+fn compress_lz_page(bytes: &[u8]) -> Vec<u8> {
+    assert_eq!(bytes.len(), 128);
+    let mut packed = vec![0x10, 128, 0, 0];
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let flags = packed.len();
+        packed.push(0);
+        for bit in 0..8 {
+            if cursor == bytes.len() {
+                break;
+            }
+            let mut best_length = 0;
+            let mut best_distance = 0;
+            for distance in 1..=cursor {
+                let mut length = 0;
+                while length < 18
+                    && cursor + length < bytes.len()
+                    && bytes[cursor + length] == bytes[cursor + length - distance]
+                {
+                    length += 1;
+                }
+                if length > best_length {
+                    best_length = length;
+                    best_distance = distance;
+                }
+            }
+            if best_length >= 3 {
+                packed[flags] |= 0x80 >> bit;
+                packed.push(((best_length - 3) << 4) as u8);
+                packed.push((best_distance - 1) as u8);
+                cursor += best_length;
+            } else {
+                packed.push(bytes[cursor]);
+                cursor += 1;
+            }
+        }
+    }
+    packed
 }

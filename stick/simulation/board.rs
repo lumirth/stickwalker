@@ -14,6 +14,7 @@ pub struct Inputs {
     pub vbus_mv: Option<u16>,
     pub peer: Option<crate::peer::OpticalPeer>,
     pub local_echo: bool,
+    pub reply_window_erases: u64,
 }
 
 enum Device {
@@ -290,6 +291,12 @@ impl BoardModel for StickS3 {
             "M" => Some(11),
             "R" => Some(12),
             _ => None,
+        }
+    }
+    fn flash_erase_at(&mut self, _cycle: u64, _offset: usize, _length: usize) {
+        let mut state = self.inputs.lock().unwrap();
+        if state.peer.as_ref().is_some_and(|peer| peer.reply_pending()) {
+            state.reply_window_erases += 1;
         }
     }
     fn rmt_symbol_at(&mut self, cycle: u64, pin: u8, pulses: &[(u64, bool)]) {

@@ -77,10 +77,7 @@ extern "C" void StickInputInit(void) {
   previous_levels = 0;
   Preferences preferences;
   if (preferences.begin("pw-controls", true)) {
-    const u8 stored = preferences.getUChar("layout-v2", 0xff);
-    settings = stored == 0xff ?
-        pw_stick::migrate_controls(preferences.getUChar("layout", 0)) :
-        pw_stick::decode_controls(stored);
+    settings = pw_stick::decode_controls(preferences.getUChar("layout-v2", 0));
     preferences.end();
   }
   controls.configure(settings.layout);

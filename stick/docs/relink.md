@@ -57,7 +57,7 @@ The SDK identifies ESP-IDF **v5.5.4**, commit
 `735507283d5b2f9fb363a1901172dbd9e847945d`. Its source archive includes the pinned
 recursive submodules; `sources.json` records each revision. The Arduino library
 builder source and SDK's `versions.txt`, `sdkconfig`, include files and flags are
-also included. Linked managed components are LittleFS **1.22.1** and
-ESP Diagnostics **1.2.1**. Their component source archives retain their own
+also included. The SDK supplies managed components LittleFS **1.22.1** and
+ESP Diagnostics **1.2.1**; Stickwalker's EEPROM backend does not use LittleFS. Their component source archives retain their own
 notices and build files. Espressif's radio libraries are supplied as upstream
 binary archives under their included licenses.

@@ -80,7 +80,7 @@ software timing regression test; analog acquisition, cache contention, flash
 part latency and retail hardware interoperability remain outside its model.
 The frozen machine-byte timing reference remains a separate diagnostic.
 
-## Verified candidate
+## Initial software candidate (`22769ce`)
 
 All 13 production workflows pass on application
 `05ed911a060fca5c3e023a7994e351ed553974e68789a5caff5e6283f31730e5`.
@@ -95,3 +95,52 @@ and Renesas 6.02.01 and 6.02.02 each reproduce the canonical 49,152-byte image
 (`f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607`).
 The frozen machine-byte comparison differs for all three tracked functions;
 its reference has not been updated. These new images were not flashed.
+
+## Retail put failure and flash busy timing
+
+The initial local-artwork candidate was installed and app/non-app flash verified.
+The user then reported successful return from stroll, failed start of stroll, and
+occasional black screens. A single subsequent diagnostic attempt decoded all five
+incoming frames with no checksum or malformed-page rejection. They were response,
+status, put request, and compressed course pages at `0xD700` and `0xD780`.
+The last acknowledgment began 108.039 ms after the peer's final pulse; the journal
+append maximum was 98.022 ms. The earlier production capture retained a 103.471 ms
+append. No crash was captured; the user could not reproduce that symptom.
+
+HGSS `compress`/`sendData` independently compress 128-byte course and trainer pages
+using Nintendo LZ10, falling back to raw pages when compression does not help.
+The last partial page is sent in a padded 128-byte form. The original full-put
+workflow covered only uncompressed writes and therefore omitted this path.
+
+The SPI flash model also completed programming and erases instantly. Optional WIP
+busy periods now exercise the real SDK's polling: 300 microseconds per program
+command and 20 milliseconds per sector erase are explicit stress parameters, not
+claimed measurements of the installed flash chip. With those periods and the
+compressed put sequence, the installed filesystem-backed implementation fails
+unattended: a 116.078 ms append produces a 132.544 ms acknowledgment and the peer's
+unchanged 100 ms timeout.
+
+The backend now uses a single flash-record format in the existing game-data
+partition. Two checkpoints cover a bounded log. Headers and bodies are programmed
+and independently read back before a final publication word. Log space is erased
+before acquisition; append operations cannot erase during an IR session. Checkpoint
+replacement and journal clearing run after publication outside that session.
+The filesystem and old save/configuration conversions are removed.
+
+The first raw-log build completes the full uncompressed put and Walker exchange
+with the same flash-busy profile; its maximum modeled DS response is 39.04 ms.
+Recovery checks cover current records, stale records and an unpublished truncated
+append. Permanent compressed-put coverage and a bus-observed zero-erase invariant
+protect the timing window. Unsupported filesystem data and a corrupt published
+checkpoint are rejected without conversion or erasure.
+
+This storage format requires initializing the game-data region. Return the Pokémon
+to HGSS before pre-release updates; see the [install guide](../install.md).
+
+The final public and local-artwork production images each pass all 14 workflows,
+including compressed put and the zero-erase reply-window check. Public application
+SHA-256: `a8aa2659834cfed7deeb800a95bca5a57ff360ee415897d78377dd4aaa01591b`.
+Local application SHA-256: `a5b890cad28ec7f800d98944243e12cb35c987aad983046717734faff57c7ab4`.
+Independent negative boots also reject unsupported data, a corrupt published
+checkpoint, and a corrupt newer checkpoint even when an older valid save exists;
+all leave the data partition unchanged. Source/output hashes and static checks pass.

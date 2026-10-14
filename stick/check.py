@@ -22,7 +22,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "stick/simulation"))
 from bootstrap import REVISION, prepare  # noqa: E402
-from fixture import course, filesystem  # noqa: E402
+from fixture import course, storage  # noqa: E402
 
 SCENARIOS = (
     "settings",
@@ -32,11 +32,12 @@ SCENARIOS = (
     "wake",
     "battery",
     "recovery-stale",
-    "recovery-legacy",
+    "recovery-journal",
     "recovery-truncated",
     "peer",
     "peer-storage",
     "peer-transfer",
+    "peer-transfer-compressed",
     "peer-play",
 )
 
@@ -170,69 +171,61 @@ def expect_tones(path: Path, count: int) -> list[dict]:
     return observations
 
 
-def littlefs_tool(args) -> Path:
-    if args.mklittlefs:
-        tool = args.mklittlefs.resolve()
-    else:
-        command = [args.arduino_cli]
-        if args.config_file:
-            command += ["--config-file", str(args.config_file.resolve())]
-        data = Path(
-            json.loads(
-                subprocess.check_output(
-                    command + ["config", "get", "directories.data", "--format", "json"]
-                )
-            )
-        )
-        tool = data / "packages/m5stack/tools/mklittlefs/4.0.2-db0513a/mklittlefs"
-    version = subprocess.check_output([str(tool), "--version"], text=True)
-    if "mklittlefs ver. 4.0.2" not in version:
-        raise RuntimeError("The synthetic fixture requires mklittlefs 4.0.2")
-    return tool
-
-
-def saved_eeprom(folder: Path, tool: Path, offset: int, size: int) -> bytes:
-    partition = folder / "saved.littlefs"
-    partition.write_bytes((folder / "flash.bin").read_bytes()[offset : offset + size])
-    extracted = folder / "saved-files"
-    extracted.mkdir()
-    subprocess.run(
-        [
-            str(tool),
-            "-u",
-            str(extracted),
-            "-b",
-            "4096",
-            "-p",
-            "256",
-            "-s",
-            str(size),
-            str(partition),
-        ],
-        check=True,
-    )
+def saved_eeprom(folder: Path, offset: int, size: int) -> bytes:
+    raw = (folder / "flash.bin").read_bytes()[offset : offset + size]
     checkpoints = []
-    for name in ("pw2-a.bin", "pw2-b.bin"):
-        path = extracted / name
-        if not path.exists():
+    for base in (0, 0x11000):
+        magic, generation, sequence, length, crc, header_crc, marker = struct.unpack_from(
+            "<7I", raw, base
+        )
+        if marker != 0x54494D43:
             continue
-        data = path.read_bytes()
-        magic, generation, sequence, length, crc, header_crc = struct.unpack_from("<6I", data)
+        payload = raw[base + 28 : base + 28 + length]
         if (
-            magic != 0x50574532
+            magic != 0x53574531
             or length != 65536
-            or zlib.crc32(data[:20]) != header_crc
-            or zlib.crc32(data[24:]) != crc
+            or zlib.crc32(raw[base : base + 20]) != header_crc
+            or zlib.crc32(payload) != crc
         ):
-            raise AssertionError(f"{path}: invalid migrated checkpoint")
-        checkpoints.append((generation, sequence, data[24:]))
+            raise AssertionError("Invalid committed EEPROM checkpoint")
+        checkpoints.append((generation, sequence, payload))
     if not checkpoints:
-        raise AssertionError("Registered fixture was not migrated to a durable checkpoint")
-    return max(checkpoints)[2]
+        raise AssertionError("No committed EEPROM checkpoint")
+    generation, sequence, data = max(checkpoints)
+    payload = bytearray(data)
+    cursor = 0x22000
+    while cursor < 0x62000:
+        magic, version, serial, length, crc, header_crc, marker = struct.unpack_from(
+            "<7I", raw, cursor
+        )
+        if marker != 0x54494D43:
+            break
+        append = raw[cursor + 28 : cursor + 28 + length]
+        if (
+            magic != 0x53574A31
+            or not 0 < length <= 4096
+            or zlib.crc32(raw[cursor : cursor + 20]) != header_crc
+            or zlib.crc32(append) != crc
+        ):
+            raise AssertionError("Invalid committed EEPROM journal record")
+        if serial > sequence:
+            if version != generation or serial != sequence + 1:
+                raise AssertionError("EEPROM journal skipped a sequence")
+            position = 0
+            while position < len(append):
+                address, count = struct.unpack_from("<HH", append, position)
+                position += 4
+                if address + count > 65536 or position + count > len(append):
+                    raise AssertionError("EEPROM journal patch exceeds bounds")
+                payload[address : address + count] = append[position : position + count]
+                position += count
+            sequence = serial
+        cursor += (28 + length + 255) & ~255
+    return bytes(payload)
 
 
-def expect_saved_settings(folder: Path, tool: Path, offset: int, size: int) -> None:
-    payload = saved_eeprom(folder, tool, offset, size)
+def expect_saved_settings(folder: Path, offset: int, size: int) -> None:
+    payload = saved_eeprom(folder, offset, size)
     for address in (0x156, 0x256):
         record = payload[address : address + 25]
         if record[24] != (1 + sum(record[:24])) & 255 or record[23] != (5 << 3):
@@ -249,7 +242,6 @@ def main() -> None:
     )
     parser.add_argument("--arduino-cli", default="arduino-cli")
     parser.add_argument("--config-file", type=Path)
-    parser.add_argument("--mklittlefs", type=Path)
     parser.add_argument("--scenario", action="append", choices=SCENARIOS)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "stick/.build/e2e-results")
     args = parser.parse_args()
@@ -311,6 +303,7 @@ def main() -> None:
             "stick/simulation/peer.actions",
             "stick/simulation/peer-storage.actions",
             "stick/simulation/peer-transfer.actions",
+            "stick/simulation/peer-transfer-compressed.actions",
             "stick/simulation/peer-play.actions",
             "stick/simulation/peer.rs",
             "stick/simulation/fixture.py",
@@ -319,25 +312,21 @@ def main() -> None:
     scenarios = args.scenario or SCENARIOS
     fixture = None
     if any(name not in ("settings", "connect") for name in scenarios):
-        tool = littlefs_tool(args)
-        fixture = filesystem(tool, build / "PwStick.ino.partitions.bin", out)
+        fixture = storage(build / "PwStick.ino.partitions.bin", out)
         evidence["fixture_sha256"] = digest(out / "fixture.eeprom")
-        evidence["mklittlefs_sha256"] = digest(tool)
     (out / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
     for scenario in scenarios:
         folder = out / scenario
         folder.mkdir(exist_ok=True)
         scenario_fixture = fixture
         if scenario.startswith("recovery-") or scenario == "peer-play":
-            scenario_fixture = filesystem(
-                tool, build / "PwStick.ino.partitions.bin", folder, scenario
-            )
+            scenario_fixture = storage(build / "PwStick.ino.partitions.bin", folder, scenario)
         action = "recovery" if scenario.startswith("recovery-") else scenario
         script = ROOT / f"stick/simulation/{action}.actions"
-        if scenario in ("peer-transfer", "peer-play"):
+        if scenario in ("peer-transfer", "peer-transfer-compressed", "peer-play"):
             script = folder / f"{scenario}.actions"
             actions = (ROOT / f"stick/simulation/{scenario}.actions").read_text()
-            if scenario == "peer-transfer":
+            if scenario.startswith("peer-transfer"):
                 source = folder / "course.bin"
                 source.write_bytes(course())
             else:
@@ -371,8 +360,8 @@ def main() -> None:
                 env={
                     **os.environ,
                     **(
-                        {"STICK_E2E_OPCODE_TIMING": "1"}
-                        if scenario in ("peer-transfer", "peer-play")
+                        {"STICK_E2E_OPCODE_TIMING": "1", "STICK_E2E_FLASH_TIMING": "300,20000"}
+                        if scenario in ("peer-transfer", "peer-transfer-compressed", "peer-play")
                         else {}
                     ),
                 },
@@ -465,7 +454,7 @@ def main() -> None:
                 ("contrast-changed", 48, 32),
             ):
                 expect_cursor(folder / f"{name}.png", x, y)
-            expect_saved_settings(folder, tool, fixture[0], fixture[1].stat().st_size)
+            expect_saved_settings(folder, fixture[0], fixture[1].stat().st_size)
             evidence["scenarios"][scenario] = (
                 "All four layouts persist; L+R delivers gameplay before opening Settings, consumes held buttons through release, and preserves the native two-choice selector and mirrored saves."
             )
@@ -515,10 +504,8 @@ def main() -> None:
         elif scenario.startswith("recovery-"):
             for name in ("before-reset", "after-reset"):
                 expect_screen(folder / f"{name}.png", "SETTINGS")
-            payload = saved_eeprom(
-                folder, tool, scenario_fixture[0], scenario_fixture[1].stat().st_size
-            )
-            watts = 100 if scenario == "recovery-legacy" else 200
+            payload = saved_eeprom(folder, scenario_fixture[0], scenario_fixture[1].stat().st_size)
+            watts = 100 if scenario == "recovery-journal" else 200
             for address in (0x156, 0x256):
                 record = payload[address : address + 25]
                 if (
@@ -531,17 +518,17 @@ def main() -> None:
             evidence["scenarios"][scenario] = {
                 "watts": watts,
                 "fixture_files_sha256": {
-                    path.name: digest(path) for path in sorted((folder / "fixture-files").iterdir())
+                    path.name: digest(path) for path in (folder / "fixture.store",)
                 },
             }
-        elif scenario in ("peer-transfer", "peer-play"):
+        elif scenario in ("peer-transfer", "peer-transfer-compressed", "peer-play"):
             report = (folder / "peer.txt").read_text()
             if "complete=true error=None" not in report:
                 raise AssertionError(f"{scenario} failed:\n{report[:1500]}")
-            payload = saved_eeprom(
-                folder, tool, scenario_fixture[0], scenario_fixture[1].stat().st_size
-            )
-            if scenario == "peer-transfer":
+            if "flash_erases_during_reply_window=0" not in report:
+                raise AssertionError("Flash erase occurred while a peer reply was pending")
+            payload = saved_eeprom(folder, scenario_fixture[0], scenario_fixture[1].stat().st_size)
+            if scenario.startswith("peer-transfer"):
                 if payload[0x8F00 : 0x8F00 + 10430] != course():
                     raise AssertionError("DS put course differs after native commit/reset")
                 identity = (out / "fixture.eeprom").read_bytes()[0x83 : 0x83 + 40]
@@ -563,7 +550,7 @@ def main() -> None:
             expect_screen(folder / "settings-after.png", "STICK SETTINGS")
             evidence["scenarios"][scenario] = {
                 "result": "DS put/commit or native Walker peer exchange completes with retail baud, transmitter echo and instruction-cost timing; persisted state survives reset.",
-                "timing": "one-instruction quanta with opcode, branch, call and load-use costs; no analog/cache timing claim",
+                "timing": "one-instruction quanta with opcode/branch/call/load-use costs; 300 us program and 20 ms sector erase busy periods; no analog/cache timing claim",
             }
         elif scenario == "peer":
             report = (folder / "peer.txt").read_text()
@@ -603,7 +590,7 @@ def main() -> None:
             if replies != [expected, expected]:
                 raise AssertionError("Optical page payload must survive a reset and second session")
             expect_screen(folder / "settings-after.png", "STICK SETTINGS")
-            payload = saved_eeprom(folder, tool, fixture[0], fixture[1].stat().st_size)
+            payload = saved_eeprom(folder, fixture[0], fixture[1].stat().st_size)
             if payload[0xFF80:] != expected:
                 raise AssertionError(
                     "Acknowledged optical page is absent from the durable EEPROM checkpoint"

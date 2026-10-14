@@ -3,7 +3,7 @@
 Run the production Stickwalker image on a simulated Stick S3, press its buttons,
 and check the screen and infrared output. The ESP32-S3 ROM, bootloader,
 FreeRTOS, SDK drivers and application execute together. Flash writes use the
-firmware's NVS and LittleFS code.
+firmware's NVS and flash-record code.
 
 ## Run the checks
 
@@ -32,10 +32,9 @@ The runner checks that its source and binary hashes match the build record.
 `--arduino-cli` and `--config-file` select a separate Arduino installation when
 building through `check.py`.
 
-The registered-state workflows also use `mklittlefs` 4.0.2, installed with the
-pinned board core. The runner finds it through the selected Arduino configuration;
-`--mklittlefs /path/to/mklittlefs` overrides that discovery. Repeat `--scenario`
-to run selected workflows, for example `--scenario controls --scenario wake`.
+Repeat `--scenario` to run selected workflows, for example
+`--scenario controls --scenario wake`. Fixtures are generated directly in the
+current flash-record format; no filesystem packer is needed.
 
 ## Workflows and expectations
 
@@ -69,7 +68,7 @@ both keys, then R alone, remain held. A fresh R changes the layout only after
 release. Native Volume and Contrast remain the only selector choices: a second
 Right press stays on Contrast. The workflow changes volume 2 to 0 and contrast
 4 to 5, saves, resets, and checks both checksummed EEPROM mirrors in the
-resulting filesystem. Editor cursor positions are checked independently.
+resulting flash records. Editor cursor positions are checked independently.
 After cycling from three-key back to two-key, a fresh dedicated L press must
 reopen the overlay with the same two-key layout.
 
@@ -111,21 +110,19 @@ valid mirrored identity/status/save records, a registered flag, 100 Watts, no
 companion, volume 2 and contrast 4. Its score and simple cursor rasters are generated
 locally. It imports no private saves, Nintendo artwork, DS assets or retail scores.
 
-The runner wraps this image in the previous checkpoint format and packs it into a
-LittleFS partition sized from the firmware partition table. The simulator loads
-that partition before boot; all later migration, reads, writes and NVS changes go
-through the real firmware. It never patches game RAM or replaces native callbacks.
-The fixture and filesystem-tool hashes are retained with the run's evidence.
+The runner wraps this image in the current committed checkpoint format and
+loads it into the game-data partition before boot. Later reads, writes, record
+publication and NVS changes go through the real firmware. It never patches game
+RAM or replaces native callbacks. Fixture hashes are retained with the evidence.
 
-Three recovery cases reuse `recovery.actions`, boot normally, navigate the native
-menu and reset again. `recovery-stale` publishes a version-two checkpoint containing
-200 Watts with an older valid journal containing 100; the older data must not win.
-`recovery-legacy` requires a valid legacy journal to update its legacy checkpoint
-from 200 to 100 before migration. `recovery-truncated` leaves an incomplete next
-append after a 200-Watt checkpoint; that append must not partially apply. Both
-native save mirrors must retain their expected big-endian Watts and checksums in
-the resulting version-two checkpoint. These constructed crash states test recovery,
-not every possible physical flash interruption.
+Three recovery cases reuse `recovery.actions`, navigate the native menu and reset
+again. `recovery-stale` starts from 200 Watts with an older published journal
+containing 100; the checkpoint must win. `recovery-journal` publishes a valid next
+record changing both save mirrors from 200 to 100; replay must survive reset.
+`recovery-truncated` leaves an incomplete, unpublished append after a 200-Watt
+checkpoint; it must not partially apply. Both native mirrors must retain their
+expected big-endian Watts and checksums. These are current-format recovery states,
+not compatibility fixtures or exhaustive physical power-loss coverage.
 
 `peer.actions` uses a minimal DS-side protocol peer, not a second copy of the
 firmware. It observes GPIO46 SIR, validates checksums and session tokens, sends
@@ -133,7 +130,7 @@ status/read requests through GPIO5, and requires the 100-Watt value as `00 64`.
 `check.py` separately decodes that reply from the transmitted optical waveform.
 `peer-storage.actions` additionally writes one public 128-byte pattern at `0xFF80`,
 reads it back, resets the chip and reads it again in a new session. The final
-LittleFS checkpoint must contain the same pattern. Both workflows finish by
+committed checkpoint must contain the same pattern. Both workflows finish by
 opening Settings through physical inputs. The peer's ideal charge/discharge
 model drives the compiled photodiode receiver; it does not replace decoding or
 native protocol callbacks. It is a functional status/page exchange, not a complete
@@ -144,15 +141,25 @@ uncompressed data: status/Watts, 82 course pages, five trainer-record pages,
 PHC/distribution reads, checksum/ping, commit and one-way shutdown. After reset,
 independent flash extraction checks the committed course and trainer identity.
 
+`peer-transfer-compressed.actions` follows the same sequence using independently
+encoded Nintendo LZ10 pages, as HGSS does for starting a stroll. Pages that grow
+are sent raw, and the final partial course/record page uses HGSS's padded
+128-byte form. Native commit and reset must retain the same expected course and
+trainer record.
+
 `peer-play.actions` uses an eligible public Walker fixture and exchanges status,
 animation, name, trainer-house records, peer information and start. Both bulk
 transfer directions are checked. After reset, the native peer-history entry
 and received animation/name must remain in flash. It covers one handshake role;
 it does not yet cover all opening collisions or both native role branches.
 
-Both new workflows enable local transmitter echo and use 115760 baud, matching
+All three full exchanges enable local transmitter echo and use 115760 baud, matching
 the recorded retail-card clock. `STICK_E2E_OPCODE_TIMING=1` uses independently
 scheduled CPUs in one-instruction quanta with opcode/branch/call/load-use costs.
+Full exchanges also hold the NOR WIP bit for 300 microseconds per program
+command and 20 milliseconds per sector erase. These are explicit regression
+stress parameters, not a claim about the installed flash chip. An independent
+bus observer requires zero flash erases while a protocol reply is pending.
 The default short workflows retain their original timing mode. This is a
 software timing sensitivity check, not an analog or cache-accurate hardware
 model. The [regression investigation](../docs/history/ir-readiness-regression.md)
@@ -216,13 +223,13 @@ number of milliseconds. Every run stops on an unexpected chip reset or panic.
 | `peer read-page 65408` | Also read and verify that page without writing it |
 | `peer report name.txt` | Save peer phase, packet trace, observed Watts and any protocol error |
 | `peer put path baud turnaround_us` | Run the HGSS put sequence with a public 10430-byte course |
+| `peer put-compressed path baud turnaround_us` | Run HGSS put with per-page LZ10 compression |
 | `peer walker path` | Run a Walker exchange using a public 64 KiB fixture |
 | `peer echo on` | Illuminate the receiver with live local RMT pulses during transmission |
 | `run-until-peer 15000` | Advance until peer completion/error, bounded by the given milliseconds |
-| `peer legacy-watts` | Diagnostic comparison only: accept the pre-PR reversed Watts bytes |
 | `peer stop` | Disconnect the test peer before restarting the board |
 | `reset` | Restart the chip while retaining flash and board devices |
 
 The simulator executable also accepts an optional initial flash offset and image
-after its normal arguments. `check.py` uses this only for the generated LittleFS
+after its normal arguments. `check.py` uses this only for the generated flash-record
 fixture, before the ROM boots.

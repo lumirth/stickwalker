@@ -5,10 +5,9 @@ covers persistence and pixel presentation for changes to the adapters.
 
 ## Persist settings
 
-`pw-controls/layout-v2` stores layout, rotation and the two-key window. Migration
-maps each legacy configuration to its directional behavior, including the
-reversed three-key mapping. The display adapter applies rotation. Button mapping
-uses the selected layout.
+`pw-controls/layout-v2` stores layout, rotation and the two-key window.
+The display adapter applies rotation. Button mapping uses the selected layout.
+Older configuration keys are ignored.
 Game progress is stored in the EEPROM image.
 
 Three-key Settings access observes a one-second physical L+R hold in `Controls`;

@@ -34,7 +34,7 @@ advance only when the firmware consumes a refresh request.
 
 Physical acquisition and Settings share debounce state. PMIC L supplies a
 current level and retained press; configuration/read failures are retried.
-The four layout encodings and migration rules remain unchanged.
+The four current layout encodings remain unchanged. Older configuration keys are ignored.
 
 The delivery queue timestamps transitions. Disjoint buttons may omit a redundant
 neutral state, but repeated presses of one button require a delivered release.
@@ -105,27 +105,28 @@ The native 64 KiB EEPROM address space, mixed-endian records, mirrors and stagin
 regions remain intact. The status path explicitly writes big-endian Watts, as
 required by the DS reader.
 
-The v2 backend uses CRC-protected checkpoint and journal headers with generation
-and sequence numbers. A published checkpoint covers earlier records even when
-a reset precedes journal deletion. Reads observe accepted writes immediately;
-mirrored logical writes remain grouped. Writes check write, sync and close
-results and independently read back records.
+The backend has one flash-record format, with two alternating 64 KiB
+checkpoints and a bounded append log in the existing game-data partition.
+Generation and sequence numbers prevent a covered journal from overriding a
+published checkpoint. Native records retain their mixed byte order and mirrors.
 
-Legacy snapshots and journals migrate using their existing recovery
-interpretation, retaining their original files. Legacy records cannot prove
-whether a journal belongs before or after a checkpoint; migration cannot
-reconstruct already-lost history. New-format corruption fails closed rather
-than silently falling back to older legacy progress.
+A record programs its body and checked header into pre-erased space, reads both
+back independently, and programs its publication word last. Recovery applies only
+published records with valid CRCs and consecutive sequences. An unpublished tail
+is ignored. Published corruption fails closed. Inactive checkpoints are retired
+before replacement; journal erasure follows publication of the covering checkpoint.
 
-IR no longer defers its entire session in RAM. It prepares journal capacity
-before acquisition, appends bounded durable records during the reply window,
-and permits checkpoint compaction after the session. Actual persistence failures
-suppress further acknowledgments and pending activation; completed durable
-writes are not rolled back. Timing overruns are recorded separately from storage
-failures. Independent append verification reads only the new record through a
-fresh POSIX descriptor. Exact decoder search pruning creates reply-time headroom;
-see the [IR regression investigation](history/ir-readiness-regression.md).
-LittleFS and flash latency still need measurement against peer deadlines.
+Journal capacity is prepared before acquisition. During IR, append operations
+perform only bounded programming and readback; flash erasure is prohibited by the
+storage module. Checkpoint replacement and clearing dirty journal sectors happen
+outside the session. The decoder's exact search pruning retains reply-time
+headroom; see the [IR regression investigation](history/ir-readiness-regression.md).
+
+The filesystem, legacy save readers, migration and old control-layout conversion
+are removed. Unsupported game data is not interpreted or erased automatically.
+Pre-release upgrades require returning the Pokémon to HGSS, backing up, and
+initializing the game-data partition as described in the [install guide](install.md).
+Board settings remain separately stored in NVS.
 
 The DS's Back and present-collection paths do not wait for a final deletion
 acknowledgment. No new handshake or claim of two-device atomicity is introduced.

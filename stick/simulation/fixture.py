@@ -2,11 +2,10 @@
 
 Addresses and checksums follow include/eeprom_map.h, resources.h, records.h,
 save.h, score.h and the matching firmware's EEPROM/score loaders. No save or
-uploaded game artwork is imported. The legacy envelope exercises migration.
+uploaded game artwork is imported. Every fixture uses the current flash-record format.
 """
 
 import struct
-import subprocess
 import zlib
 from pathlib import Path
 
@@ -90,9 +89,7 @@ def eeprom(watts: int = 100, companion: bool = False) -> bytes:
     return bytes(image)
 
 
-def filesystem(
-    tool: Path, partitions: Path, folder: Path, case: str = "registered"
-) -> tuple[int, Path]:
+def storage(partitions: Path, folder: Path, case: str = "registered") -> tuple[int, Path]:
     table = partitions.read_bytes()
     partition = None
     for position in range(0, len(table), 32):
@@ -104,43 +101,36 @@ def filesystem(
         if kind == 1 and subtype == 0x82:
             partition = offset, size
     if partition is None:
-        raise ValueError("Firmware has no LittleFS partition")
+        raise ValueError("Firmware has no EEPROM data partition")
     offset, size = partition
     payload = eeprom(
         100 if case in ("registered", "peer-play") else 200, companion=case == "peer-play"
     )
-    source = folder / "fixture-files"
-    source.mkdir()
 
-    def versioned(magic: int, generation: int, sequence: int, data: bytes) -> bytes:
+    def record(magic: int, generation: int, sequence: int, data: bytes) -> bytes:
         header = struct.pack("<5I", magic, generation, sequence, len(data), zlib.crc32(data))
-        return header + struct.pack("<I", zlib.crc32(header)) + data
+        return header + struct.pack("<II", zlib.crc32(header), 0x54494D43) + data
 
-    if case in ("registered", "recovery-legacy", "peer-play"):
-        (source / "pw-a.bin").write_bytes(
-            struct.pack("<III", 0x50574531, 1, zlib.crc32(payload)) + payload
-        )
-    else:
-        (source / "pw2-a.bin").write_bytes(versioned(0x50574532, 2, 2, payload))
+    raw = bytearray(b"\xff" * size)
+    checkpoint = record(0x53574531, 2, 2, payload)
+    raw[: len(checkpoint)] = checkpoint
     if case not in ("registered", "peer-play"):
         older = eeprom(100)
         patches = b"".join(
             struct.pack("<HH", address, 25) + older[address : address + 25]
             for address in (0x156, 0x256)
         )
-        if case == "recovery-legacy":
-            record = struct.pack("<III", 0x50574A31, len(patches), zlib.crc32(patches)) + patches
-            (source / "pw-journal.bin").write_bytes(record)
+        if case == "recovery-journal":
+            append = record(0x53574A31, 2, 3, patches)
         elif case == "recovery-stale":
-            (source / "pw2-journal.bin").write_bytes(versioned(0x50574A32, 1, 1, patches))
+            append = record(0x53574A31, 1, 1, patches)
         elif case == "recovery-truncated":
-            (source / "pw2-journal.bin").write_bytes(versioned(0x50574A32, 2, 3, patches)[:-3])
+            append = bytearray(record(0x53574A31, 2, 3, patches)[:-3])
+            append[24:28] = b"\xff" * 4
         else:
             raise ValueError(f"Unknown fixture {case}")
+        raw[0x22000 : 0x22000 + len(append)] = append
     (folder / "fixture.eeprom").write_bytes(payload)
-    target = folder / "fixture.littlefs"
-    subprocess.run(
-        [str(tool), "-c", str(source), "-b", "4096", "-p", "256", "-s", str(size), str(target)],
-        check=True,
-    )
+    target = folder / "fixture.store"
+    target.write_bytes(raw)
     return offset, target

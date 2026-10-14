@@ -35,6 +35,13 @@ fn main() {
             core.price_control = true;
         }
     }
+    if let Ok(value) = std::env::var("STICK_E2E_FLASH_TIMING") {
+        let (program, erase) = value
+            .split_once(',')
+            .expect("flash timing: program_us,sector_erase_us");
+        machine.bus.periph.spi1.program_cycles = program.parse::<u64>().unwrap() * 240;
+        machine.bus.periph.spi1.sector_erase_cycles = erase.parse::<u64>().unwrap() * 240;
+    }
     machine.console.capture = true;
     machine.boot_rom();
     for line in std::fs::read_to_string(&args[3]).unwrap().lines() {
@@ -166,9 +173,6 @@ fn main() {
             ["peer", "echo", enabled] => {
                 inputs.lock().unwrap().local_echo = *enabled == "on";
             }
-            ["peer", "legacy-watts"] => {
-                inputs.lock().unwrap().peer.as_mut().unwrap().legacy_watts();
-            }
             ["peer", "start", baud, turnaround] => {
                 inputs.lock().unwrap().peer = Some(
                     peer::OpticalPeer::new()
@@ -182,6 +186,12 @@ fn main() {
             ["peer", "put", path, baud, turnaround] => {
                 inputs.lock().unwrap().peer = Some(
                     peer::OpticalPeer::with_put(std::fs::read(path).unwrap())
+                        .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
+                );
+            }
+            ["peer", "put-compressed", path, baud, turnaround] => {
+                inputs.lock().unwrap().peer = Some(
+                    peer::OpticalPeer::with_compressed_put(std::fs::read(path).unwrap())
                         .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
                 );
             }
@@ -212,9 +222,10 @@ fn main() {
                 std::fs::write(
                     out.join(name),
                     format!(
-                        "complete={} error={:?}\n{}",
+                        "complete={} error={:?}\nflash_erases_during_reply_window={}\n{}",
                         peer.complete(),
                         peer.error(),
+                        state.reply_window_erases,
                         peer.report()
                     ),
                 )

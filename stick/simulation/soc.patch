@@ -224,6 +224,88 @@ index 5c625c1..16e17a0 100644
 +        Some(alarm.map_or(wdt, |ticks| ticks.min(wdt)))
 +    }
  }
+diff --git a/esp-periph/src/spi_mem.rs b/esp-periph/src/spi_mem.rs
+index 8e41481..5df95b1 100644
+--- a/esp-periph/src/spi_mem.rs
++++ b/esp-periph/src/spi_mem.rs
+@@ -1,5 +1,6 @@
+ use crate::device::{Device, WriteEffect};
+ use crate::regram::RegRam;
++use emu_core::ClockDomain;
+ 
+ /// Which array a SPI command wrote (the SoC maps this to its own buffer ids).
+ #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+@@ -20,11 +21,15 @@ pub struct SpiMem {
+     pub jedec: [u8; 3],
+     pub is_spi1: bool,
+     pub log: bool,
++    /// Optional NOR busy timing, in CPU-clock ticks. Zero retains ideal timing.
++    pub program_cycles: u64,
++    pub sector_erase_cycles: u64,
++    busy_cycles: u64,
+     /// octal PSRAM (APS6408-like) mode registers MR0..MR8, device on CS1 (SPI1 only)
+     pub psram_mr: [u8; 9],
+ }
+ impl SpiMem {
+-    pub fn new(is_spi1: bool) -> Self { SpiMem { has_psram: true, regs: RegRam::new(), dirty: Vec::new(), w: [0; 16], pending_cmd: 0, status: 0x200, jedec: [0x20, 0x40, 0x17], is_spi1, log: false , psram_mr: [0x09, 0x0d, 0x8b, 0x00, 0x20, 0, 0, 0, 0x03] } }
++    pub fn new(is_spi1: bool) -> Self { SpiMem { has_psram: true, regs: RegRam::new(), dirty: Vec::new(), w: [0; 16], pending_cmd: 0, status: 0x200, jedec: [0x20, 0x40, 0x17], is_spi1, log: false, program_cycles: 0, sector_erase_cycles: 0, busy_cycles: 0, psram_mr: [0x09, 0x0d, 0x8b, 0x00, 0x20, 0, 0, 0, 0x03] } }
+     pub fn read(&self, off: u32) -> u32 {
+         match off {
+             0x0 => 0,                                   // CMD: always idle after execution
+@@ -46,6 +51,14 @@ impl SpiMem {
+         }
+         false
+     }
++    fn busy(&mut self, ticks: u64) {
++        self.busy_cycles = ticks;
++        if ticks != 0 { self.status |= 1; }
++    }
++    fn advance_busy(&mut self, ticks: u64) {
++        self.busy_cycles = self.busy_cycles.saturating_sub(ticks);
++        if self.busy_cycles == 0 { self.status &= !1; }
++    }
+     fn w_bytes(&self, n: usize) -> Vec<u8> { let mut o = Vec::with_capacity(n); for i in 0..n { o.push((self.w[(i / 4) & 15] >> ((i % 4) * 8)) as u8); } o }
+     fn set_w_bytes(&mut self, data: &[u8]) { for w in self.w.iter_mut() { *w = 0; } for (i, b) in data.iter().enumerate().take(64) { self.w[i / 4] |= (*b as u32) << ((i % 4) * 8); } }
+ 
+@@ -106,10 +119,10 @@ impl SpiMem {
+                 0x04 => self.status &= !0x02,                      // WRDI
+                 0x01 | 0x31 | 0x11 => self.status &= !0x02,        // WRSR*: latch consumed (keep QE set)
+                 0x15 => self.set_w_bytes(&[0x00]),
+-                0x02 | 0x32 | 0x38 => { let d = self.w_bytes(mosi_bytes); for (i, b) in d.iter().enumerate() { let x = addr as usize + i; if x < fsize { flash[x] &= *b; } } self.dirty.push((DirtyMem::Flash, addr as usize, d.len())); self.status &= !0x02; }
+-                0x20 => { let a = (addr as usize) & !0xfff; for b in flash.iter_mut().take((a + 0x1000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x1000)); self.status &= !0x02; }
+-                0x52 => { let a = (addr as usize) & !0x7fff; for b in flash.iter_mut().take((a + 0x8000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x8000)); self.status &= !0x02; }
+-                0xd8 => { let a = (addr as usize) & !0xffff; for b in flash.iter_mut().take((a + 0x10000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x10000)); self.status &= !0x02; }
++                0x02 | 0x32 | 0x38 => { let d = self.w_bytes(mosi_bytes); for (i, b) in d.iter().enumerate() { let x = addr as usize + i; if x < fsize { flash[x] &= *b; } } self.dirty.push((DirtyMem::Flash, addr as usize, d.len())); self.status &= !0x02; self.busy(self.program_cycles); }
++                0x20 => { let a = (addr as usize) & !0xfff; for b in flash.iter_mut().take((a + 0x1000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x1000)); self.status &= !0x02; self.busy(self.sector_erase_cycles * 1); }
++                0x52 => { let a = (addr as usize) & !0x7fff; for b in flash.iter_mut().take((a + 0x8000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x8000)); self.status &= !0x02; self.busy(self.sector_erase_cycles * 8); }
++                0xd8 => { let a = (addr as usize) & !0xffff; for b in flash.iter_mut().take((a + 0x10000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x10000)); self.status &= !0x02; self.busy(self.sector_erase_cycles * 16); }
+                 0xc7 | 0x60 => { for b in flash.iter_mut() { *b = 0xff; } self.dirty.push((DirtyMem::Flash, 0, fsize)); self.status &= !0x02; }
+                 _ => { if has_miso { self.set_w_bytes(&vec![0u8; miso_bytes]); } }
+             }
+@@ -127,9 +140,10 @@ impl SpiMem {
+             for (i, b) in d.iter().enumerate() { let x = (addr & 0xff_ffff) as usize + i; if x < fsize { flash[x] &= *b; } }
+             self.dirty.push((DirtyMem::Flash, (addr & 0xff_ffff) as usize, d.len()));
+             self.status &= !0x02;
++            self.busy(self.program_cycles);
+         }
+-        if cmd & (1 << 24) != 0 { let a = (addr as usize) & !0xfff; for b in flash.iter_mut().take((a + 0x1000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x1000)); self.status &= !0x02; }      // SE
+-        if cmd & (1 << 23) != 0 { let a = (addr as usize) & !0xffff; for b in flash.iter_mut().take((a + 0x10000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x10000)); }    // BE
++        if cmd & (1 << 24) != 0 { let a = (addr as usize) & !0xfff; for b in flash.iter_mut().take((a + 0x1000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x1000)); self.status &= !0x02; self.busy(self.sector_erase_cycles * 1); }      // SE
++        if cmd & (1 << 23) != 0 { let a = (addr as usize) & !0xffff; for b in flash.iter_mut().take((a + 0x10000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x10000)); self.busy(self.sector_erase_cycles * 16); }    // BE
+         if cmd & (1 << 22) != 0 { for b in flash.iter_mut() { *b = 0xff; } self.dirty.push((DirtyMem::Flash, 0, fsize)); }                          // CE
+     }
+ }
+@@ -138,6 +152,10 @@ impl Device for SpiMem {
+     fn read(&mut self, off: u32) -> u32 { SpiMem::read(self, off) }
+     /// Only SPI1 is the command engine; SPI0 is the cache path and its command bit is ignored.
+     fn write(&mut self, off: u32, v: u32) -> WriteEffect { if SpiMem::write(self, off, v) && self.is_spi1 { WriteEffect::SPI_EXEC } else { WriteEffect::NONE } }
++    fn clock(&self) -> Option<ClockDomain> { Some(ClockDomain::Cpu) }
++    fn tick(&mut self, ticks: u64) { self.advance_busy(ticks); }
++    fn has_deadline(&self) -> bool { true }
++    fn next_deadline(&self) -> Option<u64> { (self.busy_cycles != 0).then_some(self.busy_cycles) }
+     fn debug(&mut self, on: bool) { self.log = on; }
+ }
+ 
 diff --git a/esp-periph/src/timg.rs b/esp-periph/src/timg.rs
 index b9cc33c..71f21d2 100644
 --- a/esp-periph/src/timg.rs
@@ -296,16 +378,17 @@ index b9cc33c..71f21d2 100644
              if t.config & (1 << 31) == 0 || t.config & (1 << 10) == 0 { continue; }
              let div = ((t.config >> 13) & 0xffff) as u64;
 diff --git a/esp-soc/src/board.rs b/esp-soc/src/board.rs
-index 03995a7..5782fed 100644
+index 03995a7..d93b113 100644
 --- a/esp-soc/src/board.rs
 +++ b/esp-soc/src/board.rs
-@@ -37,6 +37,9 @@ pub trait BoardModel {
+@@ -37,6 +37,10 @@ pub trait BoardModel {
      /// GPIO matrix has that channel routed to. Drivers that take a fresh channel per refresh
      /// (the Arduino NeoPixel one does) make the channel meaningless; the pin names the strip.
      fn rmt_frame(&mut self, _pin: u8, _bits: &[bool]) {}
 +    /// A symbol at its start cycle, before the completed-frame callback.
 +    fn rmt_symbol_at(&mut self, _cycle: VirtualCycle, _pin: u8, _pulses: &[(u64, bool)]) {}
 +    fn rmt_waveform(&mut self, _pin: u8, _pulses: &[(u64, bool)]) {}
++    fn flash_erase_at(&mut self, _cycle: VirtualCycle, _offset: usize, _length: usize) {}
      /// Bytes a GP-SPI master (`host` = 2 or 3) shifted out on MOSI.
      fn spi_tx(&mut self, _host: u8, _data: &[u8]) {}
      /// One complete GP-SPI transaction. The default preserves transmit-only boards and models an
@@ -344,7 +427,7 @@ index 59c4dc3..bace58c 100644
                  self.bus.set_defer(true);
              }
 diff --git a/esp32s3/src/bus.rs b/esp32s3/src/bus.rs
-index 394df15..762f181 100644
+index 394df15..52b1122 100644
 --- a/esp32s3/src/bus.rs
 +++ b/esp32s3/src/bus.rs
 @@ -57,10 +57,11 @@ pub struct SocBus {
@@ -446,7 +529,19 @@ index 394df15..762f181 100644
          // Resolved output changes can raise edge or level input interrupts.
          if spi {
              self.irq_dirty |= before != sources(&self.periph);
-@@ -677,6 +683,24 @@ impl SocBus {
+@@ -522,7 +528,10 @@ impl SocBus {
+         if self.periph.spi_exec {
+             self.periph.spi_exec = false;
+             self.periph.spi1.execute(&mut self.flash, &mut self.psram);
+-            for (m, off, len) in std::mem::take(&mut self.periph.spi1.dirty) { self.note_written(match m { crate::periph::DirtyMem::Flash => SRC_FLASH, crate::periph::DirtyMem::Psram => SRC_PSRAM }, off, len); }
++            for (m, off, len) in std::mem::take(&mut self.periph.spi1.dirty) {
++                if m == crate::periph::DirtyMem::Flash && len >= 4096 { self.board.flash_erase_at(self.cycles, off, len); }
++                self.note_written(match m { crate::periph::DirtyMem::Flash => SRC_FLASH, crate::periph::DirtyMem::Psram => SRC_PSRAM }, off, len);
++            }
+         }
+     }
+ 
+@@ -677,6 +686,24 @@ impl SocBus {
  }
  
  impl Bus for SocBus {
@@ -471,7 +566,7 @@ index 394df15..762f181 100644
      #[inline]
      fn read8(&mut self, addr: u32) -> Result<u8, Fault> { self.read8_access::<true>(addr) }
      fn read8_unpriced(&mut self, addr: u32) -> Result<u8, Fault> { self.read8_access::<false>(addr) }
-@@ -782,6 +806,7 @@ impl SocBus {
+@@ -782,6 +809,7 @@ impl SocBus {
              || p.wifi.link.ap().is_some() || p.wifi.link.net().is_some() || !p.wifi.tx_pending.is_empty()
              || p.aes.dma_pending || p.sha.dma_pending
              || p.spi2.has_pending_transfer() || p.spi2.dma_tx_pending.is_some()
@@ -479,7 +574,7 @@ index 394df15..762f181 100644
              || p.rmt.ch.iter().any(|c| c.running) || !p.rmt.done.is_empty()
              || !p.gpio.changes.is_empty() || !p.gpio.input_changes.is_empty()
              || p.rtc.ram.read(0x98) & (1 << 31) != 0
-@@ -793,7 +818,7 @@ impl SocBus {
+@@ -793,7 +821,7 @@ impl SocBus {
      pub fn refresh_tick_budget(&mut self) {
          let cap = if self.cadence_active() { MAX_TICK_DEFER } else { QUIET_TICK_DEFER };
          let mut budget = self.periph.cycles_until_timer().clamp(1, cap);
@@ -488,7 +583,7 @@ index 394df15..762f181 100644
              let until = u64::from(self.tick_pending).saturating_add(deadline.saturating_sub(self.cycles));
              budget = budget.min(until.clamp(1, u64::from(MAX_TICK_DEFER)) as u32);
          }
-@@ -818,6 +843,11 @@ impl SocBus {
+@@ -818,6 +846,11 @@ impl SocBus {
          // Reads may flush before the periodic backstop. Refresh for either edge
          // of a clocked source, without breaking every block that polls MMIO.
          self.irq_dirty |= self.periph.tick(cycles as u64);
@@ -500,7 +595,7 @@ index 394df15..762f181 100644
          if self.uart_pins {
              for input in self.board.uart_rx(self.cycles) {
                  self.periph.uart_pin_input(&input);
-@@ -825,8 +855,8 @@ impl SocBus {
+@@ -825,8 +858,8 @@ impl SocBus {
              }
          }
          if self.board_edges { self.irq_dirty |= esp_soc::gpio::deliver_board_inputs(&mut *self.board, &mut self.periph.gpio, &mut self.gpio_events, self.cycles); }
@@ -511,7 +606,7 @@ index 394df15..762f181 100644
          self.dma_i2s_step(cycles as u64);
          self.dma_cam_step(cycles as u64);
          self.dma_lcd_step(cycles as u64);
-@@ -844,7 +874,11 @@ impl SocBus {
+@@ -844,7 +877,11 @@ impl SocBus {
              self.board.gpio_output_at(self.cycles, ch, self.periph.gpio.enable, self.periph.gpio.out);
              self.periph.gpio.changes.clear();
          }
