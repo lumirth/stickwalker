@@ -195,10 +195,13 @@ def littlefs_tool(args) -> Path:
         command = [args.arduino_cli]
         if args.config_file:
             command += ["--config-file", str(args.config_file.resolve())]
-        config = json.loads(
-            subprocess.check_output(command + ["config", "dump", "--format", "json"])
+        data = Path(
+            json.loads(
+                subprocess.check_output(
+                    command + ["config", "get", "directories.data", "--format", "json"]
+                )
+            )
         )
-        data = Path(config["config"]["directories"]["data"])
         tool = data / "packages/m5stack/tools/mklittlefs/4.0.2-db0513a/mklittlefs"
     version = subprocess.check_output([str(tool), "--version"], text=True)
     if "mklittlefs ver. 4.0.2" not in version:
