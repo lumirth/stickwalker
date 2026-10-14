@@ -1,22 +1,19 @@
 name: Bug report
-description: Report unexpected behavior in Stickwalker.
+description: Report a Stickwalker problem.
 body:
   - type: textarea
     id: reproduction
     attributes:
-      label: What happened?
-      description: Describe the steps, expected result and observed result.
+      label: Steps and result
     validations:
       required: true
   - type: textarea
     id: setup
     attributes:
-      label: Version and setup
-      description: Which release or custom build are you using? Is USB connected? For button problems, include the layout and rotation; for connection problems, include the game, distance and alignment.
+      label: Firmware version
     validations:
       required: true
   - type: textarea
     id: evidence
     attributes:
       label: Screenshots or logs
-      description: Attach anything that helps explain the problem, if available. Keep full flash and EEPROM backups private because they contain your game data.

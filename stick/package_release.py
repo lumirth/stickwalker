@@ -161,7 +161,6 @@ def package(args) -> None:
                 "git_commit": commit,
                 "hardware_qualified": False,
                 "ir_baseline_identical": read_json(args.build_dir / "ir-timing.json")["passed"],
-                "qualification": "See RELEASE.md; qualify these exact output hashes.",
                 "runtime_archive": runtime.name,
                 "runtime_sha256": digest(runtime),
             }
@@ -170,8 +169,6 @@ def package(args) -> None:
         for original, name in (
             ("LICENSE", "LICENSE"),
             ("stick/docs/install.md", "INSTALL.md"),
-            ("stick/docs/release.md", "RELEASE.md"),
-            ("stick/docs/playing.md", "PLAYING.md"),
             ("stick/docs/controls.md", "CONTROLS.md"),
             ("docs/third-party.md", "THIRD-PARTY.md"),
         ):
@@ -186,8 +183,6 @@ def package(args) -> None:
                 rel = source_target.resolve().relative_to(ROOT).as_posix()
                 bundled = {
                     "stick/docs/install.md": "INSTALL.md",
-                    "stick/docs/release.md": "RELEASE.md",
-                    "stick/docs/playing.md": "PLAYING.md",
                     "stick/docs/controls.md": "CONTROLS.md",
                     "docs/third-party.md": "THIRD-PARTY.md",
                     "LICENSE": "LICENSE",
