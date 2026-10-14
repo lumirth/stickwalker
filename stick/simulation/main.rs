@@ -138,6 +138,23 @@ fn main() {
             ["gpio", pin, level] => machine
                 .bus
                 .gpio_set_input(pin.parse().unwrap(), *level == "1"),
+            ["adc", pin, volts] => machine.bus.analog_set(
+                pin.parse().unwrap(),
+                esp_periph::AnalogSource::Const(volts.parse().unwrap()),
+            ),
+            ["diode", "report", name] => {
+                let state = inputs.lock().unwrap();
+                std::fs::write(
+                    out.join(name),
+                    format!(
+                        "high_drives={}\nreboots={}\noutput_enabled={}\n",
+                        state.diode_high_drives,
+                        machine.reboots,
+                        machine.bus.periph.gpio.enable & (1 << 5) != 0,
+                    ),
+                )
+                .unwrap();
+            }
             ["serial", text] => machine.bus.serial_input(text.as_bytes()),
             ["vbus", millivolts] => {
                 inputs.lock().unwrap().vbus_mv = Some(millivolts.parse().unwrap());

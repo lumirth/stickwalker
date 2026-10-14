@@ -15,6 +15,7 @@ pub struct Inputs {
     pub peer: Option<crate::peer::OpticalPeer>,
     pub local_echo: bool,
     pub reply_window_erases: u64,
+    pub diode_high_drives: u64,
 }
 
 enum Device {
@@ -224,7 +225,11 @@ impl BoardModel for StickS3 {
     }
     fn gpio_output_at(&mut self, cycle: u64, changes: &[(u8, bool)], enabled: u64, output: u64) {
         self.gpio_changes(changes);
-        if let Some(peer) = self.inputs.lock().unwrap().peer.as_mut() {
+        let mut state = self.inputs.lock().unwrap();
+        if enabled & output & (1 << 5) != 0 {
+            state.diode_high_drives += 1;
+        }
+        if let Some(peer) = state.peer.as_mut() {
             peer.gpio_output(cycle, enabled, output);
         }
     }

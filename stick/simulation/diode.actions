@@ -1,0 +1,74 @@
+run 6000
+screen idle.png
+# Ambiguous held-low input: do not call it missing or backwards.
+gpio 5 0
+adc 5 0
+press M
+press R
+run 300
+release M
+release R
+run 100
+screen unknown.png
+diode report blocked.txt
+optical blocked.optical
+run 6500
+screen expired.png
+# Positive photocurrent with the pull-down confirms an illuminated reversal.
+adc 5 0.4
+press L
+run 100
+release L
+run 200
+press L
+run 100
+release L
+run 200
+press M
+press R
+run 300
+release M
+release R
+run 100
+screen reversed.png
+diode report reversed.txt
+# Correcting the input clears the fault during the bounded recheck window.
+gpio 5 1
+run 600
+screen corrected.png
+# Repeat in the opposite rotation and light appearance.
+press L
+run 100
+release L
+run 200
+press M
+run 80
+release M
+run 200
+press R
+run 80
+release R
+run 200
+press M
+run 80
+release M
+run 200
+press R
+run 80
+release R
+run 200
+press L
+run 100
+release L
+run 200
+gpio 5 0
+press M
+press R
+run 300
+release M
+release R
+run 100
+screen rotated.png
+diode report rotated.txt
+run 6500
+screen rotated-expired.png

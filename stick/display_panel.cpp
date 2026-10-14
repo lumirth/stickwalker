@@ -5,6 +5,7 @@
 #include "backlight.h"
 #include "peripheral_power.h"
 #include "display_palette.h"
+#include "diode_status.h"
 
 #include <M5Unified.h>
 #include <Arduino.h>
@@ -227,6 +228,7 @@ extern "C" uint64_t StickDisplayNextDeadline(void) {
 extern "C" void StickDisplayInvalidate(void) {
   valid_rows = 0;
   presentation_pending = true;
+  StickDiodeInvalidate();
 }
 
 extern "C" int StickDisplayPresentationPending(void) {

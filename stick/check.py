@@ -27,6 +27,8 @@ from fixture import course, storage  # noqa: E402
 SCENARIOS = (
     "settings",
     "connect",
+    "diode",
+    "diode-peer",
     "controls",
     "layouts",
     "wake",
@@ -272,6 +274,21 @@ def main() -> None:
     destination = args.output_dir.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix="run-", dir=destination))
+    policy = out / "diode-feedback"
+    subprocess.run(
+        [
+            "c++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "stick/audits/diode_feedback.cpp",
+            "-o",
+            str(policy),
+        ],
+        check=True,
+    )
+    subprocess.run([str(policy)], check=True)
     firmware = out / "firmware.merged.bin"
     shutil.copyfile(build / "PwStick.ino.merged.bin", firmware)
     if digest(firmware) != manifest["outputs"]["PwStick.ino.merged.bin"]:
@@ -296,6 +313,8 @@ def main() -> None:
             "stick/simulation/Cargo.lock",
             "stick/simulation/settings.actions",
             "stick/simulation/connect.actions",
+            "stick/simulation/diode.actions",
+            "stick/simulation/diode-peer.actions",
             "stick/simulation/controls.actions",
             "stick/simulation/layouts.actions",
             "stick/simulation/wake.actions",
@@ -307,11 +326,12 @@ def main() -> None:
             "stick/simulation/peer-play.actions",
             "stick/simulation/peer.rs",
             "stick/simulation/fixture.py",
+            "stick/audits/diode_feedback.cpp",
         )
     }
     scenarios = args.scenario or SCENARIOS
     fixture = None
-    if any(name not in ("settings", "connect") for name in scenarios):
+    if any(name not in ("settings", "connect", "diode") for name in scenarios):
         fixture = storage(build / "PwStick.ino.partitions.bin", out)
         evidence["fixture_sha256"] = digest(out / "fixture.eeprom")
     (out / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
@@ -361,7 +381,7 @@ def main() -> None:
                 ]
                 + (
                     [str(scenario_fixture[0]), str(scenario_fixture[1])]
-                    if scenario not in ("settings", "connect")
+                    if scenario not in ("settings", "connect", "diode")
                     else []
                 ),
                 stdout=log,
@@ -378,9 +398,7 @@ def main() -> None:
                 },
             )
         if scenario == "settings":
-            expect_screen(
-                folder / "defaults.png", "STICK SETTINGS", "3-key", "Left side down"
-            )
+            expect_screen(folder / "defaults.png", "STICK SETTINGS", "3-key", "Left side down")
             expect_screen(folder / "settings.png", "STICK SETTINGS", "Left side down", "Dark")
             expect_appearance(folder / "settings.png", light=False)
             for name in ("changed.png", "retained.png"):
@@ -394,14 +412,102 @@ def main() -> None:
         elif scenario == "connect":
             expect_screen(folder / "settings-after.png", "STICK SETTINGS")
             expect_screen(folder / "settings-retry.png", "STICK SETTINGS")
-            first = optical_frames(folder / "first.optical")
+            if (folder / "first.optical").read_text().strip():
+                raise AssertionError("Held-low input must fail preflight before transmitting")
             retry = optical_frames(folder / "retry.optical")
-            if bytes([0xFC]) not in first or bytes([0xFC]) not in retry[len(first) :]:
-                raise AssertionError("Connect and retry must emit the Pokéwalker advertisement")
+            if bytes([0xFC]) not in retry:
+                raise AssertionError("Retry after clearing the input must advertise")
             evidence["scenarios"][scenario] = {
-                "result": "Receiver held low and held high: Connect finishes, retries transmit, Settings remains usable.",
+                "result": "Held-low input is rejected before transmission; clearing the input permits retry and Settings remains usable.",
                 "logical_frames": [frame.hex() for frame in retry],
             }
+        elif scenario == "diode":
+            for name in ("blocked", "reversed", "rotated"):
+                report = (folder / f"{name}.txt").read_text()
+                if "high_drives=0" not in report or "reboots=0" not in report:
+                    raise AssertionError(f"Blocked diode entered precharge or rebooted: {report}")
+                if "output_enabled=false" not in report:
+                    raise AssertionError(f"Diode output was not released: {report}")
+            if (folder / "blocked.optical").read_text().strip():
+                raise AssertionError("A blocked diode transmitted before preflight completed")
+            # Match the approved artwork, including its empty pixels. The hash
+            # covers a 16x16 binary raster, independent of theme and rotation.
+            icons = {
+                "unknown": "85deec01f7e986eca65f2bd5d332ebecac69e21dd3e4db85a0a004b402e7bb44",
+                "reversed": "2ece536104eb88144176747b280c66d0c111d76b56ca6f912fd0b4cd59c67d6d",
+            }
+            for name, state, rotated in (
+                ("unknown", "unknown", False),
+                ("reversed", "reversed", False),
+                ("rotated", "reversed", True),
+            ):
+                image = (
+                    Image.open(folder / f"{name}.png")
+                    .rotate(90 if rotated else -90, expand=True)
+                    .convert("L")
+                )
+                x = 220 if rotated else 4
+                bits = bytes(
+                    (
+                        image.getpixel((x + col, 59 + row)) < 128
+                        if rotated
+                        else image.getpixel((x + col, 59 + row)) >= 128
+                    )
+                    for row in range(16)
+                    for col in range(16)
+                )
+                if hashlib.sha256(bits).hexdigest() != icons[state]:
+                    raise AssertionError(f"{name}: diode icon differs from approved artwork")
+            for name, rotated in (
+                ("idle", False),
+                ("expired", False),
+                ("corrected", False),
+                ("rotated-expired", True),
+            ):
+                image = (
+                    Image.open(folder / f"{name}.png")
+                    .rotate(90 if rotated else -90, expand=True)
+                    .convert("L")
+                )
+                x = 220 if rotated else 4
+                if any(
+                    (
+                        image.getpixel((x + col, 59 + row)) < 128
+                        if rotated
+                        else image.getpixel((x + col, 59 + row)) >= 128
+                    )
+                    for row in range(16)
+                    for col in range(16)
+                ):
+                    raise AssertionError(f"{name}: transient diode icon did not clear")
+            evidence["scenarios"][scenario] = (
+                "Ambiguous and illuminated-reversed inputs never drive GPIO5 high or reboot; "
+                "approved icons occupy the diode margin in both rotations and themes, "
+                "and clear after correction or timeout."
+            )
+        elif scenario == "diode-peer":
+            peer = (folder / "peer.txt").read_text()
+            if "complete=true error=None" not in peer:
+                raise AssertionError(f"Optical peer did not complete: {peer}")
+            image = Image.open(folder / "connected.png").rotate(-90, expand=True).convert("L")
+            bits = bytes(
+                image.getpixel((4 + col, 59 + row)) >= 128 for row in range(16) for col in range(16)
+            )
+            if (
+                hashlib.sha256(bits).hexdigest()
+                != "59df9fbf1e7334530d2c4dfdb0f6abd4aea4de8f585b714e208583cacc793cbd"
+            ):
+                raise AssertionError(
+                    "Validated peer packet did not show the approved connected icon"
+                )
+            image = Image.open(folder / "expired.png").rotate(-90, expand=True).convert("L")
+            if any(
+                image.getpixel((4 + col, 59 + row)) >= 128 for row in range(16) for col in range(16)
+            ):
+                raise AssertionError("Connected confirmation did not expire")
+            evidence["scenarios"][scenario] = (
+                "Validated peer packets confirm the diode briefly; the icon clears after two seconds."
+            )
         elif scenario == "controls":
             for name, label in (
                 ("settings-menu", "SETTINGS"),
