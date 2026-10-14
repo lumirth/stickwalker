@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package a committed production build without saves, retail artwork or diagnostics."""
+"""Package Stickwalker firmware, source and runtime archives."""
 
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ def validate_build(folder: Path, allow_ir_timing_change: bool = False) -> dict:
         if row.get("bytes") != expected["bytes"] or row.get("sha256") != expected["sha256"]:
             if not allow_ir_timing_change:
                 raise InputError(
-                    f"IR timing changed: {name}; use --allow-ir-timing-change for an unqualified prerelease."
+                    f"IR timing changed: {name}; use --allow-ir-timing-change for a prerelease."
                 )
     if not allow_ir_timing_change and not timing.get("passed"):
         raise InputError("IR timing verification did not pass.")
@@ -224,7 +224,7 @@ def package(args) -> None:
     (output / "SHA256SUMS").write_text(
         "".join(f"{digest(p)}  {p.name}\n" for p in (source, firmware, runtime))
     )
-    print(f"Candidate prepared at {output}; hardware qualification remains open.")
+    print(f"Release archives: {output}")
 
 
 def main() -> int:
