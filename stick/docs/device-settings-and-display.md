@@ -8,6 +8,7 @@ covers persistence and pixel presentation for changes to the adapters.
 `pw-controls/layout-v2` stores layout, rotation and the two-key window.
 The display adapter applies rotation. Button mapping uses the selected layout.
 Older configuration keys are ignored.
+Without a saved setting, the layout is three-key L/M/R and rotation is left-side-down.
 Game progress is stored in the EEPROM image.
 
 Three-key Settings access observes a one-second physical L+R hold in `Controls`;

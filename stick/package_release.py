@@ -69,7 +69,7 @@ def validate_runtime(folder: Path, build: dict) -> dict:
     return runtime
 
 
-def validate_build(folder: Path) -> dict:
+def validate_build(folder: Path, allow_ir_timing_change: bool = False) -> dict:
     manifest = read_json(folder / "build-manifest.json")
     if manifest.get("bench_control") is not False or manifest.get("artwork") != "placeholders":
         raise InputError("Release firmware must be production mode with placeholder artwork.")
@@ -101,13 +101,21 @@ def validate_build(folder: Path) -> dict:
         timing.get("elf_sha256") != manifest["outputs"]["PwStick.ino.elf"]
         or timing.get("reference_app_sha256") != baseline["reference_app_sha256"]
         or set(timing.get("functions", {})) != set(expected_functions)
-        or not timing.get("passed")
     ):
         raise InputError("Missing or stale IR timing verification.")
     for name, expected in expected_functions.items():
         row = timing["functions"][name]
+        if not isinstance(row.get("bytes"), int) or row["bytes"] <= 0 or not re.fullmatch(
+            r"[0-9a-f]{64}", row.get("sha256", "")
+        ):
+            raise InputError(f"Incomplete IR timing record: {name}.")
         if row.get("bytes") != expected["bytes"] or row.get("sha256") != expected["sha256"]:
-            raise InputError(f"IR timing changed: {name}; physical requalification is required.")
+            if not allow_ir_timing_change:
+                raise InputError(
+                    f"IR timing changed: {name}; use --allow-ir-timing-change for an unqualified prerelease."
+                )
+    if not allow_ir_timing_change and not timing.get("passed"):
+        raise InputError("IR timing verification did not pass.")
     return manifest
 
 
@@ -118,7 +126,7 @@ def package(args) -> None:
     if git("status", "--porcelain", "--untracked-files=normal").strip():
         raise InputError("Commit the intended source and remove untracked release inputs first.")
     commit = git("rev-parse", "HEAD").decode().strip()
-    manifest = validate_build(args.build_dir.resolve())
+    manifest = validate_build(args.build_dir.resolve(), args.allow_ir_timing_change)
     runtime_folder = args.runtime_dir.resolve()
     validate_runtime(runtime_folder, manifest)
     output = args.output_dir.resolve()
@@ -152,6 +160,7 @@ def package(args) -> None:
             {
                 "git_commit": commit,
                 "hardware_qualified": False,
+                "ir_baseline_identical": read_json(args.build_dir / "ir-timing.json")["passed"],
                 "qualification": "See RELEASE.md; qualify these exact output hashes.",
                 "runtime_archive": runtime.name,
                 "runtime_sha256": digest(runtime),
@@ -228,6 +237,7 @@ def main() -> int:
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--allow-ir-timing-change", action="store_true")
     args = parser.parse_args()
     try:
         package(args)

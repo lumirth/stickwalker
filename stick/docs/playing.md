@@ -14,8 +14,8 @@ If a Pokémon from this save is out on another walker, return it first.
 1. Start the game and choose **Connect to Pokéwalker** from the main menu, then
    **Go for a Stroll**.
 2. Choose a Pokémon from your PC Boxes and a route.
-3. On the Stick, choose **Connect**. With the default buttons, M moves left,
-   R moves right, and M+R together confirms.
+3. On the Stick, choose **Connect**. With the default buttons, L moves left,
+   R moves right, and M confirms.
 4. Aim the Stick's infrared transmitter and photodiode at the Game Card's
    infrared window. Hold them still until both sides finish.
 

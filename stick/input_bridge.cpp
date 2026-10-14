@@ -77,7 +77,8 @@ extern "C" void StickInputInit(void) {
   previous_levels = 0;
   Preferences preferences;
   if (preferences.begin("pw-controls", true)) {
-    settings = pw_stick::decode_controls(preferences.getUChar("layout-v2", 0));
+    settings = pw_stick::decode_controls(preferences.getUChar(
+        "layout-v2", pw_stick::encode_controls({})));
     preferences.end();
   }
   controls.configure(settings.layout);

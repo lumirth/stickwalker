@@ -339,6 +339,17 @@ def main() -> None:
                 "screen asleep.png", "run-until-timer-wake 1000\nscreen asleep.png"
             )
             script.write_text("vbus 0\n" + actions)
+        # Exercise the unsaved three-key default, then explicitly select the
+        # two-key layout used by the established navigation/rollover scripts.
+        actions = script.read_text()
+        script = folder / "configured.actions"
+        script.write_text(
+            "run 8000\npress L\npress R\nrun 1200\nrelease L\nrelease R\n"
+            "run 200\nscreen defaults.png\n"
+            "press R\nrun 70\nrelease R\nrun 300\n"
+            "press R\nrun 70\nrelease R\nrun 300\n"
+            "press L\nrun 70\nrelease L\nrun 300\n" + actions
+        )
         with (folder / "run.log").open("w") as log:
             subprocess.run(
                 [
@@ -367,6 +378,9 @@ def main() -> None:
                 },
             )
         if scenario == "settings":
+            expect_screen(
+                folder / "defaults.png", "STICK SETTINGS", "3-key", "Left side down"
+            )
             expect_screen(folder / "settings.png", "STICK SETTINGS", "Left side down", "Dark")
             expect_appearance(folder / "settings.png", light=False)
             for name in ("changed.png", "retained.png"):
@@ -375,7 +389,7 @@ def main() -> None:
                 )
                 expect_appearance(folder / name, light=True)
             evidence["scenarios"][scenario] = (
-                "Buttons change rotation and appearance; reset retains both."
+                "Unsaved controls use L/M/R and left-side-down; buttons change rotation and appearance, and reset retains both."
             )
         elif scenario == "connect":
             expect_screen(folder / "settings-after.png", "STICK SETTINGS")
@@ -427,6 +441,8 @@ def main() -> None:
                 folder / "wrapped0.png", (10, 42, 165, 52)
             ):
                 raise AssertionError("Layout selection did not cycle through four distinct choices")
+            if labels[2] != screen_region(folder / "defaults.png", (10, 42, 165, 52)):
+                raise AssertionError("Unsaved controls did not select the three-key L/R layout")
             expect_screen(folder / "two-key-native.png", "SETTINGS")
             expect_screen(folder / "two-key-reopened.png", "STICK SETTINGS")
             if labels[0] != screen_region(folder / "two-key-reopened.png", (10, 42, 165, 52)):

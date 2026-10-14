@@ -4,7 +4,7 @@
 
 namespace pw_stick {
 struct ControlSettings {
-  Layout layout = Layout::TwoKeyMR;
+  Layout layout = Layout::ThreeKeyLR;
   uint8_t orientation = 0;
   uint8_t chord_window = 0;
 };

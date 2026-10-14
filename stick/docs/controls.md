@@ -1,17 +1,17 @@
 # Controls and settings
 
 Use the Stick's buttons to navigate the Pokéwalker screens. The default layout
-uses M for Left and R for Right. For Center, press M and R together.
+uses L for Left, M for Center and R for Right, with the screen left-side-down.
 
-If Center is hard to trigger, increase the M+R window in Stick Settings. This
+In a two-key layout, if Center is hard to trigger, increase the M+R window in Stick Settings. This
 gives you more time to press the second button. Keep both pressed together for
 at least 20 ms.
 
 | Layout | Left | Center | Right | Open Stick Settings |
 | --- | --- | --- | --- | --- |
-| 2-key M/R, default | M | M+R | R | L |
+| 2-key M/R | M | M+R | R | L |
 | 2-key R/M | R | M+R | M | L |
-| 3-key L/R | L | M | R | Hold L+R for one second |
+| 3-key L/R, default | L | M | R | Hold L+R for one second |
 | 3-key R/L | R | M | L | Hold L+R for one second |
 
 ## Wake the screen
