@@ -1,25 +1,55 @@
 #include "../ir_rx_core.h"
 
 #include <cstdio>
-#include <vector>
 
+// The shared-library entry point lets the workflow replay many independently
+// generated/captured streams through the same compiled decoder as firmware.
+extern "C" int replay_wire(const uint8_t *samples, unsigned count,
+                            uint32_t first_gate, const uint32_t *indices,
+                            uint8_t *packets,
+                            unsigned capacity, unsigned *rejected,
+                            unsigned *gaps) {
+  pw_stick::WireReceiver receiver;
+  receiver.reset(first_gate);
+  pw_stick::WireFrame frame;
+  unsigned used = 0;
+  *rejected = *gaps = 0;
+  for (unsigned i = 0; i < count; ++i) {
+    const auto event = receiver.feed(samples[i], indices ? indices[i] : first_gate + i, frame);
+    *rejected += event.rejected;
+    *gaps += event.gap;
+    if (!event.frame) continue;
+    if (used + frame.length + 1 > capacity) return -1;
+    packets[used++] = frame.length;
+    for (unsigned j = 0; j < frame.length; ++j)
+      packets[used++] = frame.bytes[j];
+  }
+  return int(used);
+}
+
+#ifndef PW_IR_REPLAY_LIBRARY
 int main(int argc, char **argv) {
   if (argc != 2) return 2;
   FILE *file = std::fopen(argv[1], "rb");
   if (!file) return 2;
-  std::vector<uint8_t> bins;
-  for (int byte = std::fgetc(file); byte != EOF; byte = std::fgetc(file))
-    bins.push_back(uint8_t(byte));
+  pw_stick::WireReceiver receiver;
+  pw_stick::WireFrame frame;
+  unsigned count = 0, accepted = 0, rejected = 0, gaps = 0;
+  for (int sample = std::fgetc(file); sample != EOF; sample = std::fgetc(file)) {
+    const auto event = receiver.feed(uint8_t(sample), count++, frame);
+    rejected += event.rejected;
+    gaps += event.gap;
+    if (!event.frame) continue;
+    ++accepted;
+    std::printf("first=%u last=%u contrast=%u bytes=", frame.first_gate,
+                frame.last_gate, unsigned(frame.minimum_contrast));
+    for (unsigned i = 0; i < frame.length; ++i)
+      std::printf("%02x", frame.bytes[i]);
+    std::putchar('\n');
+  }
   std::fclose(file);
-  pw_stick::WireBurst frame;
-  const bool decoded = pw_stick::decode_wire_burst(bins.data(), bins.size(), frame);
-  std::fprintf(stderr, "decoded=%u credible=%u visits=%u invalid=%u tails=%u weak=%u\n",
-      unsigned(decoded), unsigned(frame.credible_uart()), unsigned(frame.fit_visits),
-      unsigned(frame.invalid_samples), unsigned(frame.recovery_tails), unsigned(frame.weak_pairs));
-  if (!decoded) return 1;
-  std::printf("%u %u %u ", frame.length, frame.starts, frame.stops);
-  for (unsigned i = 0; i < frame.length; ++i)
-    std::printf("%02x", frame.bytes[i]);
-  std::putchar('\n');
-  return 0;
+  std::fprintf(stderr, "samples=%u frames=%u rejected=%u gaps=%u\n", count,
+                accepted, rejected, gaps);
+  return accepted ? 0 : 1;
 }
+#endif

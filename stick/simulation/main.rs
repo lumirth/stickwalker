@@ -50,17 +50,34 @@ fn main() {
     }
     machine.console.capture = true;
     machine.boot_rom();
+    let mut failure_console_start = 0;
     for line in std::fs::read_to_string(&args[3]).unwrap().lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.is_empty() || fields[0].starts_with('#') {
             continue;
         }
         match fields.as_slice() {
-            ["run", ms] | ["run-until-timer-wake", ms] | ["run-until-peer", ms] => {
+            ["run", ms]
+            | ["run-until-timer-wake", ms]
+            | ["run-until-peer", ms]
+            | ["run-until-maintenance", ms] => {
                 let deadline = machine.bus.cycles + ms.parse::<u64>().unwrap() * 240_000;
                 let timer_wake = fields[0] == "run-until-timer-wake";
                 let peer_done = fields[0] == "run-until-peer";
+                let maintenance = fields[0] == "run-until-maintenance";
                 loop {
+                    if maintenance {
+                        let state = inputs.lock().unwrap();
+                        let peer = state.peer.as_ref().expect("maintenance peer not started");
+                        assert!(
+                            peer.error().is_none(),
+                            "maintenance peer failed: {:?}",
+                            peer.error()
+                        );
+                        if peer.maintenance_started() {
+                            break;
+                        }
+                    }
                     if peer_done
                         && inputs
                             .lock()
@@ -76,16 +93,21 @@ fn main() {
                     }
                     if machine.bus.cycles >= deadline {
                         assert!(!timer_wake, "RTC timer did not wake the CPU within {ms} ms");
+                        assert!(
+                            !maintenance,
+                            "peer did not transmit maintenance within {ms} ms"
+                        );
                         break;
                     }
-                    let target = if timer_wake || peer_done {
+                    let target = if timer_wake || peer_done || maintenance {
                         (machine.bus.cycles + 240).min(deadline)
                     } else {
                         deadline
                     };
                     machine.max_cycles = target;
                     let stop = machine.run(u64::MAX);
-                    let console = String::from_utf8_lossy(&machine.console.all);
+                    let console =
+                        String::from_utf8_lossy(&machine.console.all[failure_console_start..]);
                     if !matches!(stop, Stop::Halted)
                         || machine.bus.cycles < target
                         || console.contains("PW_STICK_FATAL")
@@ -116,6 +138,48 @@ fn main() {
                     }
                 }
                 std::fs::write(out.join("console.txt"), &machine.console.all).unwrap();
+            }
+            ["core1-stall"] => {
+                // External CPU failure through the real SYSTEM runstall bit;
+                // no firmware addresses, counters, or test hooks are involved.
+                let (clock, reset, stalled) = machine.bus.periph.core1_control();
+                assert!(clock && !reset && !stalled, "core1 was not running");
+                let control = machine.bus.periph.system.ram.read(0);
+                machine.bus.periph.system.ram.write(0, control | 1);
+            }
+            ["run-until-watchdog-reset", ms] => {
+                let start = machine.bus.cycles;
+                machine.max_cycles = start + ms.parse::<u64>().unwrap() * 240_000;
+                let stop = machine.run(u64::MAX);
+                let cause = machine.bus.reset_cause();
+                let console =
+                    String::from_utf8_lossy(&machine.console.all[failure_console_start..]);
+                let interrupt_panic = console.contains("Interrupt wdt timeout");
+                std::fs::write(out.join("console.txt"), &machine.console.all).unwrap();
+                std::fs::write(
+                    out.join("watchdog-reset.txt"),
+                    format!(
+                        "stop={stop:?}\ncause={cause}\ninterrupt_watchdog_panic={interrupt_panic}\nelapsed_us={}\n",
+                        (machine.bus.cycles - start) / 240,
+                    ),
+                )
+                .unwrap();
+                assert!(
+                    matches!(stop, Stop::SwReset),
+                    "watchdog did not reset: {stop:?}"
+                );
+                assert!(
+                    cause == 8 || interrupt_panic,
+                    "reset did not originate from the interrupt watchdog: cause={cause}"
+                );
+                machine.reboot();
+                assert!(
+                    !machine.bus.periph.core1_control().2,
+                    "reset retained core1 runstall"
+                );
+                // The expected old panic remains in the artifact. Future run
+                // actions still reject any new fatal error or unexpected reset.
+                failure_console_start = machine.console.all.len();
             }
             ["press", key] | ["release", key] => {
                 let down = fields[0] == "press";
@@ -238,6 +302,20 @@ fn main() {
                     mode.parse().unwrap(),
                 ));
             }
+            ["peer", "activity", path] => {
+                inputs.lock().unwrap().peer = Some(peer::OpticalPeer::with_link_activity(
+                    std::fs::read(path).unwrap(),
+                ));
+            }
+            ["peer", "hold", path, duration_us] => {
+                inputs.lock().unwrap().peer = Some(peer::OpticalPeer::with_maintenance_hold(
+                    std::fs::read(path).unwrap(),
+                    duration_us.parse().unwrap(),
+                ));
+            }
+            ["peer", "lose-final"] => {
+                inputs.lock().unwrap().peer.as_mut().unwrap().lose_final = true;
+            }
             ["peer", "limit", count] => {
                 inputs.lock().unwrap().peer.as_mut().unwrap().reply_limit =
                     Some(count.parse().unwrap());
@@ -266,6 +344,12 @@ fn main() {
             ["peer", "return", baud, turnaround] => {
                 inputs.lock().unwrap().peer = Some(
                     peer::OpticalPeer::with_return()
+                        .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
+                );
+            }
+            ["peer", "gift", baud, turnaround] => {
+                inputs.lock().unwrap().peer = Some(
+                    peer::OpticalPeer::with_gift()
                         .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
                 );
             }

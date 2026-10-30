@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect the last connection result and failed optical burst without changing saves."""
+"""Collect the last connection result and raw receive window without changing saves."""
 
 import argparse
 import re
@@ -22,7 +22,7 @@ def collect(port):
         while time.monotonic() < deadline:
             line = connection.readline().decode("ascii", errors="replace")
             lines.append(line)
-            acknowledged |= line.startswith("PW_STICK_DIAGNOSTICS version=1 ")
+            acknowledged |= bool(re.match(r"PW_STICK_DIAGNOSTICS version=[12] ", line))
             if acknowledged and line.startswith("PW_STICK_LINK "):
                 break
         if not acknowledged:
@@ -50,12 +50,12 @@ def main():
     args = parser.parse_args()
     text = collect(args.port) if args.port else args.log.read_text()
     match = re.search(
-        r"PW_STICK_RX_CAPTURE gates=(\d+)\r?\n(.*?)PW_STICK_RX_CAPTURE_END", text, re.S
+        r"PW_STICK_RX_CAPTURE gates=(\d+)[^\r\n]*\r?\n(.*?)PW_STICK_RX_CAPTURE_END", text, re.S
     )
     if not match:
         raise RuntimeError("No complete optical capture in the response")
     count = int(match[1])
-    if count > 8192:
+    if count > 32768:
         raise RuntimeError("Capture exceeds the firmware limit")
     bins = bytes.fromhex(match[2])
     if len(bins) != count:

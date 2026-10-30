@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the timing-sensitive IR instruction bytes with the frozen production image."""
+"""Record IR instruction bytes and compare with the historical production image."""
 
 from __future__ import annotations
 
@@ -36,10 +36,16 @@ def check(elf: Path, prefix: str) -> dict:
     results = {}
     for name, expected in baseline["functions"].items():
         row = next(
-            r for r in symbols.splitlines() if name in r and (" t " in r or " T " in r)
+            (r for r in symbols.splitlines() if name in r and (" t " in r or " T " in r)),
+            None,
         )
+        if row is None:
+            results[name] = {"removed": True, "baseline_identical": False}
+            continue
         address, size = (int(value, 16) for value in row.split()[:2])
         offset = address - start
+        if offset < 0 or size <= 0 or offset + size > len(data):
+            raise ValueError(f"Timing function is not completely in IRAM: {name}")
         body = data[offset : offset + size]
         sha = hashlib.sha256(body).hexdigest()
         results[name] = {
@@ -49,10 +55,25 @@ def check(elf: Path, prefix: str) -> dict:
             and size == expected["bytes"]
             and sha == expected["sha256"],
         }
+    # A redesign deliberately deletes the old producer. Record its replacement
+    # without pretending that a new hash supplies physical timing qualification.
+    replacements = {}
+    for row in symbols.splitlines():
+        if not re.search(r"capture\(unsigned (?:int|long)\)$", row) or not (
+            " t " in row or " T " in row
+        ):
+            continue
+        address, size = (int(value, 16) for value in row.split()[:2])
+        offset = address - start
+        if offset < 0 or size <= 0 or offset + size > len(data):
+            raise ValueError("Replacement acquisition is not completely in IRAM")
+        body = data[offset : offset + size]
+        replacements["capture"] = {"bytes": size, "sha256": hashlib.sha256(body).hexdigest()}
     return {
         "elf_sha256": hashlib.sha256(elf.read_bytes()).hexdigest(),
         "reference_app_sha256": baseline["reference_app_sha256"],
         "functions": results,
+        "replacement_functions": replacements,
         "passed": all(r["baseline_identical"] for r in results.values()),
     }
 

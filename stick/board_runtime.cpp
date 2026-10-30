@@ -116,9 +116,8 @@ extern "C" void StickPortLoop(void) {
   if (StickForegroundIsIr()) {
     previous_ir = true;
     StickNativeRun();
-    if (StickForegroundIsIr() && !StickForegroundIrHasInput())
-      StickIrResumeReception();
-    if (StickForegroundIsIr()) ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
+    // The native session owns receive/service turns. Polling drains raw capture
+    // while the sampler runs; a scheduler wait here can lose the next request.
     return;
   }
   if (previous_ir) {

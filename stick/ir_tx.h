@@ -6,11 +6,17 @@
 
 namespace pw_stick {
 
-// The caller provides logical Pokewalker bytes. This driver applies the
-// original SCI3 transport XOR and emits 115200-baud 8N1 SIR through GPIO46.
+// Both endpoints are conservative bounds on the final stop bit. The upper
+// bound comes from hardware-start bracketing and the TX-complete ISR, never
+// from the task being scheduled after a wait.
+struct TxWindow {
+  int64_t earliest_end_us = 0;
+  int64_t latest_end_us = 0;
+};
+
 bool prepare_ir_tx();
 bool suspend_ir_tx();
-bool transmit_logical(const uint8_t *bytes, size_t length);
+bool transmit_logical(const uint8_t *bytes, size_t length, TxWindow &window);
 
 }  // namespace pw_stick
 

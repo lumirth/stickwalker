@@ -37,6 +37,14 @@ Install Rust 1.98.1, then run the firmware workflows.
 uv run python stick/check.py
 ```
 
+To replay the independent signal envelope against the compiled production receiver:
+
+```sh
+uv run python stick/audits/ir_receiver_workflow.py --output stick/.build/receiver-results.json
+```
+
+This checks the fixed receiver under modeled optical inputs. It does not qualify analog margin or real cartridge interoperability.
+
 For formatting and static analysis, install Cppcheck 2.21.0 and run:
 
 ```sh

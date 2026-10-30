@@ -7,40 +7,39 @@
 extern "C" {
 #endif
 
-/* Receive complete raw 115200-baud UART/SIR bursts in arrival order. Optical
- * gaps delimit bursts; src/support/ir.c decodes the XOR 0xAA bytes and checks
- * packets and session state. TX accepts logical bytes, applies XOR and emits
- * SIR. SendFrame waits for the final stop bit. Local transmission suppresses
- * self-echo. Queue overflow and transport faults set StickIrFailed until
- * StickIrStart clears it. */
+/* The physical link continuously acquires raw gates while listening. Packet
+ * rejection never parks acquisition. Native session code alone may grant a
+ * service window after preserving a request whose sender awaits our reply.
+ * BeginService parks capture and lets both cores service interrupts before
+ * returning. EndService waits for fresh capture; SendFrame calls it itself.
+ * A keepalive or ignored command does not grant a service window. During
+ * exclusive capture the dedicated RTOS tick clock is paused; native wall
+ * time and the progress-supervised hardware watchdogs continue running. */
 void StickIrInitPins(void);
 void StickIrConfigure(void);
 void StickIrStart(void);
 void StickIrPassiveDiagnostic(int enabled);
 void StickIrStop(void);
-void StickIrResumeReception(void);
+int StickIrBeginService(void);
+void StickIrEndService(void);
 u16 StickIrTicks(void);
 void StickIrDelayTicks(u16 ticks);
 void StickIrSendByte(u8 logical);
 void StickIrSendFrame(const u8 *logical, u8 length);
-/* Read one complete burst into wire, which has capacity bytes. length
- * receives the byte count; lastObservationTick receives the final optical
- * observation on the wrapping 32768 Hz Timer W clock. An oversized burst sets
- * the failure flag. */
+
+/* Read one complete UART frame in arrival order. Wire bytes still carry XOR
+ * AA. lastObservationTick is the observed final UART stop completion, on the
+ * native wrapping 32768 Hz clock. It is independent of dequeue time. */
 int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
                      u16 *lastObservationTick);
 int StickIrFailed(void);
 void StickIrAcceptPacket(unsigned command, unsigned phase, unsigned bulk_phase);
-void StickIrResynchronized(unsigned bytes);
 void StickIrRejectPacket(unsigned reason);
 void StickIrSessionResult(unsigned result);
 void StickIrServiceDiagnostics(void);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickIrBenchTrace(int enabled);
 int StickIrBenchTraceEnabled(void);
-void StickIrTraceChecksumFailure(const u8 *bytes, u8 length,
-                                u16 received, u16 computed);
-void StickIrTraceMalformedPage(const u8 *bytes, u8 length);
 #endif
 
 #ifdef __cplusplus

@@ -29,6 +29,7 @@ jobs:
             stick/.build/e2e-firmware/PwStick.ino.merged.bin
             stick/.build/e2e-firmware/PwStick.ino.partitions.bin
             stick/.build/e2e-firmware/boot_app0.bin
+            stick/.build/receiver-results.json
             stick/.build/simulator/prepared.json
             stick/.build/simulator/target/release/stickwalker-e2e
             stick/.build/simulator/roms/esp32s3_rev0_rom.elf

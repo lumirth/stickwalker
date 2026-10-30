@@ -16,9 +16,11 @@ Keep the Stick awake and connect it with a USB data cable. From the source check
 uv run --with pyserial==3.5 python stick/capture_link.py --port PORT --output stick/.build/link-capture
 ```
 
-The tool first checks that the firmware supports read-only capture commands. It then saves `session.txt` and `rx.bin`. It does not install firmware or change the saved Walker data. A result with zero retained gates means there is no failed optical burst to replay.
+The tool first checks that the firmware supports read-only capture commands. It then saves `session.txt` and `rx.bin`. It does not install firmware or change the saved Walker data. A result with zero retained gates means no receive window was retained.
 
-The result includes the build ID, diode preflight state, last accepted command and protocol phase, framing and checksum failures, late samples, long activity, decoding time and reply timing. The raw burst can contain transferred data. Keep it private unless you choose to share it for diagnosis.
+The result includes the build ID, diode preflight state, last accepted command and protocol phase, framing and checksum failures, acquisition gaps, late samples, transport faults, reply timing, and transmit-bound uncertainty. Version 2 also records the raw window's gate indices, time origin, and local-transmit exclusion boundary. It retains up to 32,768 gates from one continuous receive interval; its beginning can be partway through a packet. The raw window can contain transferred data. Keep it private unless you choose to share it for diagnosis.
+
+The receiver has no calibration settings. Background, contact, aiming, saturation, and weak pulses still affect the information available to it. A successful model replay does not qualify a particular physical setup.
 
 ## Update a paired Stick
 

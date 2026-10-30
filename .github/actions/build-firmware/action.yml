@@ -32,3 +32,6 @@ runs:
       run: |
         uv run python stick/build_port.py --output-dir stick/.build/e2e-firmware
         uv run python stick/simulation/bootstrap.py
+    - name: Replay receiver signal envelope
+      shell: bash
+      run: uv run python stick/audits/ir_receiver_workflow.py --output stick/.build/receiver-results.json
