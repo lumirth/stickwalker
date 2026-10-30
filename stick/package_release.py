@@ -15,8 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from stick.build_port import CORE, FQBN, LIBRARIES, source_inputs
-from tools.common import InputError, digest, read_json, write_json
+from stick.build_port import CORE, FQBN, LIBRARIES, source_inputs  # noqa: E402
+from tools.common import InputError, digest, read_json, write_json  # noqa: E402
 
 REQUIRED = (
     "PwStick.ino.bin",
@@ -105,8 +105,23 @@ def validate_build(folder: Path, allow_ir_timing_change: bool = False) -> dict:
         raise InputError("Missing or stale IR timing verification.")
     for name, expected in expected_functions.items():
         row = timing["functions"][name]
-        if not isinstance(row.get("bytes"), int) or row["bytes"] <= 0 or not re.fullmatch(
-            r"[0-9a-f]{64}", row.get("sha256", "")
+        if row.get("removed"):
+            if not allow_ir_timing_change:
+                raise InputError(
+                    f"IR timing function was replaced: {name}; use --allow-ir-timing-change for a prerelease."
+                )
+            replacement = timing.get("replacement_functions", {}).get("capture", {})
+            if (
+                not isinstance(replacement.get("bytes"), int)
+                or replacement["bytes"] <= 0
+                or not re.fullmatch(r"[0-9a-f]{64}", replacement.get("sha256", ""))
+            ):
+                raise InputError("Missing replacement acquisition instruction record.")
+            continue
+        if (
+            not isinstance(row.get("bytes"), int)
+            or row["bytes"] <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", row.get("sha256", ""))
         ):
             raise InputError(f"Incomplete IR timing record: {name}.")
         if row.get("bytes") != expected["bytes"] or row.get("sha256") != expected["sha256"]:

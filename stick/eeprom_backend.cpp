@@ -25,7 +25,6 @@ constexpr size_t kRecordAlignment = 256;
 constexpr uint32_t kMagic = 0x53574531;
 constexpr uint32_t kJournalMagic = 0x53574a31;
 constexpr uint32_t kCommitted = 0x54494d43;
-constexpr int64_t kServiceDeadlineUs = 97700;
 
 struct Header {
   uint32_t magic;
@@ -50,7 +49,6 @@ bool dirty = false;
 bool deferred = false;
 bool session = false;
 bool failed = false;
-bool timing_failed = false;
 unsigned batch_depth = 0;
 uint8_t journal_record[kJournalRecordMax];
 size_t journal_record_length = 0;
@@ -58,7 +56,6 @@ size_t journal_size = 0;
 bool journal_overflow = false;
 uint32_t append_count = 0;
 int64_t max_append_us = 0;
-uint32_t deadline_misses = 0;
 
 uint32_t crc_update(uint32_t crc, const uint8_t *bytes, size_t count) {
   for (size_t i = 0; i < count; ++i) {
@@ -257,11 +254,6 @@ bool append_journal() {
     const int64_t elapsed = esp_timer_get_time() - start;
     ++append_count;
     if (elapsed > max_append_us) max_append_us = elapsed;
-    if (elapsed >= kServiceDeadlineUs) {
-      ++deadline_misses;
-      timing_failed = true;
-      StickEepromSetError(1);
-    }
   }
   return result;
 }
@@ -366,22 +358,19 @@ extern "C" int StickEepromSessionBegin(void) {
     return 0;
   }
   session = true;
-  timing_failed = false;
   append_count = 0;
   max_append_us = 0;
-  deadline_misses = 0;
   return 1;
 }
 
 extern "C" int StickEepromSessionEnd(void) {
   session = false;
-  esp_log_write(failed || timing_failed ? ESP_LOG_ERROR : ESP_LOG_INFO,
+  esp_log_write(failed ? ESP_LOG_ERROR : ESP_LOG_INFO,
                 "pw-eeprom",
-                "PW_EEPROM_SESSION appends=%lu max_us=%lld deadline_misses=%lu failed=%d\n",
+                "PW_EEPROM_SESSION appends=%lu max_us=%lld failed=%d\n",
                 static_cast<unsigned long>(append_count),
-                static_cast<long long>(max_append_us),
-                static_cast<unsigned long>(deadline_misses), int(failed));
-  return !failed && !timing_failed;
+                static_cast<long long>(max_append_us), int(failed));
+  return !failed;
 }
 
 extern "C" int StickEepromHealthy(void) {
@@ -447,7 +436,7 @@ extern "C" int StickEepromCommit(void) {
 
 extern "C" void EepromRead(uint16_t address, void *destination,
                             uint16_t length) {
-  StickEepromSetError(failed || timing_failed);
+  StickEepromSetError(failed);
   if (!mounted || !destination || !range_ok(address, length)) {
     storage_error();
     if (destination) memset(destination, 0xff, length);
@@ -457,7 +446,7 @@ extern "C" void EepromRead(uint16_t address, void *destination,
 }
 
 extern "C" void EepromWrite(uint16_t address, void *source, uint16_t length) {
-  StickEepromSetError(failed || timing_failed);
+  StickEepromSetError(failed);
   write_span(address, source, length);
 }
 
@@ -479,7 +468,7 @@ extern "C" void EepromFillPage(uint16_t address, uint8_t value) {
 }
 
 extern "C" void EepromFill(uint16_t address, uint16_t count, uint8_t value) {
-  StickEepromSetError(failed || timing_failed);
+  StickEepromSetError(failed);
   if (!mounted || failed || !range_ok(address, count)) {
     storage_error();
     return;

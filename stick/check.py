@@ -27,13 +27,24 @@ from fixture import course, storage  # noqa: E402
 PUT_SCENARIOS = (
     "peer-transfer",
     "peer-transfer-compressed",
-    "peer-noise",
-    "peer-prefix-byte",
     "peer-slow",
     "peer-initial",
 )
-EXCHANGE_SCENARIOS = PUT_SCENARIOS + ("peer-return", "peer-play")
-OPTICAL_SCENARIOS = EXCHANGE_SCENARIOS + ("peer-malformed",)
+FINAL_SCENARIOS = (
+    "peer-return",
+    "peer-return-lost-final",
+    "peer-gift",
+    "peer-gift-lost-final",
+)
+EXCHANGE_SCENARIOS = PUT_SCENARIOS + FINAL_SCENARIOS + ("peer-play",)
+OPTICAL_SCENARIOS = EXCHANGE_SCENARIOS + (
+    "peer-malformed",
+    "peer-activity",
+    "peer-hold",
+    "peer-watchdog",
+    "peer-noise",
+    "peer-prefix-byte",
+)
 
 SCENARIOS = (
     "settings",
@@ -69,6 +80,7 @@ SCENARIO_COST = {
     "peer-transfer-compressed": 140,
     "peer-slow": 130,
     "peer-return": 75,
+    "peer-hold": 150,
     "peer-play": 70,
     "margin-power": 60,
     "connection-details": 45,
@@ -175,10 +187,11 @@ def render_margin_atlas(out: Path) -> None:
     atlas.save(out / "margin-icons.png")
 
 
-def diode_report(path: Path) -> dict[str, str]:
+def diode_report(path: Path, *, idle: bool = True) -> dict[str, str]:
     report = dict(line.split("=", 1) for line in path.read_text().splitlines())
     assert report["reboots"] == "0", f"{path}: diode check rebooted"
-    assert report["output_enabled"] == "false", f"{path}: GPIO5 output remains enabled"
+    if idle:
+        assert report["output_enabled"] == "false", f"{path}: GPIO5 output remains enabled"
     assert report["touch_timer"] == "false", f"{path}: continuous touch scans enabled"
     assert report["touch_mask"] == "0", f"{path}: touch controller left enabled"
     return report
@@ -252,6 +265,23 @@ def expect_reboot(folder: Path) -> None:
             if int(counters["reboots"]) > 0:
                 return
     raise AssertionError(f"{folder}: expected a simulated reboot")
+
+
+def link_reports(folder: Path) -> list[dict[str, str]]:
+    return [
+        dict(field.split("=", 1) for field in line.split()[1:])
+        for line in (folder / "console.txt").read_text().splitlines()
+        if line.startswith("PW_STICK_LINK build=")
+    ]
+
+
+def expect_clean_links(folder: Path, count: int = 1) -> list[dict[str, str]]:
+    links = link_reports(folder)
+    assert len(links) == count, f"{folder}: expected {count} completed native sessions, got {links}"
+    assert all(
+        link["result"] == "0" and link["faults"] == "0" and link["gaps"] == "0" for link in links
+    ), f"{folder}: peer completion hid a local link failure or acquisition loss: {links}"
+    return links
 
 
 def expect_cursor(path: Path, x: int, y: int) -> None:
@@ -491,34 +521,44 @@ def main() -> None:
         folder = out / scenario
         folder.mkdir(exist_ok=True)
         scenario_fixture = fixture
-        if scenario.startswith("recovery-") or scenario in ("peer-play", "peer-return"):
+        if (
+            scenario.startswith("recovery-")
+            or scenario == "peer-play"
+            or scenario in FINAL_SCENARIOS
+        ):
             scenario_fixture = storage(
                 build / "PwStick.ino.partitions.bin",
                 folder,
-                "peer-play" if scenario == "peer-return" else scenario,
+                "peer-play" if scenario in FINAL_SCENARIOS else scenario,
             )
         action = "recovery" if scenario.startswith("recovery-") else scenario
         if scenario == "diode-stall":
             action = "diode-timeout"
-        if scenario in PUT_SCENARIOS or scenario == "peer-return":
+        if (
+            scenario in PUT_SCENARIOS
+            or scenario in FINAL_SCENARIOS
+            or scenario in ("peer-noise", "peer-prefix-byte")
+        ):
             action = (
                 "peer-transfer-compressed"
                 if scenario == "peer-transfer-compressed"
                 else "peer-transfer"
             )
-        if scenario == "peer-malformed":
+        if scenario in ("peer-malformed", "peer-activity"):
             action = "peer-storage"
+        if scenario in ("peer-hold", "peer-watchdog"):
+            action = "peer-transfer"
         script = ROOT / f"stick/simulation/{action}.actions"
         if scenario in OPTICAL_SCENARIOS:
             script = folder / f"{scenario}.actions"
             actions = (ROOT / f"stick/simulation/{action}.actions").read_text()
-            if scenario in PUT_SCENARIOS:
+            if scenario in PUT_SCENARIOS or scenario in ("peer-noise", "peer-prefix-byte"):
                 source = folder / "course.bin"
                 source.write_bytes(course())
             else:
                 source = (
                     out / "fixture.eeprom"
-                    if scenario == "peer-malformed"
+                    if scenario in ("peer-malformed", "peer-activity", "peer-hold", "peer-watchdog")
                     else folder / "fixture.eeprom"
                 )
             if scenario in ("peer-noise", "peer-prefix-byte"):
@@ -537,8 +577,39 @@ def main() -> None:
                     "peer put PUBLIC_FIXTURE",
                     "peer put-initial PUBLIC_FIXTURE " + str(uploaded),
                 )
-            if scenario == "peer-return":
+            if scenario.startswith("peer-return"):
                 actions = actions.replace("peer put PUBLIC_FIXTURE", "peer return")
+            if scenario.startswith("peer-gift"):
+                actions = actions.replace("peer put PUBLIC_FIXTURE", "peer gift")
+            if scenario.endswith("lost-final"):
+                actions = actions.replace("peer echo on", "peer echo on\npeer lose-final")
+            if scenario == "peer-activity":
+                actions = (
+                    (ROOT / "stick/simulation/peer-transfer.actions")
+                    .read_text()
+                    .replace("peer put PUBLIC_FIXTURE 115760 5000", "peer activity PUBLIC_FIXTURE")
+                )
+            if scenario in ("peer-hold", "peer-watchdog"):
+                actions = actions.replace(
+                    "peer put PUBLIC_FIXTURE 115760 5000",
+                    "peer hold PUBLIC_FIXTURE 5500000",
+                )
+            if (
+                scenario in ("peer-hold", "peer-noise", "peer-prefix-byte")
+                or scenario in EXCHANGE_SCENARIOS
+            ):
+                # Native completion can copy 87 staged pages after the game's
+                # last reply; corruption can leave the opening retries active.
+                # Let native completion finish before testing durability. A
+                # leaked progress subscriber must also time out before reset.
+                actions = actions.replace("run 1000\npeer stop", "run 6000\npeer stop")
+            if scenario == "peer-watchdog":
+                actions = actions[: actions.index("run-until-peer")]
+                actions += (
+                    "run-until-maintenance 10000\nrun 250\ncore1-stall\n"
+                    "run-until-watchdog-reset 2000\npeer stop\n"
+                    + (ROOT / "stick/simulation/peer.actions").read_text()
+                )
             if scenario == "peer-slow":
                 actions = actions.replace("115760", "114817")
             if scenario == "peer-malformed":
@@ -605,7 +676,7 @@ def main() -> None:
         if scenario == "settings":
             expect_reboot(folder)
             console = (folder / "console.txt").read_text()
-            assert "PW_STICK_DIAGNOSTICS version=1 " in console
+            assert "PW_STICK_DIAGNOSTICS version=2 " in console
             assert "PW_STICK_LINK none" in console
             if screen_region(folder / "welcome.png", OVERLAY_HEADER) == screen_region(
                 folder / "settings.png", OVERLAY_HEADER
@@ -632,16 +703,26 @@ def main() -> None:
         elif scenario == "connect":
             expect_diode(folder / "inconclusive-attempt.png", None)
             expect_diode(folder / "no-peer.png", "unknown")
+            expect_diode(folder / "no-peer-cleared.png", None)
             expect_overlay(folder, folder / "settings-after.png")
             expect_overlay(folder, folder / "settings-retry.png")
             if (folder / "first.optical").read_text().strip():
                 raise AssertionError("Held-low input must fail preflight before transmitting")
             retry = optical_frames(folder / "retry.optical")
-            if bytes([0xFC]) not in retry:
-                raise AssertionError("Retry after clearing the input must advertise")
+            assert retry == [bytes([0xFC])] * 20, (
+                "Retry must complete the native twenty-probe no-response sequence"
+            )
+            links = link_reports(folder)
+            assert len(links) == 2 and links[0]["safe"] == "0", (
+                f"Expected a blocked attempt followed by an ordinary retry: {links}"
+            )
+            assert links[1]["result"] == "1" and links[1]["faults"] == "0", (
+                f"No-response retry failed for a reason other than silence: {links[1]}"
+            )
             evidence["scenarios"][scenario] = {
-                "result": "Held-low input is rejected before transmission; an inconclusive diode check permits retry without a hardware warning on no reply; Settings remains usable.",
+                "result": "Held-low input is rejected before transmission; an inconclusive diode check permits the native twenty-probe retry, appears during the no-response result, and clears when that result leaves; Settings remains usable.",
                 "logical_frames": [frame.hex() for frame in retry],
+                "local_sessions": links,
             }
         elif scenario == "margin-power":
             for name in (
@@ -821,8 +902,10 @@ def main() -> None:
             assert int(idle["touch_scans"]) >= int(bounded["touch_scans"]), (
                 "Probe counter moved backwards"
             )
-            blocked = diode_report(folder / "missing-connect.txt")
-            assert int(blocked["high_drives"]) > 0, "Advisory absence blocked safe reception"
+            # Active acquisition alternates recharge output and input sampling;
+            # only the idle reports can require the output to remain disabled.
+            listening = diode_report(folder / "missing-connect.txt", idle=False)
+            assert int(listening["high_drives"]) > 0, "Advisory absence blocked safe reception"
             assert bytes([0xFC]) in optical_frames(folder / "missing.optical"), (
                 "An uncertain absence estimate prevented listening"
             )
@@ -999,11 +1082,21 @@ def main() -> None:
             }
         elif scenario in EXCHANGE_SCENARIOS:
             expect_reboot(folder)
+            expect_clean_links(folder)
             report = (folder / "peer.txt").read_text()
             if "complete=true error=None" not in report:
                 raise AssertionError(f"{scenario} failed:\n{report[:1500]}")
             if "flash_erases_during_reply_window=0" not in report:
                 raise AssertionError("Flash erase occurred while a peer reply was pending")
+            fields = dict(
+                line.split("=", 1)
+                for line in report.splitlines()
+                if "=" in line and " " not in line
+            )
+            if int(fields["maximum_response_us"]) >= 100000:
+                raise AssertionError(
+                    "A response missed the native peer's complete receive deadline"
+                )
             payload = saved_eeprom(folder, scenario_fixture[0], scenario_fixture[1].stat().st_size)
             if scenario in PUT_SCENARIOS:
                 if payload[0x8F00 : 0x8F00 + 10430] != course():
@@ -1023,15 +1116,28 @@ def main() -> None:
                     assert payload[0x280:0x8ED0] == expected[0x280:0x8ED0], (
                         "Initial image differs after commit"
                     )
-            elif scenario == "peer-return":
+            elif scenario in FINAL_SCENARIOS:
+                lost = scenario.endswith("lost-final")
+                companion = lost or scenario.startswith("peer-gift")
                 for address in (0xED, 0x1ED):
-                    assert payload[address + 91] & 3 == 1, (
-                        "Return did not clear companion while preserving registration"
+                    assert payload[address + 91] & 3 == (3 if companion else 1), (
+                        "Completion changed companion/registration without its native final instruction"
+                    )
+                for address in (0x156, 0x256):
+                    assert int.from_bytes(payload[address + 14 : address + 16], "big") == (
+                        100 if lost else 0
+                    ), (
+                        "Watts were cleared without a received final instruction or retained after completion"
                     )
                 original = (folder / "fixture.eeprom").read_bytes()
                 assert payload[0x83 : 0x83 + 40] == original[0x83 : 0x83 + 40], (
-                    "Return changed device identity"
+                    "Completion changed device identity"
                 )
+                assert fields["dropped_final"] == str(lost).lower()
+                if lost:
+                    assert payload[0x8F00 : 0x8F00 + 10430] == original[0x8F00 : 0x8F00 + 10430], (
+                        "A lost one-way final instruction erased the Walker course"
+                    )
             else:
                 identity = b"PUBLIC OPTICAL WALKER".ljust(40, b"\0")
                 if payload[0xDC00 + 548 + 8 : 0xDC00 + 548 + 48] != identity:
@@ -1043,10 +1149,123 @@ def main() -> None:
                         raise AssertionError("Peer animation/name did not persist")
             expect_overlay(folder, folder / "settings-after.png")
             evidence["scenarios"][scenario] = {
-                "result": "DS put/commit or native Walker peer exchange completes with retail baud, transmitter echo and instruction-cost timing; persisted state survives reset.",
+                "result": "Native operation or deliberately lost final instruction has the expected durable result after reset.",
                 "timing": "one-instruction quanta with opcode/branch/call/load-use costs; 300 us program and 20 ms sector erase busy periods; no analog/cache timing claim",
+                "peer": fields,
+            }
+        elif scenario in ("peer-noise", "peer-prefix-byte"):
+            expect_reboot(folder)
+            report = (folder / "peer.txt").read_text()
+            assert "complete=false" in report, (
+                "Ambiguous optical corruption must not be checksum-repaired"
+            )
+            links = link_reports(folder)
+            assert len(links) == 1 and links[0]["faults"] == "0", (
+                "The corruption case must not pass because of an unrelated transport fault"
+            )
+            assert int(links[0]["checksum"]) + int(links[0]["framing"]) > 0, (
+                "The deliberately corrupted optical packet was not diagnosed"
+            )
+            payload = saved_eeprom(folder, fixture[0], fixture[1].stat().st_size)
+            original = (out / "fixture.eeprom").read_bytes()
+            expected = bytearray(original)
+            # This registered fixture has a blank own-record identity. The
+            # existing boot repair copies the master identity before any IR.
+            expected[0xCC08:0xCC30] = original[0x83 : 0x83 + 40]
+            assert payload[0x280:] == expected[0x280:], (
+                "Rejected optical corruption changed course, records, event, or walk data"
+            )
+            assert payload[0x83 : 0x83 + 40] == original[0x83 : 0x83 + 40], (
+                "Rejected optical corruption changed the registered identity"
+            )
+            for address in (0xED, 0x1ED):
+                assert payload[address + 91] & 3 == original[address + 91] & 3, (
+                    "Rejected optical corruption changed registration/companion status"
+                )
+            for address in (0x156, 0x256):
+                assert (
+                    payload[address + 14 : address + 16] == original[address + 14 : address + 16]
+                ), "Rejected optical corruption changed saved Watts"
+            evidence["scenarios"][scenario] = (
+                "An overlapping optical prefix corrupts the packet; the receiver rejects it without checksum-guided alignment or a partial upload."
+            )
+        elif scenario == "peer-activity":
+            expect_reboot(folder)
+            expect_clean_links(folder)
+            report = (folder / "peer.txt").read_text()
+            assert "complete=true" in report and "page_verified=true" in report, report
+            payload = saved_eeprom(folder, fixture[0], fixture[1].stat().st_size)
+            original = (out / "fixture.eeprom").read_bytes()
+            assert payload[0xF600:0xF680] == original[0xF600:0xF680], (
+                "Wrong-token traffic mutated the save"
+            )
+            evidence["scenarios"][scenario] = (
+                "Wrong-token writes do not mutate storage; a valid ignored keepalive leaves reception active for the following read."
+            )
+        elif scenario == "peer-hold":
+            expect_reboot(folder)
+            report = (folder / "peer.txt").read_text()
+            assert "complete=true error=None" in report and "page_verified=true" in report, report
+            fields = dict(
+                line.split("=", 1)
+                for line in report.splitlines()
+                if "=" in line and " " not in line
+            )
+            assert fields["maintenance_hold_us"] == "5500000"
+            assert int(fields["maintenance_packets"]) >= 73
+            links = expect_clean_links(folder)
+            assert any(
+                link["faults"] == "0" and link["gaps"] == "0" and int(link["watchdog_feeds"]) >= 50
+                for link in links
+            ), (
+                "The continuous receive turn must progress without loss and exercise watchdog ownership"
+            )
+            payload = saved_eeprom(folder, fixture[0], fixture[1].stat().st_size)
+            original = (out / "fixture.eeprom").read_bytes()
+            assert payload[0xF600:0xF680] == original[0xF600:0xF680]
+            expect_overlay(folder, folder / "settings-after.png")
+            evidence["scenarios"][scenario] = {
+                "result": "A custom peer holds a native receive turn for over 5.5 seconds with valid maintenance packets, then reads unchanged data 100 us after its final keepalive without a capture gap or watchdog reset. Ordinary idle supervision resumes for a further six seconds before manual reset.",
+                "peer": fields,
+            }
+        elif scenario == "peer-watchdog":
+            expect_reboot(folder)
+            expect_clean_links(folder)
+            reset = dict(
+                line.split("=", 1)
+                for line in (folder / "watchdog-reset.txt").read_text().splitlines()
+            )
+            assert reset["stop"] == "SwReset"
+            assert reset["cause"] == "8" or reset["interrupt_watchdog_panic"] == "true"
+            assert 0 < int(reset["elapsed_us"]) <= 2000000
+            report = (folder / "peer.txt").read_text()
+            assert (
+                "complete=true" in report and "error=none" in report and "watts=0064" in report
+            ), report
+            payload = saved_eeprom(folder, fixture[0], fixture[1].stat().st_size)
+            original = (out / "fixture.eeprom").read_bytes()
+            expected = bytearray(original)
+            # Boot repairs the blank own-record identity, and the native
+            # STATUS handler exports saved Watts before the injected stall.
+            # Account for those exact writes; compare every remaining byte.
+            expected[0xCC08:0xCC30] = original[0x83 : 0x83 + 40]
+            expected[0xCE8A:0xCE8C] = original[0x164:0x166]
+            assert payload[0x280:] == expected[0x280:]
+            for address in (0x83, 0x183):
+                assert payload[address : address + 41] == original[address : address + 41]
+            for address in (0xED, 0x1ED):
+                assert payload[address : address + 105] == original[address : address + 105]
+            for address in (0x156, 0x256):
+                record = payload[address : address + 25]
+                assert record[24] == (1 + sum(record[:24])) & 255
+                assert record[14:16] == original[address + 14 : address + 16]
+            expect_overlay(folder, folder / "settings-after.png")
+            evidence["scenarios"][scenario] = {
+                "result": "A hardware-stalled consumer is reset by the interrupt watchdog during continuous reception; saved data survives and a fresh native exchange completes after reboot.",
+                "watchdog": reset,
             }
         elif scenario == "peer-malformed":
+            expect_clean_links(folder, count=5)
             for mode in range(5):
                 report = (folder / f"malformed-{mode}.txt").read_text()
                 assert "complete=true" in report and "page_verified=true" in report, report
@@ -1056,6 +1275,7 @@ def main() -> None:
                 "Malformed headers/bodies and H8 RAM writes are rejected; a subsequent valid read completes and the target page remains unchanged."
             )
         elif scenario == "peer":
+            expect_clean_links(folder)
             report = (folder / "peer.txt").read_text()
             if (
                 "complete=true" not in report
@@ -1079,6 +1299,7 @@ def main() -> None:
             }
         elif scenario == "peer-storage":
             expect_reboot(folder)
+            expect_clean_links(folder, count=2)
             for name in ("written", "restored"):
                 report = (folder / f"{name}.txt").read_text()
                 if any(

@@ -48,6 +48,7 @@ enum ConsoleOperation {
     Start,
     Update,
     Return,
+    Gift,
 }
 
 struct Put {
@@ -75,10 +76,12 @@ const WALKER_SEGMENTS: [(usize, usize, usize); 3] = [
 
 impl Put {
     fn reads(&self) -> &'static [(u16, usize)] {
-        if self.operation == ConsoleOperation::Return {
-            &[(0x8f00, 42), (0xce80, 3404), (0xb800, 1736)]
-        } else {
-            &[(0xce80, 3404), (0xb800, 1736)]
+        match self.operation {
+            ConsoleOperation::Return => {
+                &[(0x8f00, 42), (0xce80, 3404), (0xb800, 1736), (0xde24, 5480)]
+            }
+            ConsoleOperation::Gift => &[(0xce80, 3404), (0xde24, 5480)],
+            _ => &[(0xce80, 3404), (0xb800, 1736)],
         }
     }
 }
@@ -120,6 +123,13 @@ pub struct OpticalPeer {
     walker: Option<Walker>,
     malformed: Option<u8>,
     pub noise: u8,
+    activity: bool,
+    hold_us: u64,
+    maintenance_packets: usize,
+    maintenance_first_end: Option<u64>,
+    pub lose_final: bool,
+    dropped_final: bool,
+    maximum_response_cycles: u64,
 }
 
 impl OpticalPeer {
@@ -153,6 +163,13 @@ impl OpticalPeer {
             walker: None,
             malformed: None,
             noise: 0,
+            activity: false,
+            hold_us: 0,
+            maintenance_packets: 0,
+            maintenance_first_end: None,
+            lose_final: false,
+            dropped_final: false,
+            maximum_response_cycles: 0,
         }
     }
 
@@ -160,6 +177,23 @@ impl OpticalPeer {
         let mut peer = Self::with_page(0xf600, image[0xf600..0xf680].to_vec(), false).unwrap();
         peer.malformed = Some(mode);
         peer
+    }
+
+    pub fn with_link_activity(image: Vec<u8>) -> Self {
+        let mut peer = Self::with_page(0xf600, image[0xf600..0xf680].to_vec(), false).unwrap();
+        peer.activity = true;
+        peer
+    }
+
+    pub fn with_maintenance_hold(image: Vec<u8>, hold_us: u64) -> Self {
+        let mut peer = Self::with_page(0xf600, image[0xf600..0xf680].to_vec(), false).unwrap();
+        peer.hold_us = hold_us;
+        peer
+    }
+
+    pub fn maintenance_started(&self) -> bool {
+        self.maintenance_first_end
+            .is_some_and(|end| self.now >= end)
     }
 
     pub fn timing(mut self, baud: u64, turnaround_us: u64) -> Self {
@@ -200,6 +234,12 @@ impl OpticalPeer {
     pub fn with_return() -> Self {
         let mut peer = Self::with_put(vec![0; 10430]);
         peer.put.as_mut().unwrap().operation = ConsoleOperation::Return;
+        peer
+    }
+
+    pub fn with_gift() -> Self {
+        let mut peer = Self::with_put(vec![0; 10430]);
+        peer.put.as_mut().unwrap().operation = ConsoleOperation::Gift;
         peer
     }
 
@@ -490,19 +530,40 @@ impl OpticalPeer {
     }
 
     fn send(&mut self, command: u8, argument: u8, token: [u8; 4], payload: &[u8]) {
-        if self.now < self.transmit_end {
-            self.fail("peer reply overlaps an unfinished transmission".into());
-            return;
-        }
+        self.send_at(
+            self.now + self.turnaround,
+            command,
+            argument,
+            token,
+            payload,
+        );
+    }
+
+    fn send_at(&mut self, start: u64, command: u8, argument: u8, token: [u8; 4], payload: &[u8]) {
+        let before = self.transmitted_frames;
         let mut packet = vec![command, argument, 0, 0];
         packet.extend_from_slice(&token);
         packet.extend_from_slice(payload);
         let checksum = checksum(&packet).to_le_bytes();
         packet[2..4].copy_from_slice(&checksum);
-        self.send_raw(&packet);
+        self.send_raw_at(start, &packet);
+        if command == 0x2e && self.transmitted_frames != before {
+            self.maintenance_packets += 1;
+            if self.hold_us != 0 {
+                self.maintenance_first_end.get_or_insert(self.transmit_end);
+            }
+        }
     }
 
     fn send_raw(&mut self, packet: &[u8]) {
+        self.send_raw_at(self.now + self.turnaround, packet);
+    }
+
+    fn send_raw_at(&mut self, start: u64, packet: &[u8]) {
+        if start < self.transmit_end {
+            self.fail("peer reply overlaps an unfinished transmission".into());
+            return;
+        }
         if self
             .reply_limit
             .is_some_and(|limit| self.transmitted_frames >= limit)
@@ -512,12 +573,10 @@ impl OpticalPeer {
         }
         self.trace += &format!(
             "{} {} {}\n",
-            self.now,
+            start,
             if self.walker.is_some() { "PEER" } else { "DS" },
-            hex(&packet)
+            hex(packet)
         );
-        let start = self.now + self.turnaround;
-        self.pulses.clear();
         if self.noise != 0 {
             for lead_us in [500, if self.noise == 2 { 87 } else { 26 }] {
                 self.pulses.push_back(LightPulse {
@@ -540,14 +599,28 @@ impl OpticalPeer {
             }
         }
         self.transmit_end = start + packet.len() as u64 * 10 * CPU_HZ / self.baud;
-        self.timeout = Some(self.now + TIMEOUT);
         self.transmitted_frames += 1;
     }
 
+    fn accept_receive(&mut self) {
+        if let Some(deadline) = self.timeout {
+            self.maximum_response_cycles = self
+                .maximum_response_cycles
+                .max(self.now.saturating_sub(deadline - TIMEOUT));
+        }
+        // HGSS updates lastReceiveTick on accepted receive activity. Sending
+        // maintenance traffic or scheduling a later request does not extend it.
+        self.timeout = Some(self.now + TIMEOUT);
+    }
+
     fn read_page(&mut self) {
+        self.read_page_at(self.now + self.turnaround);
+    }
+
+    fn read_page_at(&mut self, start: u64) {
         let address = self.page.as_ref().unwrap().address.to_be_bytes();
         self.phase = Phase::PageRead;
-        self.send(0x0c, 2, self.session, &[address[0], address[1], 128]);
+        self.send_at(start, 0x0c, 2, self.session, &[address[0], address[1], 128]);
     }
 
     fn shutdown(&mut self) {
@@ -569,11 +642,8 @@ impl OpticalPeer {
         };
         self.received_frames += 1;
         self.trace += &format!("{} WALKER {}\n", cycle, hex(&packet));
-        if self.now < self.transmit_end {
-            self.fail("Walker transmission collides with DS transmission".into());
-            return;
-        }
         if packet == [0xfc] && self.phase == Phase::Probe {
+            self.accept_receive();
             self.phase = Phase::Acknowledgment;
             self.send(0xfa, if self.walker.is_some() { 2 } else { 1 }, TOKEN, &[]);
             return;
@@ -597,6 +667,21 @@ impl OpticalPeer {
             self.fail("reply has a different session token".into());
             return;
         }
+        if matches!(self.phase, Phase::Shutdown | Phase::Complete)
+            && self.put.as_ref().is_some_and(|put| {
+                (put.operation == ConsoleOperation::Return && command == 0x50)
+                    || (put.operation == ConsoleOperation::Gift && command == 0x68)
+            })
+        {
+            // The native game has already declared success and closed after
+            // transmitting 4E/66. A Walker acknowledgement is not required.
+            return;
+        }
+        if self.now < self.transmit_end {
+            self.fail("Walker replied before the complete peer turn arrived".into());
+            return;
+        }
+        self.accept_receive();
         match self.phase {
             Phase::Acknowledgment if command == 0xf8 && argument == 2 && payload.is_empty() => {
                 for index in 0..4 {
@@ -634,8 +719,28 @@ impl OpticalPeer {
                         ConsoleOperation::Start => 0x32,
                         ConsoleOperation::Update => 0x52,
                         ConsoleOperation::Return => 0x40,
+                        ConsoleOperation::Gift => 0x60,
                     };
                     self.send(command, 1, self.session, &self.status.clone());
+                } else if self.hold_us != 0 {
+                    // A custom edge may hold the native Walker with ignored
+                    // 2E packets. This is deliberately NOT a stock DS's idle
+                    // allowance: its own timeout is suspended only for this
+                    // explicit maintenance scenario, then armed for the read.
+                    self.timeout = None;
+                    let until = self.now + self.hold_us * (CPU_HZ / 1_000_000);
+                    let mut start = self.now + self.turnaround;
+                    while self.transmit_end < until {
+                        let before = self.transmit_end;
+                        self.send_at(start, 0x2e, 1, self.session, &[]);
+                        if self.transmit_end == before {
+                            break;
+                        }
+                        start = self.transmit_end + CPU_HZ * 75 / 1000;
+                    }
+                    let request_start = self.transmit_end + CPU_HZ / 10_000;
+                    self.read_page_at(request_start);
+                    self.timeout = Some(request_start + TIMEOUT);
                 } else if let Some(mode) = self.malformed.take() {
                     match mode {
                         0 => self.send_raw(&[0x02, 0xf6, 0xf8, 0x02]),
@@ -644,13 +749,16 @@ impl OpticalPeer {
                         3 => self.send(0x06, 0, self.session, &[0, 42]),
                         _ => self.send(0x10, 2, self.session, &[0; 4]),
                     }
-                    let mut invalid = std::mem::take(&mut self.pulses);
-                    let previous = self.now;
-                    self.now = self.transmit_end + CPU_HZ / 500;
-                    self.read_page();
-                    self.now = previous;
-                    invalid.append(&mut self.pulses);
-                    self.pulses = invalid;
+                    self.read_page_at(self.transmit_end + CPU_HZ / 500);
+                } else if self.activity {
+                    let mut wrong_token = self.session;
+                    wrong_token[0] ^= 1;
+                    self.send(0x0a, 0xf6, wrong_token, &[0, 0x55]);
+                    self.send_at(self.transmit_end + CPU_HZ / 500, 0x2e, 1, self.session, &[]);
+                    // The next start arrives before the completed-byte gap
+                    // has closed the keepalive. A receiver that parks while
+                    // rejecting/ignoring either frame loses this real read.
+                    self.read_page_at(self.transmit_end + CPU_HZ / 10_000);
                 } else if let Some(page) = &self.page {
                     if page.write {
                         let address = page.address;
@@ -692,9 +800,13 @@ impl OpticalPeer {
                             ConsoleOperation::Start => 0x34,
                             ConsoleOperation::Update => 0x54,
                             ConsoleOperation::Return => 0x42,
+                            ConsoleOperation::Gift => 0x62,
                         } =>
             {
-                if self.put.as_ref().unwrap().operation == ConsoleOperation::Return {
+                if matches!(
+                    self.put.as_ref().unwrap().operation,
+                    ConsoleOperation::Return | ConsoleOperation::Gift
+                ) {
                     self.put_read();
                 } else {
                     self.put_page();
@@ -715,6 +827,7 @@ impl OpticalPeer {
                             ConsoleOperation::Start => 0x38,
                             ConsoleOperation::Update => 0x5a,
                             ConsoleOperation::Return => 0x50,
+                            ConsoleOperation::Gift => 0x68,
                         } =>
             {
                 self.shutdown();
@@ -741,13 +854,35 @@ impl OpticalPeer {
                 self.put_read();
             }
             Phase::PutPing if command == 0x26 && argument == 2 && payload.is_empty() => {
-                self.phase = Phase::PutCommitted;
-                let command = match self.put.as_ref().unwrap().operation {
+                let operation = self.put.as_ref().unwrap().operation;
+                let command = match operation {
                     ConsoleOperation::Start => 0x38,
                     ConsoleOperation::Update => 0x5a,
                     ConsoleOperation::Return => 0x4e,
+                    ConsoleOperation::Gift => 0x66,
                 };
                 self.send(command, 1, self.session, &[]);
+                if matches!(operation, ConsoleOperation::Return | ConsoleOperation::Gift) {
+                    if self.lose_final {
+                        self.pulses.clear();
+                        self.dropped_final = true;
+                        self.trace += &format!("{} DROP {command:02x}\n", self.now);
+                    }
+                    // CloseLink in the game's responder role also sends F4,
+                    // without waiting for 50/68. Drop only the commit command
+                    // in the loss scenario; shutdown still reaches the Walker.
+                    self.send_at(
+                        self.transmit_end + self.turnaround,
+                        0xf4,
+                        1,
+                        self.session,
+                        &[],
+                    );
+                    self.phase = Phase::Shutdown;
+                    self.timeout = None;
+                } else {
+                    self.phase = Phase::PutCommitted;
+                }
             }
             Phase::WalkerStatus if command == 0x12 && argument == 2 && payload.len() == 104 => {
                 if payload[91] & 3 != 3 {
@@ -801,11 +936,13 @@ impl OpticalPeer {
 
     pub fn report(&self) -> String {
         format!(
-            "model=ideal-sir-charge-discharge\nphase={:?}\ncomplete={}\nerror={}\nwatts={}\npage_verified={}\nreceived_frames={}\ntransmitted_frames={}\ncharges={}\ndischarges={}\n{}",
+            "model=ideal-sir-charge-discharge\nphase={:?}\ncomplete={}\nerror={}\nwatts={}\npage_verified={}\nreceived_frames={}\ntransmitted_frames={}\ncharges={}\ndischarges={}\ndropped_final={}\nmaximum_response_us={}\nmaintenance_hold_us={}\nmaintenance_packets={}\n{}",
             self.phase, self.complete(), self.error().unwrap_or("none"),
             self.watts.as_ref().map_or_else(|| "none".into(), |bytes| hex(bytes)),
             self.page_verified, self.received_frames, self.transmitted_frames,
-            self.charge_count, self.discharge_count, self.trace,
+            self.charge_count, self.discharge_count, self.dropped_final,
+            self.maximum_response_cycles / (CPU_HZ / 1_000_000),
+            self.hold_us, self.maintenance_packets, self.trace,
         )
     }
 }

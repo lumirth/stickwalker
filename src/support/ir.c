@@ -141,6 +141,10 @@ void SendPacket(u8 payloadLength, u8 command, u8 argument)
 #ifdef PW_STICK_S3
   StickIrSendFrame(g_work.irc.packet, payloadLength);
   StickIrDelayTicks(2);
+  /* The next peer turn starts after our complete response. Rejected or
+   * ignored traffic never changes this reference at packetDone. */
+  if (!StickIrFailed())
+    g_state.irTimerReference = IR_TIMER_NOW();
 #else
   i = 0;
   while (i < payloadLength) {
@@ -245,48 +249,6 @@ void IrHardwareStart(void)
 #define PW_IR_RETRY_JITTER_TICKS 0x60u
 
 #define PW_IR_BULK_MAXIMUM_CHUNK_LENGTH EEPROM_PAGE_BYTES
-#ifdef PW_STICK_S3
-/* Validate compressed phrase lengths before BulkDecode. Malformed phrases can
- * underflow its eight-bit remaining count or read beyond the packet. */
-static u8 StickCompressedPageWellFormed(const u8 *packed, u8 length)
-{
-  u16 input;
-  u16 output;
-  u8 flags;
-  u8 bit;
-
-  if (length < 5 || packed[1] != EEPROM_PAGE_BYTES)
-    return 0;
-  input = 4;
-  output = 0;
-  while (output < EEPROM_PAGE_BYTES) {
-    if (input >= length)
-      return 0;
-    flags = packed[input++];
-    for (bit = 0; bit < 8 && output < EEPROM_PAGE_BYTES; bit++) {
-      if (flags & 0x80) {
-        u16 count;
-        u16 behind;
-        if (input + 1 >= length)
-          return 0;
-        count = (packed[input] >> 4) + 3;
-        behind = packed[input + 1] + 1;
-        input += 2;
-        if (behind > output || output + count > EEPROM_PAGE_BYTES)
-          return 0;
-        output += count;
-      } else {
-        if (input >= length)
-          return 0;
-        input++;
-        output++;
-      }
-      flags <<= 1;
-    }
-  }
-  return 1;
-}
-#endif
 
 typedef char IrcReceiveStorageHoldsMaximumFrame
     [sizeof(g_work.irc.packet) >= PW_IR_RX_WINDOW_CAPACITY ? 1 : -1];
@@ -299,45 +261,6 @@ typedef char IrcHeaderMatchesPayloadOffset[sizeof(IrcHeader) == IR_HEADER_BYTES
 
 #ifdef PW_STICK_S3
 #include "stick/ir_packet_validation.h"
-/* An isolated leading optical pulse can frame as FF on the wire. Recover
- * only this bounded prefix, with independent header/body/session checks. */
-static u8 StickRealignPacket(u8 *packet, u8 length)
-{
-  u8 skip;
-  for (skip = 1; skip <= 2 && skip + IR_HEADER_BYTES <= length; ++skip) {
-    u8 *candidate;
-    u16 received;
-    u16 computed;
-    unsigned bodyLength;
-    if (packet[skip - 1] != (0xff ^ PW_IR_TRANSPORT_XOR))
-      break;
-    candidate = packet + skip;
-    if (!StickPacketCommandKnown(candidate[0]))
-      continue;
-    bodyLength = length - skip - IR_HEADER_BYTES;
-    if (!StickPacketBodyValid(candidate[0], candidate + IR_HEADER_BYTES,
-                              bodyLength, g_work.irc.work.bulkBytesRemaining))
-      continue;
-    if (candidate[0] < IR_ACK &&
-        (g_work.irc.work.handshakePhase < IR_PHASE_INITIATOR ||
-         StickReadBe32(candidate + 4) != g_work.irc.work.sessionToken))
-      continue;
-    received = candidate[2] | ((u16)candidate[3] << 8);
-    candidate[2] = candidate[3] = 0;
-    computed = PacketChecksum(candidate, length - skip);
-    candidate[2] = received;
-    candidate[3] = received >> 8;
-    if (computed == received) {
-      u8 index;
-      length -= skip;
-      for (index = 0; index < length; ++index)
-        packet[index] = candidate[index];
-      StickIrResynchronized(skip);
-      return length;
-    }
-  }
-  return length;
-}
 #endif
 
 /* Start probing with a token from the PRNG state, clear session progress,
@@ -472,6 +395,9 @@ void IrProtocolTick(void)
   u8 *payload;
   u8 command;
   u8 argument;
+#ifdef PW_STICK_S3
+  int packetDisposition;
+#endif
 
   WatchdogService();
 #ifdef PW_STICK_S3
@@ -480,27 +406,14 @@ void IrProtocolTick(void)
     IrFinish();
     return;
   }
-  {
-    static u8 incoming[IR_HEADER_BYTES + IR_PAYLOAD_BYTES + 2];
-    u8 length;
-    u16 lastObservationTick;
-    if (StickIrTakeBurst(incoming, sizeof(incoming), &length,
-                         &lastObservationTick)) {
-      u16 index;
-      for (index = 0; index < length; index++)
-        incoming[index] ^= PW_IR_TRANSPORT_XOR;
-      length = StickRealignPacket(incoming, length);
-      if (length > PW_IR_RX_WINDOW_CAPACITY) {
-        StickIrRejectPacket(2);
-        return;
-      }
-      for (index = 0; index < length; index++)
-        g_work.irc.packet[index] = incoming[index];
-      g_state.irReceivedBytes = length;
-      stickLastObservationTick = lastObservationTick;
-    }
+  receivedBytes = 0;
+  if (StickIrTakeBurst(g_work.irc.packet, PW_IR_RX_WINDOW_CAPACITY,
+                       &receivedBytes, &stickLastObservationTick)) {
+    u16 index;
+    for (index = 0; index < receivedBytes; index++)
+      g_work.irc.packet[index] ^= PW_IR_TRANSPORT_XOR;
   }
-  receivedBytes = g_state.irReceivedBytes;
+  g_state.irReceivedBytes = receivedBytes;
 #else
   SCI3.SSR3.BYTE &= 0xc4;
   receivedBytes = g_state.irReceivedBytes;
@@ -518,11 +431,25 @@ void IrProtocolTick(void)
   }
 #endif
 
+#ifdef PW_STICK_S3
+  /* TakeBurst has already observed the completed-byte gap. Judge a queued
+   * packet at its physical arrival, so foreground latency cannot time out a
+   * packet that arrived on time. Invalid traffic will not refresh the clock. */
+  elapsedTicks =
+      receivedBytes ? (u16)(stickLastObservationTick - g_state.irTimerReference)
+                    : IR_TIMER_ELAPSED(g_state.irTimerReference);
+  if (!receivedBytes && elapsedTicks <= PW_IR_FRAME_GAP_TICKS)
+    return;
+#else
   elapsedTicks = IR_TIMER_ELAPSED(g_state.irTimerReference);
   if (elapsedTicks <= PW_IR_FRAME_GAP_TICKS) {
     return;
   }
+#endif
   if (elapsedTicks > PW_IR_INACTIVITY_TICKS) {
+#ifdef PW_STICK_S3
+    g_state.irReceivedBytes = 0;
+#endif
     g_work.irc.work.timeoutRetryCount++;
     if ((g_work.irc.work.handshakePhase >= IR_PHASE_INITIATOR) ||
         (g_work.irc.work.timeoutRetryCount >= PW_IR_TIMEOUT_RETRY_LIMIT)) {
@@ -534,6 +461,15 @@ void IrProtocolTick(void)
       IrFinish();
       return;
     }
+#ifdef PW_STICK_S3
+    /* A timed-out probe owns its next attempt. Restore ordinary service
+     * ownership while the native jitter delay and display work run. */
+    if (!StickIrBeginService()) {
+      g_state.irResult = IR_RESULT_CONNECTION_ERROR;
+      IrFinish();
+      return;
+    }
+#endif
     retryDelayTicks = (((RandomNext() >> 5) & PW_IR_RETRY_JITTER_MASK) *
                        PW_IR_RETRY_JITTER_TICKS);
     g_state.irTimerReference = IR_TIMER_NOW();
@@ -563,7 +499,15 @@ void IrProtocolTick(void)
       return;
     }
 #ifdef PW_STICK_S3
+    if (g_work.irc.work.handshakePhase >= IR_PHASE_INITIATOR)
+      return;
     g_state.irTimerReference = stickLastObservationTick;
+    if (g_work.irc.work.handshakePhase == IR_PHASE_PROBING &&
+        !StickIrBeginService()) {
+      g_state.irResult = IR_RESULT_CONNECTION_ERROR;
+      IrFinish();
+      return;
+    }
 #endif
     /* The probing phase answers CONNECT. */
     switch (g_work.irc.work.handshakePhase) {
@@ -596,10 +540,6 @@ void IrProtocolTick(void)
 #ifdef PW_STICK_S3
     StickIrRejectPacket(1);
 #endif
-#ifdef PW_STICK_BENCH_CONTROL
-    StickIrTraceChecksumFailure(g_work.irc.packet, g_state.irReceivedBytes,
-                                receivedChecksum, computedChecksum);
-#endif
     g_state.irReceivedBytes = 0;
     g_work.irc.work.checksumFailureCount++;
     if (g_work.irc.work.checksumFailureCount < PW_IR_CHECKSUM_FAIL_LIMIT) {
@@ -624,14 +564,29 @@ void IrProtocolTick(void)
 
   payload = g_work.irc.packet + IR_HEADER_BYTES;
 #ifdef PW_STICK_S3
-  if (!StickPacketBodyValid(command, payload, payloadLength,
-                            g_work.irc.work.bulkBytesRemaining)) {
+  packetDisposition = StickPacketDisposition(
+      command, argument, payload, payloadLength,
+      g_work.irc.work.bulkBytesRemaining, g_work.irc.work.bulkPhase);
+  if (packetDisposition == STICK_IR_DISCARD) {
     StickIrRejectPacket(2);
     g_state.irReceivedBytes = 0;
     return;
   }
+  if (command == IR_ACK &&
+      g_work.irc.work.handshakePhase >= IR_PHASE_INITIATOR) {
+    g_state.irReceivedBytes = 0;
+    return;
+  }
 #endif
+#ifdef PW_STICK_S3
+  /* Only token negotiation and the native factory threshold command bypass
+   * session admission. Unknown high opcodes cannot keep another session alive.
+   */
+  if (command != IR_ACK && command != IR_RESPONSE &&
+      command != IR_CMD_MOTION_TEST_SETUP) {
+#else
   if (command < IR_ACK) {
+#endif
     if (receivedToken != g_work.irc.work.sessionToken) {
 #ifdef PW_STICK_S3
       StickIrRejectPacket(3);
@@ -649,6 +604,11 @@ void IrProtocolTick(void)
   g_state.irTimerReference = stickLastObservationTick;
   StickIrAcceptPacket(command, g_work.irc.work.handshakePhase,
                       g_work.irc.work.bulkPhase);
+  if (packetDisposition == STICK_IR_SERVICE && !StickIrBeginService()) {
+    g_state.irResult = IR_RESULT_CONNECTION_ERROR;
+    IrFinish();
+    return;
+  }
 #endif
   switch (command) {
   case IR_RESPONSE:
@@ -1060,14 +1020,6 @@ void IrProtocolTick(void)
     if (payloadLength == PW_IR_BULK_MAXIMUM_CHUNK_LENGTH) {
       EepromWritePage(address, payload);
     } else {
-#ifdef PW_STICK_S3
-      if (!StickCompressedPageWellFormed(payload, payloadLength)) {
-#ifdef PW_STICK_BENCH_CONTROL
-        StickIrTraceMalformedPage(payload, payloadLength);
-#endif
-        goto packetDone;
-      }
-#endif
       BulkDecode(payload, g_work.irc.eepromScratch);
       EepromWritePage(address, g_work.irc.eepromScratch);
     }
@@ -1383,12 +1335,20 @@ void IrProtocolTick(void)
   }
 
 packetDone:
+#ifdef PW_STICK_S3
+  /* SendFrame normally releases the service window. Keep no-response native
+   * paths explicit too; EndService is a no-op when already listening/stopped.
+   */
+  StickIrEndService();
+#endif
   timerSample = IR_TIMER_NOW();
   /* Timer W bit 14 animates the two prepared connection frames. */
   displayBank = ((timerSample >> 14) & 1);
   DisplaySelectBank(displayBank);
   g_state.irReceivedBytes = 0;
+#ifndef PW_STICK_S3
   g_state.irTimerReference = IR_TIMER_NOW();
+#endif
 }
 
 /* Stop the IR peripherals, then dispatch the session's completion action or

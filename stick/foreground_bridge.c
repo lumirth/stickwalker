@@ -56,7 +56,6 @@ void StickForegroundDiscardCenterInput(void) {
   StickNativeCancelCenterInterrupt();
   g_state.events.byte &= EVENT_CLEAR(EVENT_CENTER_PRESS);
 }
-int StickForegroundIrHasInput(void) { return g_state.irReceivedBytes != 0; }
 #ifdef PW_STICK_BENCH_CONTROL
 void StickForegroundBenchSleep(void) {
   DisplayEnterPowerSave();
