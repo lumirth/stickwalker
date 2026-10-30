@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Compare the timing-sensitive IR instruction bytes with the frozen production image."""
+"""Inspect the compiled acquisition path and retain its exact instruction hashes.
+
+This verifies IRAM residency, not electrical timing or hardware qualification.
+The old instruction-identity baseline described a different receiver and is
+not evidence for the replacement's physical margins.
+"""
 
 from __future__ import annotations
 
@@ -11,14 +16,17 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+FUNCTIONS = ("sample_receive_turn",)
 
 
 def check(elf: Path, prefix: str) -> dict:
-    baseline = json.loads((ROOT / "stick/ir-timing-baseline.json").read_text())
     symbols = subprocess.check_output([prefix + "nm", "-C", "-S", str(elf)], text=True)
     sections = subprocess.check_output([prefix + "objdump", "-h", str(elf)], text=True)
-    start = int(re.search(r"\s\.iram0.text\s+[0-9a-f]+\s+([0-9a-f]+)", sections)[1], 16)
+    assembly = subprocess.check_output([prefix + "objdump", "-d", "-C", str(elf)], text=True)
+    section = re.search(r"\s\.iram0.text\s+([0-9a-f]+)\s+([0-9a-f]+)", sections)
+    if not section:
+        raise ValueError("Firmware has no IRAM text section")
+    size, start = (int(value, 16) for value in section.groups())
     with tempfile.TemporaryDirectory(prefix="stickwalker-timing-") as temp:
         binary = Path(temp) / "iram.bin"
         subprocess.run(
@@ -34,26 +42,49 @@ def check(elf: Path, prefix: str) -> dict:
         )
         data = binary.read_bytes()
     results = {}
-    for name, expected in baseline["functions"].items():
-        row = next(
-            r for r in symbols.splitlines() if name in r and (" t " in r or " T " in r)
+    for name in FUNCTIONS:
+        matches = [
+            row
+            for row in symbols.splitlines()
+            if name + "(" in row and (" t " in row or " T " in row)
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"Expected exactly one compiled {name}, found {len(matches)}")
+        address, length = (int(value, 16) for value in matches[0].split()[:2])
+        resident = start <= address and address + length <= start + size
+        instructions = []
+        calls = []
+        for line in assembly.splitlines():
+            instruction = re.match(r"\s*([0-9a-f]+):\s", line)
+            if not instruction or not address <= int(instruction[1], 16) < address + length:
+                continue
+            instructions.append(line)
+            target = re.search(r"\bcall(?:0|4|8|12)\s+([0-9a-f]+)", line)
+            if target:
+                calls.append(int(target[1], 16))
+        indirect = any(re.search(r"\bcallx(?:0|4|8|12)\b", line) for line in instructions)
+        safe_calls = all(
+            start <= target < start + size or 0x40000000 <= target < 0x40080000 for target in calls
         )
-        address, size = (int(value, 16) for value in row.split()[:2])
-        offset = address - start
-        body = data[offset : offset + size]
-        sha = hashlib.sha256(body).hexdigest()
+        body = data[address - start : address - start + length] if resident else b""
         results[name] = {
-            "bytes": size,
-            "sha256": sha,
-            "baseline_identical": len(body) == size
-            and size == expected["bytes"]
-            and sha == expected["sha256"],
+            "address": hex(address),
+            "bytes": length,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "iram_resident": resident,
+            "direct_calls": [hex(target) for target in calls],
+            "calls_in_iram_or_rom": safe_calls,
+            "indirect_calls": indirect,
         }
     return {
         "elf_sha256": hashlib.sha256(elf.read_bytes()).hexdigest(),
-        "reference_app_sha256": baseline["reference_app_sha256"],
+        "verification": "acquisition-iram-residency",
+        "hardware_qualified": False,
         "functions": results,
-        "passed": all(r["baseline_identical"] for r in results.values()),
+        "passed": all(
+            row["iram_resident"] and row["calls_in_iram_or_rom"] and not row["indirect_calls"]
+            for row in results.values()
+        ),
     }
 
 

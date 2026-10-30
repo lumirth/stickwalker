@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import statistics
 import struct
@@ -31,9 +32,17 @@ PUT_SCENARIOS = (
     "peer-prefix-byte",
     "peer-slow",
     "peer-initial",
+    "peer-rc-low",
+    "peer-rc-high",
+    "peer-rc-boundary",
+    "peer-rc-phase",
+    "peer-rc-gap",
+    "peer-immediate",
+    "peer-deadline",
+    "peer-keepalive",
 )
 EXCHANGE_SCENARIOS = PUT_SCENARIOS + ("peer-return", "peer-play")
-OPTICAL_SCENARIOS = EXCHANGE_SCENARIOS + ("peer-malformed",)
+OPTICAL_SCENARIOS = EXCHANGE_SCENARIOS + ("peer-malformed", "peer-keepalive-only")
 
 SCENARIOS = (
     "settings",
@@ -68,6 +77,15 @@ SCENARIO_COST = {
     "peer-transfer": 140,
     "peer-transfer-compressed": 140,
     "peer-slow": 130,
+    "peer-rc-low": 150,
+    "peer-rc-high": 150,
+    "peer-rc-boundary": 150,
+    "peer-rc-phase": 150,
+    "peer-rc-gap": 160,
+    "peer-immediate": 140,
+    "peer-deadline": 150,
+    "peer-keepalive": 150,
+    "peer-keepalive-only": 50,
     "peer-return": 75,
     "peer-play": 70,
     "margin-power": 60,
@@ -175,10 +193,11 @@ def render_margin_atlas(out: Path) -> None:
     atlas.save(out / "margin-icons.png")
 
 
-def diode_report(path: Path) -> dict[str, str]:
+def diode_report(path: Path, *, require_released: bool = True) -> dict[str, str]:
     report = dict(line.split("=", 1) for line in path.read_text().splitlines())
     assert report["reboots"] == "0", f"{path}: diode check rebooted"
-    assert report["output_enabled"] == "false", f"{path}: GPIO5 output remains enabled"
+    if require_released:
+        assert report["output_enabled"] == "false", f"{path}: GPIO5 output remains enabled"
     assert report["touch_timer"] == "false", f"{path}: continuous touch scans enabled"
     assert report["touch_mask"] == "0", f"{path}: touch controller left enabled"
     return report
@@ -508,6 +527,8 @@ def main() -> None:
             )
         if scenario == "peer-malformed":
             action = "peer-storage"
+        if scenario == "peer-keepalive-only":
+            action = "peer"
         script = ROOT / f"stick/simulation/{action}.actions"
         if scenario in OPTICAL_SCENARIOS:
             script = folder / f"{scenario}.actions"
@@ -541,17 +562,59 @@ def main() -> None:
                 actions = actions.replace("peer put PUBLIC_FIXTURE", "peer return")
             if scenario == "peer-slow":
                 actions = actions.replace("115760", "114817")
+            # Circuit inputs are physical quantities. These scenarios send the
+            # same public full-transfer fixture through GPIO5; no sample bins
+            # or packet bytes are supplied to the production receiver.
+            circuits = {
+                "peer-rc-low": "22000 12 1.6 60 0.05",
+                "peer-rc-high": "65000 12 1.6 60 0.05",
+                "peer-rc-boundary": "24545.3 12 1.6 60 0.05",
+                "peer-rc-phase": "45000 11 1.5 80 0.05",
+                "peer-rc-gap": "45000 11 1.5 80 0.05",
+            }
+            if scenario in circuits:
+                actions = actions.replace(
+                    "peer echo on", "peer echo on\npeer circuit " + circuits[scenario]
+                )
+            if scenario == "peer-rc-gap":
+                actions = actions.replace("115760", "114817")
+                actions = actions.replace(
+                    "peer echo on", "peer echo on\npeer waveform 347 339 4166"
+                )
+            if scenario == "peer-rc-phase":
+                # A nominal byte spans exactly 30 gates. Seven extra cycles
+                # walk its start pulse around the gate throughout each page,
+                # independently of the firmware's initial acquisition phase.
+                actions = actions.replace("115760", "115200")
+                actions = actions.replace(
+                    "peer echo on", "peer echo on\npeer waveform 0 339 7"
+                )
+            if scenario == "peer-immediate":
+                actions = actions.replace("115760 5000", "115760 1")
+            if scenario == "peer-deadline":
+                # FA crosses the native receive deadline; F8 needs no flash
+                # write and can still meet the peer's independent 100 ms limit.
+                actions = actions.replace("peer echo on", "peer echo on\npeer delay-frame fa 97200")
+            if scenario == "peer-keepalive":
+                actions = actions.replace("peer echo on", "peer echo on\npeer keepalive prefix")
+            if scenario == "peer-keepalive-only":
+                actions = actions.replace("peer start", "peer start\npeer keepalive only")
+                actions = actions.replace(
+                    "run 4000\npeer report", "run-until-peer 4000\nrun 150\npeer report"
+                )
+                actions = actions.replace("peer report peer.txt", "peer report peer.txt\npeer stop")
             if scenario == "peer-malformed":
                 template = (ROOT / "stick/simulation/peer.actions").read_text()
                 first = template.index("peer start")
                 last = template.index("peer report")
                 transfer = template[first:last]
                 actions = "run 4000\n"
-                for mode in range(5):
+                for mode in range(6):
                     actions += transfer.replace(
                         "peer start", f"peer malformed PUBLIC_FIXTURE {mode}"
                     )
                     actions += f"peer report malformed-{mode}.txt\npeer stop\nreset\nrun 4000\n"
+            actions = re.sub(r"(?m)^peer report (\S+)$", r"peer report \1\nsram \1.sram", actions)
             script.write_text(actions.replace("PUBLIC_FIXTURE", str(source)))
         if scenario == "battery":
             script = folder / "battery.actions"
@@ -631,7 +694,22 @@ def main() -> None:
             )
         elif scenario == "connect":
             expect_diode(folder / "inconclusive-attempt.png", None)
-            expect_diode(folder / "no-peer.png", "unknown")
+            uncertain = []
+            for path in sorted(folder.glob("no-peer-[0-9][0-9].png")):
+                try:
+                    expect_diode(path, "unknown")
+                    uncertain.append(path)
+                except AssertionError:
+                    pass
+            assert uncertain, "Inconclusive no-reply result never showed uncertain feedback"
+            shutil.copyfile(uncertain[0], folder / "no-peer.png")
+            expect_diode(folder / "no-peer-cleared.png", None)
+            # The native home face is stable; the blinking arrow is outside
+            # this crop. Margin clearance alone does not establish dismissal.
+            home_body = (88, 35, 152, 75)
+            assert screen_region(folder / "no-peer-cleared.png", home_body) == screen_region(
+                folder / "retry-home.png", home_body
+            ), "No-reply result did not return to the visible native home"
             expect_overlay(folder, folder / "settings-after.png")
             expect_overlay(folder, folder / "settings-retry.png")
             if (folder / "first.optical").read_text().strip():
@@ -821,7 +899,7 @@ def main() -> None:
             assert int(idle["touch_scans"]) >= int(bounded["touch_scans"]), (
                 "Probe counter moved backwards"
             )
-            blocked = diode_report(folder / "missing-connect.txt")
+            blocked = diode_report(folder / "missing-connect.txt", require_released=False)
             assert int(blocked["high_drives"]) > 0, "Advisory absence blocked safe reception"
             assert bytes([0xFC]) in optical_frames(folder / "missing.optical"), (
                 "An uncertain absence estimate prevented listening"
@@ -1004,6 +1082,11 @@ def main() -> None:
                 raise AssertionError(f"{scenario} failed:\n{report[:1500]}")
             if "flash_erases_during_reply_window=0" not in report:
                 raise AssertionError("Flash erase occurred while a peer reply was pending")
+            if scenario.startswith("peer-rc-"):
+                assert "model=continuous-rc-photocurrent" in report, report
+            if scenario == "peer-rc-phase":
+                for field in ("phase_cycles=0", "pulse_cycles=339", "byte_gap_cycles=7"):
+                    assert field in report.splitlines(), report
             payload = saved_eeprom(folder, scenario_fixture[0], scenario_fixture[1].stat().st_size)
             if scenario in PUT_SCENARIOS:
                 if payload[0x8F00 : 0x8F00 + 10430] != course():
@@ -1046,14 +1129,59 @@ def main() -> None:
                 "result": "DS put/commit or native Walker peer exchange completes with retail baud, transmitter echo and instruction-cost timing; persisted state survives reset.",
                 "timing": "one-instruction quanta with opcode/branch/call/load-use costs; 300 us program and 20 ms sector erase busy periods; no analog/cache timing claim",
             }
+            if scenario == "peer-deadline":
+                probe = re.search(r"(?m)^(\d+) WALKER fc$", report)
+                delayed = re.search(r"(?m)^(\d+) DELAYED fa (\d+)$", report)
+                reply = re.search(r"(?m)^(\d+) WALKER f8[0-9a-f]+$", report)
+                assert probe and delayed and reply, report
+                origin = int(probe[1])
+                start, end = (int(value) - origin for value in delayed.groups())
+                completed = int(reply[1]) - origin
+                assert start == 97_200 * 240, report
+                assert end > 97_700 * 240, report
+                assert completed < 100_000 * 240, report
+                evidence["scenarios"][scenario]["delayed_handshake"] = {
+                    "fa_start_us_after_fc": start / 240,
+                    "fa_end_us_after_fc": end / 240,
+                    "f8_end_us_after_fc": completed / 240,
+                }
+        elif scenario == "peer-keepalive-only":
+            assert "reboots=0" in (folder / "run.log").read_text(), (
+                "Ignored traffic rebooted firmware"
+            )
+            report = (folder / "peer.txt").read_text()
+            values = dict(line.split("=", 1) for line in report.splitlines() if "=" in line)
+            assert values["received_frames"] == "2", report
+            assert values["injected_keepalives"] == "100", report
+            # GPIO charge transitions expose the real sampling lifetime. This
+            # assertion cannot be satisfied merely by changing a status flag.
+            listening_cycles = int(values["last_charge_cycle"]) - int(values["last_reply_cycle"])
+            assert 90 * 240_000 <= listening_cycles <= 120 * 240_000, report
+            evidence["scenarios"][scenario] = {
+                "result": "Ignored valid packets do not grant a storage turn or extend the fixed receive deadline.",
+                "listening_us_after_last_reply": listening_cycles / 240,
+                "injected_keepalives": 100,
+            }
         elif scenario == "peer-malformed":
-            for mode in range(5):
+            for mode in range(6):
                 report = (folder / f"malformed-{mode}.txt").read_text()
-                assert "complete=true" in report and "page_verified=true" in report, report
+                values = dict(line.split("=", 1) for line in report.splitlines() if "=" in line)
+                assert values["complete"] == "true" and values["page_verified"] == "true", report
+                assert values["received_frames"] == "5" and values["error"] == "none", report
             log = (folder / "console.txt").read_text()
-            assert log.count("malformed=1") == 5, "Each malformed packet must be diagnosed"
+            attempts = [
+                dict(re.findall(r"(\w+)=(\S+)", line))
+                for line in log.splitlines()
+                if line.startswith("PW_STICK_LINK build=")
+            ]
+            assert len(attempts) == 6, "Each independent malformed-input session must finish"
+            assert all(int(attempt["origins_rejected"]) > 0 for attempt in attempts[:5]), log
+            assert int(attempts[5]["ambiguous"]) > 0, "Two valid optical origins must be rejected"
+            assert all(attempt["overflow"] == "0" for attempt in attempts), log
             evidence["scenarios"][scenario] = (
-                "Malformed headers/bodies and H8 RAM writes are rejected; a subsequent valid read completes and the target page remains unchanged."
+                "Malformed headers/bodies, H8 RAM writes, and a physical waveform admitting two "
+                "different valid native packets receive no response; a subsequent valid read "
+                "completes and each target page remains unchanged."
             )
         elif scenario == "peer":
             report = (folder / "peer.txt").read_text()
@@ -1090,7 +1218,9 @@ def main() -> None:
             replies = [
                 frame[8:] for frame in frames if len(frame) == 136 and frame[:2] == bytes((0x0E, 2))
             ]
-            expected = bytes(index ^ 0x5A for index in range(128))
+            expected = bytes(index ^ 0x5A for index in range(120)) + bytes.fromhex(
+                "fa013aa913579bdf"
+            )
             if replies != [expected, expected]:
                 raise AssertionError("Optical page payload must survive a reset and second session")
             expect_overlay(folder, folder / "settings-after.png")

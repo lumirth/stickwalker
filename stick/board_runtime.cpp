@@ -7,7 +7,7 @@
 #include "eeprom_backend.h"
 #include "foreground_bridge.h"
 #include "input_bridge.h"
-#include "ir_transport.h"
+#include "ir_link.h"
 #include "native_runtime.h"
 #include "sound_bridge.h"
 #include "power_sleep.h"
@@ -116,9 +116,8 @@ extern "C" void StickPortLoop(void) {
   if (StickForegroundIsIr()) {
     previous_ir = true;
     StickNativeRun();
-    if (StickForegroundIsIr() && !StickForegroundIrHasInput())
-      StickIrResumeReception();
-    if (StickForegroundIsIr()) ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
+    // The session owns receive/service transitions. Keep draining observations
+    // while listening; a task-tick sleep would needlessly delay packet admission.
     return;
   }
   if (previous_ir) {

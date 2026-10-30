@@ -37,6 +37,77 @@ struct LightPulse {
     end: u64,
 }
 
+// Independent continuous-time circuit model. Inputs are volts, ohms, farads,
+// and amperes; it has no knowledge of gates, sample values or decoder cutoffs.
+// A high GPIO recharges the node; light removes charge while it floats, and
+// enabled internal pulls add their resistor current during readout.
+struct Circuit {
+    resistance: f64,
+    capacitance: f64,
+    threshold: f64,
+    signal: f64,
+    background: f64,
+    voltage: f64,
+    pull_up: bool,
+    pull_down: bool,
+}
+
+impl Circuit {
+    fn new(resistance: f64, capacitance_pf: f64, threshold: f64, signal_ua: f64, background_ua: f64) -> Self {
+        assert!(resistance > 0.0 && capacitance_pf > 0.0);
+        assert!((0.0..3.3).contains(&threshold));
+        assert!(signal_ua >= 0.0 && background_ua >= 0.0);
+        Self {
+            resistance,
+            capacitance: capacitance_pf * 1e-12,
+            threshold,
+            signal: signal_ua * 1e-6,
+            background: background_ua * 1e-6,
+            voltage: 3.3,
+            pull_up: false,
+            pull_down: false,
+        }
+    }
+
+    fn conductance(&self) -> f64 {
+        (u8::from(self.pull_up) + u8::from(self.pull_down)) as f64 / self.resistance
+    }
+
+    fn current(&self, illuminated: bool) -> f64 {
+        self.background + if illuminated { self.signal } else { 0.0 }
+    }
+
+    fn target(&self, illuminated: bool) -> f64 {
+        ((if self.pull_up { 3.3 / self.resistance } else { 0.0 })
+            - self.current(illuminated)) / self.conductance()
+    }
+
+    fn advance(&mut self, cycles: u64, illuminated: bool) {
+        let seconds = cycles as f64 / CPU_HZ as f64;
+        let g = self.conductance();
+        self.voltage = if g == 0.0 {
+            self.voltage - self.current(illuminated) * seconds / self.capacitance
+        } else {
+            let target = self.target(illuminated);
+            target + (self.voltage - target) * (-seconds * g / self.capacitance).exp()
+        }.clamp(0.0, 3.3);
+    }
+
+    fn crossing(&self, illuminated: bool) -> Option<u64> {
+        let current = self.current(illuminated);
+        let g = self.conductance();
+        let seconds = if g == 0.0 {
+            if current == 0.0 || self.voltage <= self.threshold { return None; }
+            self.capacitance * (self.voltage - self.threshold) / current
+        } else {
+            let target = self.target(illuminated);
+            if (self.voltage > self.threshold) == (target >= self.threshold) { return None; }
+            -self.capacitance / g * ((self.threshold - target) / (self.voltage - target)).ln()
+        };
+        seconds.is_finite().then_some((seconds * CPU_HZ as f64).ceil().max(1.0) as u64)
+    }
+}
+
 struct Page {
     address: u16,
     bytes: Vec<u8>,
@@ -112,6 +183,8 @@ pub struct OpticalPeer {
     pub reply_limit: Option<usize>,
     charge_count: u64,
     discharge_count: u64,
+    last_charge_cycle: u64,
+    last_reply_cycle: u64,
     baud: u64,
     turnaround: u64,
     echoes: VecDeque<LightPulse>,
@@ -120,6 +193,15 @@ pub struct OpticalPeer {
     walker: Option<Walker>,
     malformed: Option<u8>,
     pub noise: u8,
+    circuit: Option<Circuit>,
+    pub byte_gap_cycles: u64,
+    pub phase_cycles: u64,
+    pub pulse_cycles: Option<u64>,
+    pub keepalive_prefix: bool,
+    pub keepalive_only: bool,
+    pub delayed_frame: Option<(u8, u64)>,
+    injected_keepalives: usize,
+    pin_trace: Option<Vec<String>>,
 }
 
 impl OpticalPeer {
@@ -145,6 +227,8 @@ impl OpticalPeer {
             reply_limit: None,
             charge_count: 0,
             discharge_count: 0,
+            last_charge_cycle: 0,
+            last_reply_cycle: 0,
             baud: BAUD,
             turnaround: TURNAROUND,
             echoes: VecDeque::new(),
@@ -153,11 +237,22 @@ impl OpticalPeer {
             walker: None,
             malformed: None,
             noise: 0,
+            circuit: None,
+            byte_gap_cycles: 0,
+            phase_cycles: 0,
+            pulse_cycles: None,
+            keepalive_prefix: false,
+            keepalive_only: false,
+            delayed_frame: None,
+            injected_keepalives: 0,
+            pin_trace: std::env::var_os("STICK_E2E_PIN_TRACE").map(|_| Vec::new()),
         }
     }
 
     pub fn with_malformed(image: Vec<u8>, mode: u8) -> Self {
-        let mut peer = Self::with_page(0xf600, image[0xf600..0xf680].to_vec(), false).unwrap();
+        assert!(mode <= 5);
+        let address = if mode == 5 { 0xb700 } else { 0xf600 };
+        let mut peer = Self::with_page(address, image[address as usize..address as usize + 128].to_vec(), false).unwrap();
         peer.malformed = Some(mode);
         peer
     }
@@ -167,6 +262,10 @@ impl OpticalPeer {
         self.baud = baud;
         self.turnaround = turnaround_us * (CPU_HZ / 1_000_000);
         self
+    }
+
+    pub fn circuit(&mut self, resistance: f64, capacitance_pf: f64, threshold: f64, signal_ua: f64, background_ua: f64) {
+        self.circuit = Some(Circuit::new(resistance, capacitance_pf, threshold, signal_ua, background_ua));
     }
 
     pub fn with_put(bytes: Vec<u8>) -> Self {
@@ -396,6 +495,12 @@ impl OpticalPeer {
     }
 
     fn discharge_deadline(&self) -> Option<u64> {
+        if let Some(circuit) = self.circuit.as_ref() {
+            if self.output_enabled { return None; }
+            let transition = self.light_boundary();
+            let crossing = circuit.crossing(self.illuminated()).map(|after| self.now + after);
+            return [transition, crossing].into_iter().flatten().min();
+        }
         if self.output_enabled || !self.charged {
             return None;
         }
@@ -404,6 +509,31 @@ impl OpticalPeer {
             .flatten()
             .map(|pulse| pulse.start.max(self.now))
             .min()
+    }
+
+    fn illuminated(&self) -> bool {
+        [self.pulses.front(), self.echoes.front()]
+            .into_iter().flatten()
+            .any(|pulse| pulse.start <= self.now && pulse.end > self.now)
+    }
+
+    fn light_boundary(&self) -> Option<u64> {
+        [self.pulses.front(), self.echoes.front()]
+            .into_iter().flatten()
+            .map(|pulse| if pulse.start > self.now { pulse.start } else { pulse.end })
+            .filter(|cycle| *cycle > self.now)
+            .min()
+    }
+
+    pub fn gpio_pulls(&mut self, cycle: u64, up: bool, down: bool) {
+        self.advance_to(cycle);
+        if let Some(trace) = self.pin_trace.as_mut() {
+            if trace.len() < 8192 { trace.push(format!("PIN {cycle} pulls {} {}", u8::from(up), u8::from(down))); }
+        }
+        if let Some(circuit) = self.circuit.as_mut() {
+            circuit.pull_up = up;
+            circuit.pull_down = down;
+        }
     }
 
     pub fn reply_pending(&self) -> bool {
@@ -430,11 +560,23 @@ impl OpticalPeer {
         self.advance_to(cycle);
         let enabled = enabled & (1 << 5) != 0;
         let high = output & (1 << 5) != 0;
+        if enabled != self.output_enabled || high != self.output_high {
+            if let Some(trace) = self.pin_trace.as_mut() {
+                if trace.len() < 8192 { trace.push(format!("PIN {cycle} output {} {}", u8::from(enabled), u8::from(high))); }
+            }
+        }
         if enabled && high && (!self.output_enabled || !self.output_high) {
             self.charge_count += 1;
+            self.last_charge_cycle = cycle;
         }
         self.output_enabled = enabled;
         self.output_high = high;
+        if let Some(circuit) = self.circuit.as_mut() {
+            if enabled { circuit.voltage = if high { 3.3 } else { 0.0 }; }
+            let level = circuit.voltage > circuit.threshold;
+            self.edge(cycle, level);
+            return;
+        }
         if enabled {
             self.edge(cycle, high);
         } else if self.charged
@@ -452,7 +594,23 @@ impl OpticalPeer {
             self.fail("board clock reset without resetting peer session".into());
             return;
         }
-        if let Some(discharge) = self.discharge_deadline() {
+        if self.circuit.is_some() {
+            while self.now < cycle {
+                let illuminated = self.illuminated();
+                let until = self.discharge_deadline().unwrap_or(cycle).min(cycle);
+                let circuit = self.circuit.as_mut().unwrap();
+                if !self.output_enabled { circuit.advance(until - self.now, illuminated); }
+                let high = circuit.voltage > circuit.threshold;
+                self.now = until;
+                self.edge(until, high);
+                while self.pulses.front().is_some_and(|pulse| pulse.end <= self.now) {
+                    self.pulses.pop_front();
+                }
+                while self.echoes.front().is_some_and(|pulse| pulse.end <= self.now) {
+                    self.echoes.pop_front();
+                }
+            }
+        } else if let Some(discharge) = self.discharge_deadline() {
             if discharge <= cycle {
                 self.edge(discharge, false);
             }
@@ -502,6 +660,36 @@ impl OpticalPeer {
         self.send_raw(&packet);
     }
 
+    fn send_ambiguous(&mut self) {
+        // The same physical pulses have two valid UART interpretations, which
+        // merge before the session token: page write 02/b7 and event-map a0/07.
+        // Their checksum difference is (a0-02)*256 + (07-b7) = 0x9d50.
+        let mut packet = vec![0x02, 0xb7, 0, 0];
+        packet.extend_from_slice(&self.session);
+        packet.extend((0..104u8).map(|index| index ^ 0x5a));
+        packet[110..112].fill(0);
+        let correction = (0x439eu32 + 0xffff - u32::from(checksum(&packet))) % 0xffff;
+        packet[110..112].copy_from_slice(&(correction as u16).to_be_bytes());
+        assert_eq!(checksum(&packet), 0x439e);
+        let mut alternate = packet.clone();
+        alternate[..2].copy_from_slice(&[0xa0, 0x07]);
+        assert_eq!(checksum(&alternate), 0xe0ee);
+        packet[2..4].copy_from_slice(&0x439eu16.to_le_bytes());
+        alternate[2..4].copy_from_slice(&0xe0eeu16.to_le_bytes());
+
+        let start = self.now + self.turnaround + self.phase_cycles;
+        self.send_raw(&packet);
+        let width = self.pulse_cycles.unwrap_or(CPU_HZ * 3 / (self.baud * 16));
+        let mut prefix = VecDeque::new();
+        for bits_before in [5, 4, 2] {
+            let start = start - bits_before * CPU_HZ / self.baud;
+            prefix.push_back(LightPulse { start, end: start + width });
+        }
+        prefix.append(&mut self.pulses);
+        self.pulses = prefix;
+        self.trace += &format!("{start} AMBIGUOUS {}\n", hex(&alternate));
+    }
+
     fn send_raw(&mut self, packet: &[u8]) {
         if self
             .reply_limit
@@ -516,7 +704,14 @@ impl OpticalPeer {
             if self.walker.is_some() { "PEER" } else { "DS" },
             hex(&packet)
         );
-        let start = self.now + self.turnaround;
+        let delay = match self.delayed_frame {
+            Some((command, us)) if packet[0] == command => {
+                self.delayed_frame = None;
+                Some(us * (CPU_HZ / 1_000_000))
+            }
+            _ => None,
+        };
+        let mut start = self.now + delay.unwrap_or(self.turnaround) + self.phase_cycles;
         self.pulses.clear();
         if self.noise != 0 {
             for lead_us in [500, if self.noise == 2 { 87 } else { 26 }] {
@@ -526,22 +721,51 @@ impl OpticalPeer {
                 });
             }
         }
+        // Ignored keepalives have their own valid framing, token and checksum.
+        // They leave the peer's turn open; no response is expected for them.
+        if packet[0] != 0xfa && (self.keepalive_prefix || self.keepalive_only) {
+            let mut keepalive = vec![0x2e, 2, 0, 0];
+            keepalive.extend_from_slice(&packet[4..8]);
+            let sum = checksum(&keepalive).to_le_bytes();
+            keepalive[2..4].copy_from_slice(&sum);
+            let count = if self.keepalive_only { 100 } else { 1 };
+            for _ in 0..count {
+                let end = self.append_wire_packet(start, &keepalive);
+                start = end + CPU_HZ / 10_000; // 100 us physical frame separation
+            }
+            self.injected_keepalives += count;
+            self.transmitted_frames += count;
+            if self.keepalive_only {
+                self.transmit_end = start - CPU_HZ / 10_000;
+                self.timeout = Some(self.now + TIMEOUT);
+                return;
+            }
+        }
+        self.transmit_end = self.append_wire_packet(start, packet);
+        if delay.is_some() {
+            self.trace += &format!("{start} DELAYED {:02x} {}\n", packet[0], self.transmit_end);
+        }
+        self.timeout = Some(self.now + TIMEOUT);
+        self.transmitted_frames += 1;
+    }
+
+    fn append_wire_packet(&mut self, start: u64, packet: &[u8]) -> u64 {
         for (index, byte) in packet.iter().enumerate() {
             let wire = byte ^ 0xaa;
             for bit in 0..10 {
                 let zero = bit == 0 || (bit < 9 && wire & (1 << (bit - 1)) == 0);
                 if zero {
-                    let start = start + (index as u64 * 10 + bit) * CPU_HZ / self.baud;
+                    let start = start + (index as u64 * 10 + bit) * CPU_HZ / self.baud
+                        + index as u64 * self.byte_gap_cycles;
                     self.pulses.push_back(LightPulse {
                         start,
-                        end: start + CPU_HZ * 3 / (self.baud * 16),
+                        end: start + self.pulse_cycles.unwrap_or(CPU_HZ * 3 / (self.baud * 16)),
                     });
                 }
             }
         }
-        self.transmit_end = start + packet.len() as u64 * 10 * CPU_HZ / self.baud;
-        self.timeout = Some(self.now + TIMEOUT);
-        self.transmitted_frames += 1;
+        start + packet.len() as u64 * 10 * CPU_HZ / self.baud
+            + packet.len().saturating_sub(1) as u64 * self.byte_gap_cycles
     }
 
     fn read_page(&mut self) {
@@ -557,6 +781,7 @@ impl OpticalPeer {
 
     pub fn observe_tx(&mut self, cycle: u64, pulses: &[(u64, bool)]) {
         self.advance_to(cycle);
+        self.last_reply_cycle = cycle;
         if self.phase == Phase::Failed {
             return;
         }
@@ -642,7 +867,9 @@ impl OpticalPeer {
                         1 => self.send(0x0a, 0xf6, self.session, &[]),
                         2 => self.send(0x0c, 2, self.session, &[0xf6, 0, 200]),
                         3 => self.send(0x06, 0, self.session, &[0, 42]),
-                        _ => self.send(0x10, 2, self.session, &[0; 4]),
+                        4 => self.send(0x10, 2, self.session, &[0; 4]),
+                        5 => self.send_ambiguous(),
+                        _ => unreachable!(),
                     }
                     let mut invalid = std::mem::take(&mut self.pulses);
                     let previous = self.now;
@@ -800,13 +1027,28 @@ impl OpticalPeer {
     }
 
     pub fn report(&self) -> String {
-        format!(
-            "model=ideal-sir-charge-discharge\nphase={:?}\ncomplete={}\nerror={}\nwatts={}\npage_verified={}\nreceived_frames={}\ntransmitted_frames={}\ncharges={}\ndischarges={}\n{}",
-            self.phase, self.complete(), self.error().unwrap_or("none"),
+        let model = match self.circuit.as_ref() {
+            Some(circuit) => format!(
+                "continuous-rc-photocurrent\nresistance_ohm={}\ncapacitance_pf={}\nthreshold_volts={}\nsignal_ua={}\nbackground_ua={}",
+                circuit.resistance, circuit.capacitance * 1e12, circuit.threshold,
+                circuit.signal * 1e6, circuit.background * 1e6,
+            ),
+            None => "ideal-sir-charge-discharge".into(),
+        };
+        let mut report = format!(
+            "model={}\nphase_cycles={}\npulse_cycles={}\nbyte_gap_cycles={}\nphase={:?}\ncomplete={}\nerror={}\nwatts={}\npage_verified={}\nreceived_frames={}\ntransmitted_frames={}\ncharges={}\ndischarges={}\nlast_charge_cycle={}\nlast_reply_cycle={}\ninjected_keepalives={}\n{}",
+            model, self.phase_cycles, self.pulse_cycles.unwrap_or(CPU_HZ * 3 / (self.baud * 16)),
+            self.byte_gap_cycles, self.phase, self.complete(), self.error().unwrap_or("none"),
             self.watts.as_ref().map_or_else(|| "none".into(), |bytes| hex(bytes)),
             self.page_verified, self.received_frames, self.transmitted_frames,
-            self.charge_count, self.discharge_count, self.trace,
-        )
+            self.charge_count, self.discharge_count, self.last_charge_cycle,
+            self.last_reply_cycle, self.injected_keepalives, self.trace,
+        );
+        if let Some(trace) = self.pin_trace.as_ref() {
+            report.push_str(&trace.join("\n"));
+            report.push('\n');
+        }
+        report
     }
 }
 
