@@ -35,7 +35,6 @@ void StickIrResynchronized(unsigned bytes);
 void StickIrRejectPacket(unsigned reason);
 void StickIrSessionResult(unsigned result);
 void StickIrServiceDiagnostics(void);
-const char *StickIrLastSummary(void);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickIrBenchTrace(int enabled);
 int StickIrBenchTraceEnabled(void);

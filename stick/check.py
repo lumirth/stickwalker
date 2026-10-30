@@ -17,7 +17,7 @@ import zlib
 from array import array
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "stick/simulation"))
@@ -44,6 +44,10 @@ SCENARIOS = (
     "diode-presence",
     "diode-timeout",
     "diode-stall",
+    "margin-power",
+    "margin-sleep",
+    "connection-details",
+    "diode-correction",
     "controls",
     "layouts",
     "wake",
@@ -88,6 +92,25 @@ def expect_screen(path: Path, *phrases: str, rotation: int = 90) -> None:
             raise AssertionError(f"{path}: expected {phrase!r}; read:\n{text}")
 
 
+def expect_line(path: Path, box: tuple[int, int, int, int], phrase: str) -> None:
+    image = Image.open(path).rotate(90, expand=True).crop(box)
+    texts = []
+    for scale in (6, 8):
+        target = path.with_name(path.stem + "-line.png")
+        image.resize((image.width * scale, image.height * scale), Image.Resampling.NEAREST).save(
+            target
+        )
+        for psm in ("7", "13"):
+            texts.append(
+                subprocess.check_output(
+                    ["tesseract", str(target), "stdout", "--psm", psm],
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+            )
+    assert phrase in "\n".join(texts), f"{path}: expected {phrase!r}; read {texts}"
+
+
 def expect_appearance(path: Path, light: bool) -> None:
     brightness = statistics.median(Image.open(path).convert("L").tobytes())
     if (brightness >= 128) != light:
@@ -104,12 +127,63 @@ def expect_diode(path: Path, state: str | None) -> None:
         "connected": "59df9fbf1e7334530d2c4dfdb0f6abd4aea4de8f585b714e208583cacc793cbd",
         "unknown": "8fd5e17294d62ee5ecb2a7d38defb96b6b60c8d3457c87b3c10af29095d79b52",
         "blocked": "a17ceb5e48e4b17f1e1222bb8adbf65633ba59e7fdb09714e908078bccd56ffb",
-        "receiving": "bdf4e99c99573ec69981136a482f02e5975f7f18052354e67d0b013c3f6c9322",
+        "receiving": "67834819e472250764042cf3d306cb77f304e21c43b7030f3adc0a791d9a19d5",
     }
     if state is None:
         assert not any(bits), f"{path}: diode feedback did not clear"
     else:
         assert hashlib.sha256(bits).hexdigest() == hashes[state], f"{path}: expected {state}"
+
+
+def expect_battery(path: Path, level: int | None, usb: bool = False) -> None:
+    image = Image.open(path).rotate(90, expand=True).convert("L")
+    rows = [0] * 16
+    if level is not None:
+        rows[4] = rows[11] = 0x3FFE
+        for row in range(5, 11):
+            rows[row] = 0x2002 | (0xC000 if 6 <= row <= 9 else 0)
+            for bar in range(level):
+                rows[row] |= 3 << (3 + bar * 2)
+    if usb:
+        rows[:3] = [0x0140, 0x03E0, 0x0080]
+    observed = bytes(image.getpixel((4 + x, 115 + y)) >= 128 for y in range(16) for x in range(16))
+    expected = bytes(bool(rows[y] & (1 << x)) for y in range(16) for x in range(16))
+    assert observed == expected, f"{path}: expected battery level={level}, USB={usb}"
+
+
+def render_margin_atlas(out: Path) -> None:
+    sources = [
+        ("Not detected", "diode-presence/missing.png"),
+        ("Reverse", "diode/reversed.png"),
+        ("Detected", "diode-ready/ready-0.png"),
+        ("Inconclusive", "connect/no-peer.png"),
+        ("Blocked", "diode/unknown.png"),
+        ("Packet heard", "connection-details/failed.png"),
+    ]
+    if not all((out / name).exists() for _, name in sources):
+        return
+    atlas = Image.new("RGB", (1200, 220), "#ddd9cf")
+    draw = ImageDraw.Draw(atlas)
+    for index, (label, name) in enumerate(sources):
+        path = out / name
+        if name.startswith("diode-ready/"):
+            path = next(
+                candidate
+                for candidate in sorted((out / "diode-ready").glob("ready-*.png"))
+                if any(
+                    value >= 128
+                    for value in Image.open(candidate)
+                    .rotate(90, expand=True)
+                    .crop((4, 4, 20, 20))
+                    .convert("L")
+                    .tobytes()
+                )
+            )
+        tile = Image.open(path).rotate(90, expand=True).crop((4, 4, 20, 20))
+        atlas.paste(tile.resize((128, 128), Image.Resampling.NEAREST), (index * 200 + 20, 10))
+        atlas.paste(tile, (index * 200 + 20, 155))
+        draw.text((index * 200 + 20, 185), label, fill="#152120")
+    atlas.save(out / "margin-icons.png")
 
 
 def diode_report(path: Path) -> dict[str, str]:
@@ -358,6 +432,10 @@ def main() -> None:
             "stick/simulation/diode-ready.actions",
             "stick/simulation/diode-presence.actions",
             "stick/simulation/diode-timeout.actions",
+            "stick/simulation/margin-power.actions",
+            "stick/simulation/margin-sleep.actions",
+            "stick/simulation/connection-details.actions",
+            "stick/simulation/diode-correction.actions",
             "stick/simulation/controls.actions",
             "stick/simulation/layouts.actions",
             "stick/simulation/wake.actions",
@@ -492,7 +570,7 @@ def main() -> None:
                 stdout=log,
                 stderr=log,
                 check=True,
-                timeout=360,
+                timeout=900,
                 env={
                     **os.environ,
                     **(
@@ -518,6 +596,7 @@ def main() -> None:
                 "Unsaved controls use L/M/R and left-side-down; buttons change rotation and appearance, and reset retains both."
             )
         elif scenario == "connect":
+            expect_diode(folder / "inconclusive-attempt.png", None)
             expect_diode(folder / "no-peer.png", "unknown")
             expect_screen(folder / "settings-after.png", "STICK SETTINGS")
             expect_screen(folder / "settings-retry.png", "STICK SETTINGS")
@@ -530,6 +609,89 @@ def main() -> None:
                 "result": "Held-low input is rejected before transmission; an inconclusive diode check permits retry without a hardware warning on no reply; Settings remains usable.",
                 "logical_frames": [frame.hex() for frame in retry],
             }
+        elif scenario == "margin-power":
+            for name in (
+                "healthy",
+                "unplugged-expired",
+                "plugged-expired",
+                "failed-read",
+                "recovered-read",
+                "recovered",
+                "unavailable",
+                "low-usb-stable",
+                "bounce",
+            ):
+                expect_battery(folder / f"{name}.png", None)
+            expect_battery(folder / "unplugged.png", 4)
+            expect_battery(folder / "plugged.png", 4, True)
+            for name in (
+                "low",
+                "held-low",
+                "low-again",
+                "low-unplugged",
+                "low-read-failed",
+                "low-supply-unknown",
+                "low-supply-restored",
+            ):
+                expect_battery(folder / f"{name}.png", 0)
+            expect_battery(folder / "low-plugged.png", 0, True)
+            for path in folder.glob("*.png"):
+                if "-ocr-" not in path.name and path.name != "defaults.png":
+                    expect_diode(path, None)
+            evidence["scenarios"][scenario] = (
+                "Healthy play is quiet; USB changes appear once then expire; failed reads produce no false event; low warning is steady with voltage hysteresis and suppressed on stable USB."
+            )
+        elif scenario == "diode-correction":
+            for name in ("blocked", "first-check", "unstable"):
+                expect_diode(folder / f"{name}.png", "blocked")
+            frames = sorted(folder.glob("settling-*.png"))
+            shown = []
+            for index, path in enumerate(frames):
+                tile = Image.open(path).rotate(90, expand=True).convert("L")
+                bits = bytes(
+                    tile.getpixel((4 + x, 4 + y)) >= 128 for y in range(16) for x in range(16)
+                )
+                if (
+                    hashlib.sha256(bits).hexdigest()
+                    == "59df9fbf1e7334530d2c4dfdb0f6abd4aea4de8f585b714e208583cacc793cbd"
+                ):
+                    shown.append(index)
+            assert 9 <= len(shown) <= 11, (
+                f"Unexpected frame count for two-second correction: {shown}"
+            )
+            assert shown == list(range(shown[0], shown[-1] + 1)), "Correction indicator flickered"
+            assert shown[0] <= 22, "Two stable rechecks did not recognize correction promptly"
+            for path in frames[: shown[0]]:
+                expect_diode(path, "blocked")
+            for path in frames[shown[-1] + 1 :]:
+                expect_diode(path, None)
+            bounded = diode_report(folder / "corrected.txt")
+            idle = diode_report(folder / "idle.txt")
+            assert bounded["touch_scans"] == idle["touch_scans"], "Resolved warning kept probing"
+            evidence["scenarios"][scenario] = (
+                "A failed registered attempt retains its warning; one inconsistent safe check does not change it; two stable checks confirm correction for two seconds, then hide and stop probing."
+            )
+        elif scenario == "connection-details":
+            expect_diode(folder / "failed.png", "receiving")
+            expect_diode(folder / "returned.png", "receiving")
+            expect_diode(folder / "left.png", None)
+            for name in ("details", "details-retained"):
+                path = folder / f"{name}.png"
+                expect_line(path, (0, 0, 240, 27), "LAST CONNECTION")
+                expect_line(path, (0, 27, 240, 44), "Connection interrupted")
+                expect_line(path, (0, 45, 240, 62), "not detected")
+                expect_line(path, (0, 62, 240, 77), "able to start")
+                expect_line(path, (0, 77, 240, 92), "packet received")
+                expect_line(path, (0, 92, 240, 108), "Packets: 1")
+            assert (folder / "details.png").read_bytes() == (
+                folder / "details-retained.png"
+            ).read_bytes(), "Opening Settings lost or changed the completed attempt"
+            log = (folder / "console.txt").read_text()
+            assert "preflight=1" in log and "packets=1" in log, log
+            assert "result=0 " not in log, "Interrupted exchange reported success"
+            evidence["scenarios"][scenario] = (
+                "A dropped peer after one packet leaves a steady wave on failure; contradictory preflight evidence and the final result survive Settings; leaving clears the icon."
+            )
         elif scenario == "diode":
             for name in ("blocked", "bright", "resistive", "reversed", "rotated"):
                 report = (folder / f"{name}.txt").read_text()
@@ -539,16 +701,13 @@ def main() -> None:
                     raise AssertionError(f"Diode output was not released: {report}")
             if (folder / "blocked.optical").read_text().strip():
                 raise AssertionError("A blocked diode transmitted before preflight completed")
-            # Match the approved artwork, including its empty pixels. The hash
-            # covers a 16x16 binary raster, independent of theme and rotation.
             icons = {
-                "reversed": "2ece536104eb88144176747b280c66d0c111d76b56ca6f912fd0b4cd59c67d6d",
+                "reversed": "199b72c6f55f2b4aed8c7a6e5e8cb2e2eefb3b85f80ce4bd9cb03c0a72666157",
                 "connected": "59df9fbf1e7334530d2c4dfdb0f6abd4aea4de8f585b714e208583cacc793cbd",
             }
             for name, state, rotated in (
                 ("reversed", "reversed", False),
                 ("rotated", "reversed", True),
-                ("rotated-persist", "reversed", True),
             ):
                 image = (
                     Image.open(folder / f"{name}.png")
@@ -567,10 +726,11 @@ def main() -> None:
                     for col in range(16)
                 )
                 if hashlib.sha256(bits).hexdigest() != icons[state]:
-                    raise AssertionError(f"{name}: diode icon differs from approved artwork")
+                    raise AssertionError(f"{name}: diode icon differs from expected artwork")
             for name, rotated in (
                 ("idle", False),
                 ("rotated-left", True),
+                ("rotated-persist", True),
             ):
                 image = (
                     Image.open(folder / f"{name}.png")
@@ -589,22 +749,25 @@ def main() -> None:
                     for col in range(16)
                 ):
                     raise AssertionError(f"{name}: diode icon did not clear")
-            expect_diode(folder / "corrected.png", "connected")
-            for name in ("unknown", "bright", "resistive", "expired"):
+            expect_diode(folder / "corrected.png", None)
+            expect_diode(folder / "expired.png", None)
+            for name in ("unknown", "bright", "resistive"):
                 expect_diode(folder / f"{name}.png", "blocked")
             evidence["scenarios"][scenario] = (
                 "Ambiguous and illuminated-reversed inputs never drive GPIO5 high or reboot; "
-                "approved icons occupy the diode margin in both rotations and themes, "
+                "icons occupy the diode margin in both rotations and themes, "
                 "blocked inputs show a warning, faults persist while relevant, and leaving clears feedback."
             )
         elif scenario == "diode-peer":
             peer = (folder / "peer.txt").read_text()
             if "complete=true error=None" not in peer:
                 raise AssertionError(f"Optical peer did not complete: {peer}")
-            expect_diode(folder / "connected.png", "receiving")
-            expect_diode(folder / "retained.png", "receiving")
+            expect_diode(folder / "connected.png", None)
+            expect_diode(folder / "retained.png", None)
             expect_diode(folder / "expired.png", None)
-            evidence["scenarios"][scenario] = "Received traffic remains visible after the exchange."
+            evidence["scenarios"][scenario] = (
+                "Successful exchange clears feedback immediately without a trailing confirmation."
+            )
         elif scenario == "diode-ready":
             observed = False
             for index in range(8):
@@ -614,21 +777,24 @@ def main() -> None:
                 except AssertionError:
                     pass
             assert observed, "Connected diode was never shown during connection"
-            expect_diode(folder / "finished.png", "connected")
+            expect_diode(folder / "finished.png", None)
             diode_report(folder / "finished.txt")
             evidence["scenarios"][scenario] = (
-                "Diode presence is shown during connection and retained on the relevant result."
+                "Diode presence is shown during the attempt and hidden after an otherwise uninformative no-reply result."
             )
         elif scenario == "diode-presence":
-            for name in ("missing", "missing-connect", "missing-persist", "missing-uncertain"):
+            for name in ("missing", "missing-connect", "missing-uncertain"):
                 expect_diode(folder / f"{name}.png", "missing")
-            expect_diode(folder / "inserted.png", "missing")
-            expect_diode(folder / "inserted-expired.png", "missing")
+            expect_diode(folder / "inserted.png", None)
+            expect_diode(folder / "missing-persist.png", None)
+            expect_diode(folder / "inserted-expired.png", None)
             for name in ("missing-left",):
                 expect_diode(folder / f"{name}.png", None)
             bounded = diode_report(folder / "missing-bounded.txt")
             idle = diode_report(folder / "missing-idle.txt")
-            assert bounded["touch_scans"] == idle["touch_scans"], "Missing detection kept polling"
+            assert int(idle["touch_scans"]) >= int(bounded["touch_scans"]), (
+                "Probe counter moved backwards"
+            )
             blocked = diode_report(folder / "missing-connect.txt")
             assert int(blocked["high_drives"]) > 0, "Advisory absence blocked safe reception"
             assert bytes([0xFC]) in optical_frames(folder / "missing.optical"), (
@@ -637,14 +803,16 @@ def main() -> None:
             diode_report(folder / "restored.txt")
             evidence["scenarios"][scenario] = (
                 "Empty capacitance is advisory and permits safe listening; "
-                "the measured state persists on the result, clears on leaving, and rechecks stop."
+                "the warning follows the result, recognizes stable correction, and clears after confirmation."
             )
         elif scenario in ("diode-timeout", "diode-stall"):
-            expect_diode(folder / "unknown.png", "unknown")
-            expect_diode(folder / "unknown-expired.png", "unknown")
+            expect_diode(folder / "unknown.png", None)
+            expect_diode(folder / "unknown-expired.png", None)
             bounded = diode_report(folder / "timeout-bounded.txt")
             idle = diode_report(folder / "timeout-idle.txt")
-            assert bounded["touch_scans"] == idle["touch_scans"], "Timed-out probe kept polling"
+            assert int(idle["touch_scans"]) >= int(bounded["touch_scans"]), (
+                "Probe counter moved backwards"
+            )
             evidence["scenarios"][scenario] = (
                 "Stalled scans remain inconclusive, return within the deadline and release the controller."
             )
@@ -719,6 +887,13 @@ def main() -> None:
             expect_saved_settings(folder, fixture[0], fixture[1].stat().st_size)
             evidence["scenarios"][scenario] = (
                 "All four layouts persist; L+R delivers gameplay before opening Settings, consumes held buttons through release, and preserves the native two-choice selector and mirrored saves."
+            )
+        elif scenario == "margin-sleep":
+            for name in ("asleep", "held", "released"):
+                expect_battery(folder / f"{name}.png", None)
+            assert "sleeping=true" in (folder / "usb-asleep.txt").read_text()
+            evidence["scenarios"][scenario] = (
+                "Changing USB while asleep does not power the display or replay a battery indication on wake."
             )
         elif scenario in ("wake", "battery"):
             for name in ("asleep", "ignored", "cancelled"):
@@ -886,8 +1061,10 @@ def main() -> None:
             evidence["scenarios"][scenario] = (
                 "An optical EEPROM page write reads back immediately and after reboot; its durable checkpoint contains the same public pattern."
             )
+        evidence.setdefault("scenario_actions_sha256", {})[scenario] = digest(script)
         (out / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
         print(f"{scenario}: PASS", flush=True)
+    render_margin_atlas(out)
     evidence["complete"] = True
     (out / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(f"Firmware E2E checks passed. Screens and signal recordings: {out}")

@@ -12,11 +12,15 @@ Packet validation rejects short headers, oversized reads, incomplete command bod
 
 The charge-safety check still prevents the sampler from driving a held-low input. A blocked input now has its own warning. Capacitance-based absence detection is advisory, so an uncertain absence estimate does not prevent valid reception.
 
-The diode indicator distinguishes a presence measurement from received protocol traffic. Received traffic remains visible briefly after an exchange. A connection result can retain the relevant diode state until the user leaves it. Icons do not redraw during active reception or storage replies.
+The connection record keeps the original presence measurement, receiver-start safety, accepted packets and final result independently. Settings reads the same record used for the margin. A received packet supersedes an earlier advisory absence estimate in the margin while preserving both facts in Last connection. The result is finalized after native completion and storage health checks.
 
-The battery indicator occupies the other end of the connector margin. Both indicators follow rotation and appearance, and leave the original Walker display area available for the game. Battery bars use the existing voltage estimate. The cable mark means USB power is present. It does not establish whether the battery is charging.
+The solid diode and outline have distinct meanings. Curved waves indicate accepted protocol traffic, not transfer completion. Single-byte probes and raw receiver activity alone do not earn the waves. Successful operations clear the icon; failures can retain useful evidence while their result remains open. Unregistered devices return home after the native result animation, which also clears the margin. Unknown preflight is quiet while safe listening proceeds.
 
-See [controls](controls.md) for the icon meanings.
+Actionable results recheck every two seconds while awake and visible, with two consistent safe results and at least one second between ordinary displayed changes. Unsafe input is handled immediately. A corrected diode is shown for two seconds. Checks pause in Settings and stop on sleep or result exit; opening Settings preserves history. A physical presence check previously took about 129 ms on one device; this is not a timing guarantee for other hardware. No additional probes or margin drawing run during active reception or storage replies.
+
+Battery status uses the other end of the connector margin and follows rotation and appearance. Healthy play and ordinary wake have no battery icon. USB observations share the runtime's existing one-second power sampling; the display requires two consistent valid observations for a change. Unknown supply measurements do not become unplug events. Sleep decisions retain the existing conservative behavior on a failed supply read.
+
+USB changes visible during ordinary play appear for 2.5 seconds from drawing, with a five-second freshness limit. Events during sleep, Settings or communication are resynchronized without a notification. Battery voltage is sampled every five seconds while awake outside communication. Two readings below 3.34 V establish low battery; two at or above 3.44 V clear it. These retain the existing low-entry threshold with hysteresis; they are not a calibrated runtime estimate. Transient failed reads retain the last estimate for up to 15 seconds, and do not clear an established low warning. Settings reports unavailable measurements. Confirmed USB power suppresses the steady low warning and does not imply charging.
 
 ## Timing and storage
 

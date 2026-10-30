@@ -348,6 +348,7 @@ void IrBegin(void)
 {
 #ifdef PW_STICK_S3
   StickPlatformPrepareIr();
+  StickConnectionBegin();
   stickEepromSessionReady = StickEepromSessionBegin();
   if (!stickEepromSessionReady) {
     g_state.irResult = IR_RESULT_CONNECTION_ERROR;
@@ -650,7 +651,6 @@ void IrProtocolTick(void)
   g_state.irTimerReference = stickLastObservationTick;
   StickIrAcceptPacket(command, g_work.irc.work.handshakePhase,
                       g_work.irc.work.bulkPhase);
-  StickDiodeReceivedPacket();
 #endif
   switch (command) {
   case IR_RESPONSE:
@@ -1406,9 +1406,6 @@ void IrFinish(void)
     if (!StickEepromHealthy())
       g_work.irc.work.completionAction = IR_ACTION_NONE;
   }
-  StickDiodeEnd(g_state.irResult == IR_RESULT_CONNECTION_ERROR ||
-                g_state.irResult == IR_RESULT_NO_RESPONSE ||
-                g_state.irResult == IR_RESULT_RECEIVE_OVERFLOW);
 #ifdef PW_STICK_BENCH_CONTROL
   StickPortTrace("PW_STICK_AFTER_IR_STOP");
 #endif

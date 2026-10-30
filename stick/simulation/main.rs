@@ -2,6 +2,7 @@ mod board;
 mod peer;
 use esp_soc::{SocBus, Stop};
 use std::{
+    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -14,6 +15,11 @@ fn main() {
     );
     let out = PathBuf::from(&args[4]);
     std::fs::create_dir_all(&out).unwrap();
+    let mut flash_dump = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out.join("flash.bin"))
+        .expect("use a fresh output directory; existing flash dumps must be preserved");
     let mut machine = esp32s3::machine([0x02, 0x53, 0x03, 0x00, 0x00, 0x01]);
     let inputs = Arc::new(Mutex::new(board::Inputs::default()));
     machine.bus.board = Box::new(board::StickS3::new(inputs.clone()));
@@ -89,7 +95,7 @@ fn main() {
                         machine
                             .write_tft_png(out.join("failure.png").to_str().unwrap(), 1)
                             .unwrap();
-                        std::fs::write(out.join("flash.bin"), &machine.bus.flash).unwrap();
+                        flash_dump.write_all(&machine.bus.flash).unwrap();
                         let mut registers = format!(
                             "action={line}\ncycles={}\n{}",
                             machine.bus.cycles,
@@ -181,6 +187,12 @@ fn main() {
                 .unwrap();
             }
             ["serial", text] => machine.bus.serial_input(text.as_bytes()),
+            ["battery", millivolts] => {
+                inputs.lock().unwrap().battery_mv = Some(millivolts.parse().unwrap());
+            }
+            ["vbus-fail", enabled] => {
+                inputs.lock().unwrap().vbus_fail = *enabled == "1";
+            }
             ["vbus", millivolts] => {
                 inputs.lock().unwrap().vbus_mv = Some(millivolts.parse().unwrap());
             }
@@ -225,6 +237,10 @@ fn main() {
                     std::fs::read(path).unwrap(),
                     mode.parse().unwrap(),
                 ));
+            }
+            ["peer", "limit", count] => {
+                inputs.lock().unwrap().peer.as_mut().unwrap().reply_limit =
+                    Some(count.parse().unwrap());
             }
             ["peer", "start"] => {
                 inputs.lock().unwrap().peer = Some(peer::OpticalPeer::new());
@@ -308,7 +324,6 @@ fn main() {
             ["screen", name] => machine
                 .write_tft_png(out.join(name).to_str().unwrap(), 1)
                 .unwrap(),
-            ["flash", name] => std::fs::write(out.join(name), &machine.bus.flash).unwrap(),
             ["reset"] => {
                 machine.bus.request_reset(1);
                 machine.reboot();
@@ -317,7 +332,7 @@ fn main() {
         }
     }
     std::fs::write(out.join("console.txt"), &machine.console.all).unwrap();
-    std::fs::write(out.join("flash.bin"), &machine.bus.flash).unwrap();
+    flash_dump.write_all(&machine.bus.flash).unwrap();
     eprintln!(
         "cycles={} reboots={}\n{}",
         machine.bus.cycles,

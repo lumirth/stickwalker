@@ -111,16 +111,13 @@ unsigned tx_diagnostic_count = 0;
 int64_t last_peer_pulse_us = 0;
 #endif
 pw_stick::WireBurst pending_timing;
-uint32_t checksum_failures = 0, malformed_packets = 0, accepted_packets = 0;
-unsigned last_command = 0, maximum_decode_us = 0, maximum_reply_us = 0;
+uint32_t checksum_failures = 0, malformed_packets = 0;
+unsigned maximum_decode_us = 0, maximum_reply_us = 0;
 int64_t peer_request_us = 0;
-unsigned last_result = 0;
-bool have_session = false;
 unsigned current_bins_count = 0;
-unsigned preflight = 0, supply_mv = 0;
 int64_t previous_reply_us = 0;
 unsigned maximum_roundtrip_us = 0;
-unsigned last_phase = 0, last_bulk_phase = 0, resync_bytes = 0;
+unsigned resync_bytes = 0;
 unsigned rejected_session = 0, deadline_misses = 0;
 TaskHandle_t worker_handle = nullptr;
 TaskHandle_t protocol_handle = nullptr;
@@ -389,23 +386,18 @@ extern "C" void StickIrConfigure(void) {
     return;
   }
   const bool clock_ok = setCpuFrequencyMhz(240);
-  checksum_failures = malformed_packets = accepted_packets = 0;
-  last_command = maximum_decode_us = maximum_reply_us = 0;
+  checksum_failures = malformed_packets = 0;
+  maximum_decode_us = maximum_reply_us = 0;
   peer_request_us = previous_reply_us = 0;
   maximum_roundtrip_us = 0;
-  last_phase = last_bulk_phase = resync_bytes = rejected_session = deadline_misses = 0;
+  resync_bytes = rejected_session = deadline_misses = 0;
   diagnostic_count = 0;
-  supply_mv = StickBoardPower().getBatteryVoltage();
-  preflight = 0;
   raw_events = valid_bursts = invalid_bursts = short_bursts = overlong_bursts = 0;
   final_health = {};
-  StickDiodeBegin();
   if (clock_ok && !StickDiodePreflight()) {
-    preflight = StickDiodeVisible();
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
     return;
   }
-  preflight = StickDiodeVisible();
   __atomic_store_n(&failed, !clock_ok || !pw_stick::prepare_ir_tx(),
                     __ATOMIC_RELEASE);
 }
@@ -771,10 +763,7 @@ extern "C" int StickIrFailed(void) {
 }
 
 extern "C" void StickIrAcceptPacket(unsigned command, unsigned phase, unsigned bulk_phase) {
-  last_phase = phase;
-  last_bulk_phase = bulk_phase;
-  ++accepted_packets;
-  last_command = command;
+  StickConnectionAcceptPacket(command, phase, bulk_phase);
   pw_stick::accept_rx_timing(pending_timing);
 }
 extern "C" void StickIrRejectPacket(unsigned reason) {
@@ -786,34 +775,22 @@ extern "C" void StickIrRejectPacket(unsigned reason) {
     diagnostic_count = current_bins_count;
   }
 }
-extern "C" const char *StickIrLastSummary(void) {
-  if (!have_session) return "No connection yet";
-  if (!last_result) return "Completed";
-  if (preflight == unsigned(pw_stick::DiodeState::Blocked)) return "Receiver input blocked";
-  if (preflight == unsigned(pw_stick::DiodeState::Reversed)) return "Reverse the diode";
-  if (overlong_bursts) return "Too much receiver activity";
-  if (deadline_misses) return "Reply took too long";
-  if (!accepted_packets && !raw_events) return "No signal received";
-  if (checksum_failures || invalid_bursts) return "Signal interrupted";
-  if (malformed_packets) return "Invalid packet received";
-  return "Connection ended";
-}
 static void print_session() {
-  if (!have_session) { Serial.println("PW_STICK_LINK none"); return; }
-  Serial.printf("PW_STICK_LINK build=%s result=%u preflight=%u battery_mv=%u packets=%lu command=%02x "
+  const auto &attempt = *StickLastConnection();
+  if (!attempt.started) { Serial.println("PW_STICK_LINK none"); return; }
+  Serial.printf("PW_STICK_LINK build=%s result=%u preflight=%u battery_mv=%u checked=%u safe=%u packets=%lu command=%02x "
                 "phase=%u bulk=%u framing=%lu checksum=%lu malformed=%lu session=%u "
                 "late=%lu low=%lu short=%lu overlong=%lu resync=%u "
                 "decode_us=%u reply_us=%u roundtrip_us=%u deadline_misses=%u\n",
-      PW_STICK_BUILD_ID, last_result, preflight, supply_mv, (unsigned long)accepted_packets, last_command,
-      last_phase, last_bulk_phase, (unsigned long)invalid_bursts, (unsigned long)checksum_failures,
+      PW_STICK_BUILD_ID, attempt.result, attempt.preflight, attempt.battery_mv, unsigned(attempt.checked), unsigned(attempt.receive_safe), (unsigned long)attempt.packets, attempt.command,
+      attempt.phase, attempt.bulk_phase, (unsigned long)invalid_bursts, (unsigned long)checksum_failures,
       (unsigned long)malformed_packets, rejected_session, (unsigned long)final_health.phase_late,
       (unsigned long)final_health.already_low, (unsigned long)short_bursts,
       (unsigned long)overlong_bursts, resync_bytes, maximum_decode_us, maximum_reply_us,
       maximum_roundtrip_us, deadline_misses);
 }
 extern "C" void StickIrSessionResult(unsigned result) {
-  have_session = true;
-  last_result = result;
+  StickConnectionFinish(result);
   print_session();
 }
 extern "C" void StickIrResynchronized(unsigned bytes) { resync_bytes += bytes; }

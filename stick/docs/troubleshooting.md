@@ -6,7 +6,7 @@ Use the [margin indicator](controls.md) to distinguish a detected diode from rec
 
 If a connection is intermittent, try a shaded position away from direct sunlight and lamps. Change one condition at a time. Darkness alone does not rule out contact, aiming or decoding problems.
 
-Stick Settings shows the last connection result. For a failed exchange, collect the diagnostic result before starting another attempt.
+Open **Last connection** in Stick Settings for the last connection result and its observations. For a failed exchange, collect the diagnostic result before starting another attempt.
 
 ## Collect a diagnostic result
 

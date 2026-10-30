@@ -15,19 +15,23 @@ For two-key layouts, M+R window sets how much time you have to press the second 
 
 Contrast controls the Stick's backlight.
 
-The connector margin contains the diode indicator and battery indicator.
+The connector margin shows connection feedback and battery warnings without covering the Walker display.
 
 | Diode indicator | Meaning |
 | --- | --- |
-| Outline with × | Diode not detected. |
-| Arrows | Reverse the diode. |
-| Outline with ? | Diode presence is uncertain. |
-| Outline with ! | Receiver blocked. Check wiring, contact and light. |
-| Solid diode | Diode detected. |
-| Diode with check mark | Received a valid packet. |
+| Outline with × | Diode not detected. Check insertion and contact. |
+| Solid with opposing arrows | Diode appears reversed. |
+| Outline with ? | The failed attempt's diode check was inconclusive. |
+| Outline with ! | Receiver input blocked. |
+| Solid diode | Diode detected during connection or briefly after correcting a warning. |
+| Solid with curved waves | A valid packet was received during this attempt. |
 
-A check mark confirms received traffic. The game's connection result reports whether the operation completed. The indicator remains briefly after an exchange, or while its connection result is open.
+The waves remain steady once communication has been observed. They can accompany a failed connection; the game's result reports whether the operation completed. Successful operations clear the indicator. Warnings remain while the result is visible, and leave when the result closes. Ordinary play has no diode indicator.
 
-Battery bars show the voltage estimate and refresh while the screen is awake. A question mark means the reading is unavailable. The cable mark means USB power is present.
+While a warning's result is visible, the Stick rechecks at two-second intervals outside communication. Two consistent safe checks change the indication; an unsafe input is handled immediately. Correcting the diode shows the solid icon for two seconds, then clears it. Opening Settings pauses these checks and preserves the attempt's evidence.
+
+A healthy battery has no margin icon, including on wake. A confirmed low battery shows a steady warning while the screen is awake and USB power is absent. Confirmed USB changes while the screen is already on show the battery indication for 2.5 seconds. The USB mark means power is present; it does not establish whether the battery is charging. Stable USB power hides the low warning. Power changes during sleep, Settings or communication do not replay as old notifications.
+
+Stick Settings shows the voltage and approximate percentage. Its **Last connection** entry shows the original diode check, whether receiving could start, accepted packets and the final operation result. This record remains until the next attempt or restart.
 
 [Connection troubleshooting](troubleshooting.md).

@@ -68,7 +68,7 @@ screen reversed.png
 diode report reversed.txt
 # Correcting the input briefly confirms the inserted diode.
 gpio 5 1
-run 600
+run 4500
 screen corrected.png
 # Repeat in the opposite rotation and light appearance.
 press L

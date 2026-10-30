@@ -11,17 +11,49 @@
 #include "input_bridge.h"
 #include "native_runtime.h"
 #include "sound_bridge.h"
-#include "ir_transport.h"
+#include "diode_status.h"
+#include "diode_feedback.h"
+#include "support/ir.h"
 #include <M5Unified.h>
 #include <esp_timer.h>
 
 namespace {
 bool opened = false;
 bool draw_pending = false;
+bool details = false;
 unsigned row = 0;
 uint64_t last_input = 0;
 uint64_t last_battery = 0;
 constexpr uint64_t kIdleUs = 90000000;
+
+const char *connection_outcome() {
+  const auto &attempt = *StickLastConnection();
+  if (!attempt.started) return "No connection yet";
+  if (!attempt.finished) return "Connecting";
+  switch (attempt.result) {
+  case IR_RESULT_NONE: return "Completed";
+  case IR_RESULT_NO_RESPONSE: return "No reply";
+  case IR_RESULT_REJECTED: return "Connection rejected";
+  case IR_RESULT_NO_POKEMON: return "No Pokemon to exchange";
+  case IR_RESULT_PEER_ALREADY_SEEN: return "Already met this Walker";
+  case IR_RESULT_EVENT_ALREADY_RECEIVED: return "Already received";
+  case IR_RESULT_EVENT_NOT_RECEIVED: return "Event not received";
+  default: return "Connection interrupted";
+  }
+}
+const char *connection_probe_summary() {
+  const auto &attempt = *StickLastConnection();
+  if (!attempt.checked) return "Diode: not checked";
+  if (!attempt.receive_safe) return attempt.preflight == unsigned(pw_stick::DiodeState::Reversed)
+      ? "Diode: appears reversed" : "Receiver input blocked";
+  if (attempt.preflight == unsigned(pw_stick::DiodeState::Missing)) return "Diode: not detected";
+  if (attempt.preflight == unsigned(pw_stick::DiodeState::Connected)) return "Diode: detected";
+  return "Diode: check inconclusive";
+}
+const char *connection_traffic_summary() {
+  const auto &attempt = *StickLastConnection();
+  return attempt.packets ? "Valid packet received" : "No valid packet received";
+}
 
 void battery() {
   if (!StickDisplayPanelIsReady()) return;
@@ -32,13 +64,12 @@ void battery() {
   screen->setTextColor(StickDisplayForeground(), StickDisplayBackground());
   screen->setTextSize(1);
   screen->setCursor(10, 28);
+  uint16_t vbus;
+  const bool usb = StickBoardVbusVoltage(&vbus) && vbus >= 4000;
   if (percent < 0) screen->print("Battery reading unavailable");
   else screen->printf("Battery %u.%02u V  ~%d%%  %s", millivolts / 1000,
       (millivolts % 1000) / 10, percent,
-      StickBoardPower().getVBUSVoltage() >= 4000 ? "USB" : "");
-  screen->fillRect(8, 125, 224, 8, StickDisplayBackground());
-  screen->setCursor(10, 125);
-  screen->print(StickIrLastSummary());
+      usb ? "USB" : "");
   last_battery = uint64_t(esp_timer_get_time());
 }
 
@@ -52,7 +83,27 @@ void draw() {
   screen->setTextColor(StickDisplayForeground(), StickDisplayBackground());
   screen->setTextSize(2);
   screen->setCursor(8, 8);
-  screen->print("STICK SETTINGS");
+  screen->print(details ? "LAST CONNECTION" : "STICK SETTINGS");
+  if (details) {
+    screen->setTextSize(1);
+    screen->setCursor(10, 32);
+    screen->print(connection_outcome());
+    const auto &attempt = *StickLastConnection();
+    if (attempt.started) {
+      screen->setCursor(10, 50);
+      screen->print(connection_probe_summary());
+      screen->setCursor(10, 65);
+      screen->print(!attempt.checked ? "Receiver: not checked" :
+                    attempt.receive_safe ? "Receiver: able to start" : "Receiver: unable to start");
+      screen->setCursor(10, 80);
+      screen->print(connection_traffic_summary());
+      screen->setCursor(10, 95);
+      screen->printf("Packets: %u", attempt.packets);
+    }
+    screen->setCursor(10, 125);
+    screen->print("L back");
+    return;
+  }
   battery();
   screen->setTextSize(1);
   screen->setCursor(10, 42);
@@ -73,14 +124,15 @@ void draw() {
       80 + StickInputChordWindowIndex() * 40);
   screen->setCursor(10, 94);
   screen->printf("%c Test speaker", row == 4 ? '>' : ' ');
-  screen->drawFastHLine(8, 107, 224, StickDisplayForeground());
-  screen->setCursor(10, 115);
+  screen->setCursor(10, 107);
+  screen->printf("%c Last connection", row == 5 ? '>' : ' ');
+  screen->setCursor(10, 125);
   screen->print("M next  R change  L close");
   StickNativeService();
 }
 
 void close(bool wake) {
-  opened = draw_pending = false;
+  opened = draw_pending = details = false;
   StickInputMenuMode(0);
   if (wake) StickForegroundDeviceMenuClosed();
   if (StickDisplayPanelIsReady()) StickBoardScreen()->fillScreen(StickDisplayBackground());
@@ -93,6 +145,7 @@ void StickSettingsService(void) {
   if (!opened && StickMenuRequested()) {
     opened = true;
     row = 0;
+    details = false;
     last_input = now;
     StickInputMenuMode(1);
     draw();
@@ -100,18 +153,23 @@ void StickSettingsService(void) {
   if (!opened) return;
   if (now - last_input >= kIdleUs) { close(false); return; }
   if (draw_pending) draw();
-  if (now - last_battery >= 5000000) battery();
+  if (!details && now - last_battery >= 5000000) battery();
   const u8 buttons = StickInputTakeMenuButtons();
   if (!buttons) return;
   last_input = now;
+  if (details) {
+    if (buttons & 4u) { details = false; draw(); }
+    return;
+  }
   if (buttons & 4u) { close(true); return; }
   if (buttons & 1u) {
-    row = (row + 1) % 5;
+    row = (row + 1) % 6;
     if (row == 3 && StickInputProfile()) ++row;
     draw();
     return;
   }
   if (!(buttons & 2u)) return;
+  if (row == 5) { details = true; draw(); return; }
   if (row == 4) { StickSoundTestTone(); return; }
   if (row == 2) {
     if (StickDisplaySetDark(!StickDisplayIsDark())) draw();
@@ -133,7 +191,7 @@ int StickSettingsIsOpen(void) { return opened; }
 unsigned StickSettingsSelection(void) { return row; }
 uint64_t StickSettingsNextDeadline(void) {
   if (!opened) return UINT64_MAX;
-  const uint64_t battery_deadline = last_battery + 5000000;
+  const uint64_t battery_deadline = details ? UINT64_MAX : last_battery + 5000000;
   const uint64_t idle_deadline = last_input + kIdleUs;
   return battery_deadline < idle_deadline ? battery_deadline : idle_deadline;
 }

@@ -43,7 +43,9 @@ void fatal(const char *reason) {
 
 void refresh_usb() {
   uint16_t millivolts;
-  usb_present = !StickBoardVbusVoltage(&millivolts) || millivolts >= 4000;
+  const bool valid = StickBoardVbusVoltage(&millivolts);
+  usb_present = !valid || millivolts >= 4000;
+  StickMarginObservePower(valid ? int(millivolts >= 4000) : -1);
   next_vbus_check = uint64_t(esp_timer_get_time()) + 1000000;
 }
 
@@ -72,6 +74,7 @@ void StickPresentGame(int force) {
 }
 
 extern "C" void StickPlatformPrepareIr(void) {
+  StickMarginPausePowerEvents();
   StickInputRequireRelease();
   StickSoundQuiesceForIr();
   StickPresentGame(0);

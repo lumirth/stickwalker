@@ -194,6 +194,7 @@ int StickDiagnosticsService(void) {
     }
     if (command == 'p' && !StickForegroundIsIr()) {
       StickIrBenchTrace(1);
+      StickConnectionBegin();
       StickIrConfigure();
       StickIrPassiveDiagnostic(1);
       StickIrStart();
@@ -210,6 +211,7 @@ int StickDiagnosticsService(void) {
     }
     if (command == 'r' && !StickForegroundIsIr()) {
       StickIrBenchTrace(1);
+      StickConnectionBegin();
       StickIrConfigure();
       StickIrPassiveDiagnostic(0);
       StickIrStart();

@@ -7,7 +7,6 @@ release M
 release R
 run 100
 screen missing.png
-# An uncertain recheck must not erase a diagnosed fault.
 cap 5 15 14
 run 600
 screen missing-uncertain.png
@@ -35,9 +34,9 @@ run 100
 screen missing-connect.png
 diode report missing-connect.txt
 optical missing.optical
-# Plugging the diode in during the bounded correction window.
+# Plugging the diode in while the failed result is visible.
 cap 5 20.2 17.9
-run 600
+run 9000
 screen inserted.png
 run 2500
 screen inserted-expired.png

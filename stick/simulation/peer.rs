@@ -109,6 +109,7 @@ pub struct OpticalPeer {
     page_verified: bool,
     received_frames: usize,
     transmitted_frames: usize,
+    pub reply_limit: Option<usize>,
     charge_count: u64,
     discharge_count: u64,
     baud: u64,
@@ -141,6 +142,7 @@ impl OpticalPeer {
             page_verified: false,
             received_frames: 0,
             transmitted_frames: 0,
+            reply_limit: None,
             charge_count: 0,
             discharge_count: 0,
             baud: BAUD,
@@ -501,6 +503,13 @@ impl OpticalPeer {
     }
 
     fn send_raw(&mut self, packet: &[u8]) {
+        if self
+            .reply_limit
+            .is_some_and(|limit| self.transmitted_frames >= limit)
+        {
+            self.timeout = None;
+            return;
+        }
         self.trace += &format!(
             "{} {} {}\n",
             self.now,

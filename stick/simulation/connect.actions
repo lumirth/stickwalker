@@ -29,7 +29,9 @@ press R
 run 300
 release M
 release R
-run 5000
+run 100
+screen inconclusive-attempt.png
+run 4900
 screen no-peer.png
 run 5000
 press L
