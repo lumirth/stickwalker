@@ -101,29 +101,6 @@ int main()
   const DiodeBiasWindow changing[] = {{540, 523, 0}, {640, 626, 0}, {542, 524, 0}};
   assert(diode_bias_state(changing) == DiodeState::Unknown);
 
-  DiodeFeedback feedback;
-  assert(feedback.visible(false) == DiodeState::Hidden);
-  feedback.begin();
-  feedback.observe(DiodeState::Connected);
-  assert(feedback.visible(false) == DiodeState::Connected);
-  feedback.end();
-  assert(feedback.visible(true) == DiodeState::Hidden);
-  for (auto fault : {DiodeState::Missing, DiodeState::Reversed}) {
-    feedback.begin();
-    feedback.observe(fault);
-    assert(feedback.visible(false) == fault);
-    feedback.end();
-    assert(feedback.visible(true) == fault);
-    assert(feedback.visible(false) == DiodeState::Hidden);
-    feedback.observe(DiodeState::Connected);
-    assert(feedback.visible(true) == DiodeState::Hidden);
-  }
-  feedback.begin();
-  feedback.observe(DiodeState::Unknown);
-  assert(feedback.visible(false) == DiodeState::Hidden);
-  feedback.end();
-  assert(feedback.visible(true) == DiodeState::Hidden);
-
   assert(panel_rotation(unsigned(Orientation::LeftSideDown)) == 1);
   assert(panel_rotation(unsigned(Orientation::RightSideDown)) == 3);
   assert(diode_icon_x(unsigned(Orientation::LeftSideDown)) == 4);

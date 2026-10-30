@@ -20,7 +20,9 @@ Downloads use placeholder built-in artwork. For the original graphics, [build wi
 
 L is Left, M is Center and R is Right. The default orientation is left-side-down.
 
-Hold M for about half a second to wake the screen. Hold L+R for one second to open Stick Settings. See [controls](stick/docs/controls.md) for the other layouts.
+Hold M for about half a second to wake the screen. Hold L+R for one second to open Stick Settings. See [controls](stick/docs/controls.md) for the other layouts and margin indicators.
+
+For connection problems, see [troubleshooting](stick/docs/troubleshooting.md).
 
 ## Development
 

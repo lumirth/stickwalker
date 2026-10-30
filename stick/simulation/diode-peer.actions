@@ -16,4 +16,6 @@ run 100
 peer report peer.txt
 screen connected.png
 run 2200
+screen retained.png
+run 1500
 screen expired.png

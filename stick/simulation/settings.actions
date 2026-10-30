@@ -1,3 +1,5 @@
+serial ?
+run 100
 run 3000
 screen welcome.png
 press L

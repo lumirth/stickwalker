@@ -1,4 +1,5 @@
 #include "ir_transport.h"
+#include "stick_build.h"
 
 #include "ir_gate.h"
 #include "ir_rx_core.h"
@@ -108,6 +109,15 @@ TxDiagnostic tx_diagnostics[32];
 unsigned tx_diagnostic_count = 0;
 int64_t last_peer_pulse_us = 0;
 #endif
+pw_stick::WireBurst pending_timing;
+uint32_t checksum_failures = 0, malformed_packets = 0;
+unsigned maximum_decode_us = 0, maximum_reply_us = 0;
+int64_t peer_request_us = 0;
+unsigned current_bins_count = 0;
+int64_t previous_reply_us = 0;
+unsigned maximum_roundtrip_us = 0;
+unsigned resync_bytes = 0;
+unsigned rejected_session = 0, deadline_misses = 0;
 TaskHandle_t worker_handle = nullptr;
 TaskHandle_t protocol_handle = nullptr;
 
@@ -124,7 +134,7 @@ void core1_tick(bool enabled) {
 
 uint32_t IRAM_ATTR __attribute__((noinline)) aligned_next(uint16_t align_us) {
   const uint32_t cycle = esp_cpu_get_cycle_count();
-  if (align_us >= 1000) return cycle;
+  if (align_us >= 1000) return cycle + 800;
   const int64_t now_us = esp_timer_get_time();
   uint32_t wait_us = uint32_t((int64_t(align_us) + 1000 - now_us % 1000) % 1000);
   if (wait_us < 20) wait_us += 1000;
@@ -192,7 +202,7 @@ uint32_t IRAM_ATTR __attribute__((noinline)) run_gate_segment(
         }
         in_packet = false;
         core1_tick(true);
-        if (wake_events && !self_echo) {
+        if (wake_events && !self_echo && last_low - first_low >= 6) {
           // End at a complete burst. The worker owns notification and the
           // storage handoff outside this timing-sensitive producer.
           ++gate;
@@ -260,9 +270,11 @@ void sampler(void *) {
         while (int32_t(esp_cpu_get_cycle_count() - next) < 0) {}
       }
     } else {
+      uint16_t alignment = 250;
       while (!__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE)) {
+        const uint32_t before = __atomic_load_n(&event_write, __ATOMIC_ACQUIRE);
         gate = run_gate_segment(ring, gate, gate + kSegmentGates, health,
-                                input_mask, true, true, true, 250);
+                                input_mask, true, true, true, alignment);
         portENABLE_INTERRUPTS();
         const uint32_t handoff = __atomic_load_n(&event_write, __ATOMIC_ACQUIRE);
 #ifdef PW_STICK_BENCH_CONTROL
@@ -271,14 +283,15 @@ void sampler(void *) {
                         (unsigned long)gate);
 #endif
         if (protocol_handle) xTaskNotifyGive(protocol_handle);
-        if (int32_t(__atomic_load_n(&released_events, __ATOMIC_ACQUIRE) -
-                    handoff) < 0) {
+        if (handoff != before) {
           while (int32_t(__atomic_load_n(&released_events, __ATOMIC_ACQUIRE) -
                          handoff) < 0 &&
                  !__atomic_load_n(&stop_requested, __ATOMIC_ACQUIRE))
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+          alignment = 1000;
         } else {
           vTaskDelay(1);
+          alignment = 250;
         }
         portDISABLE_INTERRUPTS();
       }
@@ -372,7 +385,14 @@ extern "C" void StickIrConfigure(void) {
     return;
   }
   const bool clock_ok = setCpuFrequencyMhz(240);
-  StickDiodeBegin();
+  checksum_failures = malformed_packets = 0;
+  maximum_decode_us = maximum_reply_us = 0;
+  peer_request_us = previous_reply_us = 0;
+  maximum_roundtrip_us = 0;
+  resync_bytes = rejected_session = deadline_misses = 0;
+  diagnostic_count = 0;
+  raw_events = valid_bursts = invalid_bursts = short_bursts = overlong_bursts = 0;
+  final_health = {};
   if (clock_ok && !StickDiodePreflight()) {
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
     return;
@@ -615,6 +635,18 @@ extern "C" void StickIrSendFrame(const u8 *logical, u8 length) {
   const int64_t started_us = esp_timer_get_time();
 #endif
   const bool sent = pw_stick::transmit_logical(logical, length);
+  if (peer_request_us) {
+    const unsigned elapsed = unsigned(esp_timer_get_time() - peer_request_us);
+    if (elapsed > maximum_reply_us) maximum_reply_us = elapsed;
+    const int64_t completed = esp_timer_get_time();
+    if (previous_reply_us) {
+      const unsigned roundtrip = unsigned(completed - previous_reply_us);
+      if (roundtrip > maximum_roundtrip_us) maximum_roundtrip_us = roundtrip;
+      if (roundtrip >= 100000) ++deadline_misses;
+    }
+    previous_reply_us = completed;
+    peer_request_us = 0;
+  }
   if (!sent)
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
 #ifdef PW_STICK_BENCH_CONTROL
@@ -670,15 +702,14 @@ extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
     diagnostic_last = event.last - base;
   }
 #endif
+  current_bins_count = count;
   pw_stick::WireBurst burst;
-#ifdef PW_STICK_BENCH_CONTROL
   const int64_t decode_started_us = esp_timer_get_time();
-#endif
   const bool decoded = pw_stick::decode_wire_burst(packet_bins, count, burst,
                                                    kLowCutoff);
-#ifdef PW_STICK_BENCH_CONTROL
   const unsigned decode_us = unsigned(esp_timer_get_time() - decode_started_us);
-#endif
+  if (decode_us > maximum_decode_us) maximum_decode_us = decode_us;
+  pending_timing = burst;
   const bool credible = decoded && burst.credible_uart();
 #ifdef PW_STICK_BENCH_CONTROL
   if (!credible && count <= sizeof(diagnostic_bins)) {
@@ -706,6 +737,8 @@ extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
   }
 #endif
   if (!credible) {
+    memcpy(diagnostic_bins, packet_bins, count);
+    diagnostic_count = count;
     ++invalid_bursts;
     return 0;
   }
@@ -721,10 +754,64 @@ extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
 #ifdef PW_STICK_BENCH_CONTROL
   last_peer_pulse_us = peer_pulse_us;
 #endif
+  peer_request_us = event.end_us - int64_t(event.end_gate - event.first) * 6250 / 2160;
   *lastObservationTick = ticks_from_us(peer_pulse_us);
   return 1;
 }
 
 extern "C" int StickIrFailed(void) {
   return __atomic_load_n(&failed, __ATOMIC_ACQUIRE);
+}
+
+extern "C" void StickIrAcceptPacket(unsigned command, unsigned phase, unsigned bulk_phase) {
+  StickConnectionAcceptPacket(command, phase, bulk_phase);
+  pw_stick::accept_rx_timing(pending_timing);
+}
+extern "C" void StickIrRejectPacket(unsigned reason) {
+  if (reason == 1) ++checksum_failures;
+  else if (reason >= 3) ++rejected_session;
+  else ++malformed_packets;
+  if (current_bins_count <= sizeof(diagnostic_bins)) {
+    memcpy(diagnostic_bins, packet_bins, current_bins_count);
+    diagnostic_count = current_bins_count;
+  }
+}
+static void print_session() {
+  const auto &attempt = *StickLastConnection();
+  if (!attempt.started) { Serial.println("PW_STICK_LINK none"); return; }
+  Serial.printf("PW_STICK_LINK build=%s result=%u preflight=%u battery_mv=%u checked=%u safe=%u packets=%lu command=%02x "
+                "phase=%u bulk=%u framing=%lu checksum=%lu malformed=%lu session=%u "
+                "late=%lu low=%lu short=%lu overlong=%lu resync=%u "
+                "decode_us=%u reply_us=%u roundtrip_us=%u deadline_misses=%u\n",
+      PW_STICK_BUILD_ID, attempt.result, attempt.preflight, attempt.battery_mv, unsigned(attempt.checked), unsigned(attempt.receive_safe), (unsigned long)attempt.packets, attempt.command,
+      attempt.phase, attempt.bulk_phase, (unsigned long)invalid_bursts, (unsigned long)checksum_failures,
+      (unsigned long)malformed_packets, rejected_session, (unsigned long)final_health.phase_late,
+      (unsigned long)final_health.already_low, (unsigned long)short_bursts,
+      (unsigned long)overlong_bursts, resync_bytes, maximum_decode_us, maximum_reply_us,
+      maximum_roundtrip_us, deadline_misses);
+}
+extern "C" void StickIrSessionResult(unsigned result) {
+  StickConnectionFinish(result);
+  print_session();
+}
+extern "C" void StickIrResynchronized(unsigned bytes) { resync_bytes += bytes; }
+
+extern "C" void StickIrServiceDiagnostics(void) {
+#ifndef PW_STICK_BENCH_CONTROL
+  while (Serial.available()) {
+    const int command = Serial.read();
+    if (command == '?') {
+      Serial.printf("PW_STICK_DIAGNOSTICS version=1 build=%s\n", PW_STICK_BUILD_ID);
+      print_session();
+    }
+    if (command == 'r') {
+      Serial.printf("PW_STICK_RX_CAPTURE gates=%u\n", diagnostic_count);
+      for (unsigned i = 0; i < diagnostic_count; ++i) {
+        Serial.printf("%02x", diagnostic_bins[i]);
+        if ((i & 63u) == 63u) Serial.println();
+      }
+      Serial.println("\nPW_STICK_RX_CAPTURE_END");
+    }
+  }
+#endif
 }

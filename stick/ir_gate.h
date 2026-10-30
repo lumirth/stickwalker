@@ -5,6 +5,8 @@
 
 namespace pw_stick {
 
+constexpr uint8_t kInvalidGate = 254;
+
 struct GateHealth {
   uint32_t phase_late = 0;
   uint32_t already_low = 0;

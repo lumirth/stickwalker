@@ -14,6 +14,7 @@
 #include "backlight.h"
 #include "peripheral_power.h"
 #include "diode_status.h"
+#include "margin_status.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -42,7 +43,9 @@ void fatal(const char *reason) {
 
 void refresh_usb() {
   uint16_t millivolts;
-  usb_present = !StickBoardVbusVoltage(&millivolts) || millivolts >= 4000;
+  const bool valid = StickBoardVbusVoltage(&millivolts);
+  usb_present = !valid || millivolts >= 4000;
+  StickMarginObservePower(valid ? int(millivolts >= 4000) : -1);
   next_vbus_check = uint64_t(esp_timer_get_time()) + 1000000;
 }
 
@@ -51,7 +54,7 @@ uint64_t next_deadline() {
   for (const uint64_t candidate : {next_input, next_vbus_check,
        StickDisplayNextDeadline(), StickSoundNextDeadline(),
        StickPeripheralNextDeadline(), StickSleepNextDeadline(),
-       StickSettingsNextDeadline(), StickDiodeNextDeadline()})
+       StickSettingsNextDeadline(), StickDiodeNextDeadline(), StickMarginNextDeadline()})
     if (candidate < deadline) deadline = candidate;
   return deadline;
 }
@@ -59,7 +62,7 @@ uint64_t next_deadline() {
 
 void StickPresentGame(int force) {
   if (StickSettingsIsOpen()) return;
-  StickDiodeDraw();
+  StickMarginDraw();
   if (force) StickDisplayInvalidate();
   const uint64_t revision = StickDisplayRevision();
   if (revision == presented_revision && !StickDisplayPresentationPending()) return;
@@ -71,6 +74,7 @@ void StickPresentGame(int force) {
 }
 
 extern "C" void StickPlatformPrepareIr(void) {
+  StickMarginPausePowerEvents();
   StickInputRequireRelease();
   StickSoundQuiesceForIr();
   StickPresentGame(0);
@@ -108,6 +112,7 @@ extern "C" void StickPortLoop(void) {
   if (!ready) { delay(50); return; }
   if (StickDiagnosticsService()) return;
   StickNativeService();
+  if (!StickForegroundIsIr()) StickIrServiceDiagnostics();
   if (StickForegroundIsIr()) {
     previous_ir = true;
     StickNativeRun();
@@ -140,6 +145,7 @@ extern "C" void StickPortLoop(void) {
   StickDisplayPowerService();
   StickPeripheralPowerService();
   StickDiodeService();
+  StickMarginService();
 
   now = uint64_t(esp_timer_get_time());
   const unsigned task = StickNativeRun();

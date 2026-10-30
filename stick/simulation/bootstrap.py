@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import platform
 import subprocess
 from pathlib import Path
 
@@ -11,13 +14,49 @@ CACHE = ROOT / "stick/.build/simulator"
 SOURCE = CACHE / "esp32sim"
 REVISION = "fe3a9c08125cc760107865df3ffa979362952fe9"
 PATCH = Path(__file__).with_name("soc.patch")
+MANIFEST = CACHE / "prepared.json"
 
 
 def run(*args: str, cwd: Path = ROOT) -> str:
     return subprocess.check_output(args, cwd=cwd, text=True)
 
 
-def prepare() -> tuple[Path, Path]:
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def prepared_record(binary: Path, rom: Path) -> dict:
+    sources = (
+        "bootstrap.py",
+        "board.rs",
+        "main.rs",
+        "peer.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        "soc.patch",
+    )
+    return {
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "revision": REVISION,
+        "sources": {name: digest(PATCH.parent / name) for name in sources},
+        "binary": digest(binary),
+        "rom": digest(rom),
+    }
+
+
+def prepare(*, reuse: bool = False) -> tuple[Path, Path]:
+    target = CACHE / "target"
+    roms = CACHE / "roms"
+    binary = target / "release/stickwalker-e2e"
+    rom = roms / "esp32s3_rev0_rom.elf"
+    if reuse:
+        if json.loads(MANIFEST.read_text()) != prepared_record(binary, rom):
+            raise RuntimeError(
+                "Prepared simulator does not match its sources, platform, or binaries"
+            )
+        return binary, rom
+
     CACHE.mkdir(parents=True, exist_ok=True)
     if not SOURCE.exists():
         run(
@@ -37,9 +76,7 @@ def prepare() -> tuple[Path, Path]:
         run("git", "apply", str(PATCH), cwd=SOURCE)
     elif diff != PATCH.read_bytes():
         raise RuntimeError(f"Simulator contains changes beyond soc.patch: {SOURCE}")
-    roms = CACHE / "roms"
     subprocess.run([str(SOURCE / "tools/fetch-rom-elfs.sh"), str(roms)], check=True)
-    target = CACHE / "target"
     subprocess.run(
         [
             "cargo",
@@ -52,7 +89,8 @@ def prepare() -> tuple[Path, Path]:
         env={**os.environ, "CARGO_TARGET_DIR": str(target)},
         check=True,
     )
-    return target / "release/stickwalker-e2e", roms / "esp32s3_rev0_rom.elf"
+    MANIFEST.write_text(json.dumps(prepared_record(binary, rom), indent=2) + "\n")
+    return binary, rom
 
 
 if __name__ == "__main__":

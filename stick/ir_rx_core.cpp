@@ -1,4 +1,5 @@
 #include "ir_rx_core.h"
+#include "ir_gate.h"
 
 #include <limits.h>
 #include <string.h>
@@ -6,9 +7,12 @@
 namespace pw_stick {
 namespace {
 
-constexpr unsigned kCells = kMaxWireBytes * 10;
+constexpr unsigned kCells = kMaxCaptureBytes * 10;
 constexpr unsigned kMaxStrongGates = 4096;
 int learned_step_10000 = 0;
+constexpr unsigned kDecodeVisitBudget = 400000;
+unsigned visits = 0;
+unsigned visit_limit = kDecodeVisitBudget;
 
 struct Geometry {
   int origin_twice = 0;
@@ -50,8 +54,10 @@ bool score_geometry(const uint16_t *strong, unsigned count,
   int previous = -1;
   phase = 0;
   for (unsigned i = 0; i < count; ++i) {
+    if (++visits > visit_limit) return false;
     const int32_t position_q16 =
         (int32_t(strong[i]) * 2 - geometry.origin_twice) * geometry.inverse_q15;
+    if (position_q16 < -(1 << 15)) continue;
     const int cell = (position_q16 + (1 << 15)) >> 16;
     const int32_t offset = position_q16 - cell * 65536;
     phase += uint32_t(offset * offset);
@@ -77,22 +83,22 @@ bool score_geometry(const uint16_t *strong, unsigned count,
 bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
                   Geometry &best) {
   const unsigned span = strong[count - 1] - strong[0];
-  unsigned bytes = unsigned(double(span) / 30.04) + 1;
-  if (!bytes || bytes > kMaxWireBytes) return false;
-
-  for (unsigned length_trial = 0; length_trial < 2; ++length_trial) {
-    unsigned best_bad = UINT_MAX;
-    uint64_t best_phase = UINT64_MAX;
-    // Try the previous long burst's baud estimate first, or estimate it from
-    // this burst's gate count. Search every start phase because the first
-    // observed pulse may be a data bit.
-    const bool short_frame = bytes <= 16;
-    const int estimated_step =
-        int((gate_count * 10000u + bytes * 5u) / (bytes * 10u));
-    const unsigned passes = short_frame ? 1u : (learned_step_10000 ? 3u : 2u);
-    for (unsigned pass = 0; pass < passes; ++pass) {
-      if (pass && best_bad <= 1) break;
-      const bool full_search = short_frame || pass == passes - 1;
+  unsigned estimate = span / 30 + 1;
+  if (estimate > kMaxCaptureBytes) estimate = kMaxCaptureBytes;
+  best = Geometry{};
+  unsigned best_bad = 0;
+  uint64_t best_phase = UINT64_MAX;
+  for (unsigned anchor_index = 0; anchor_index < count && anchor_index < 4 &&
+       strong[anchor_index] - strong[0] <= 12; ++anchor_index) {
+    visit_limit = visits + 90000;
+    if (visit_limit > kDecodeVisitBudget) visit_limit = kDecodeVisitBudget;
+    const bool short_frame = estimate <= 16;
+    const int estimated_step = int(gate_count * 10000u / (estimate * 10u));
+    const unsigned passes = short_frame ? (learned_step_10000 ? 2u : 1u) :
+        (learned_step_10000 ? 3u : 2u);
+    for (unsigned pass = 0; pass < passes && visits < visit_limit; ++pass) {
+      if (pass && best.bytes && learned_step_10000 && best.fit_pass == 0) break;
+      const bool full_search = pass == passes - 1;
       const int anchor = pass == 0 && learned_step_10000 ?
           learned_step_10000 : estimated_step;
       const int radius = pass == 0 && learned_step_10000 ? 25 : 35;
@@ -105,32 +111,29 @@ bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
       int center = (anchor - first_step + 2) / 5;
       if (center < 0) center = 0;
       if (center >= steps) center = steps - 1;
-      // Visit the likely baud first so the same exact search gets a useful
-      // rejection bound early. Explicit ties preserve its original ordering.
-      for (int trial = 0; trial < steps * 2; ++trial) {
+      for (int trial = 0; trial < steps * 2 && visits < visit_limit; ++trial) {
         const int index = center + ((trial + 1) / 2) * (trial & 1 ? -1 : 1);
         if (index < 0 || index >= steps) continue;
         const int step = first_step + index * 5;
-        for (int half = -10; half <= 8; ++half) {
-          // Keep the geometry workspace in static storage to fit the
-          // foreground task's 8 KiB stack.
+        for (int half = -4; half <= 4 && visits < visit_limit; ++half) {
           static Geometry candidate;
-          candidate.bytes = bytes;
-          candidate.origin_twice = int(strong[0]) * 2 + half;
+          candidate.origin_twice = int(strong[anchor_index]) * 2 + half;
           candidate.step_10000 = step;
           candidate.fit_pass = uint8_t(pass);
           candidate.inverse_q15 = int(((1u << 15) * 10000u +
                                        unsigned(step / 2)) / unsigned(step));
-          // If the first optical pulse is missed, UART framing distinguishes
-          // a start bit from the first data-zero pulse.
-          const int opening_cell = nearest_cell(strong[0], candidate);
-          if (opening_cell < 0 || opening_cell > 1) continue;
+          if (nearest_cell(strong[anchor_index], candidate) != 0) continue;
+          const int last_cell = nearest_cell(strong[count - 1], candidate);
+          if (last_cell < 0 || last_cell >= int(kCells)) continue;
+          candidate.bytes = unsigned(last_cell) / 10 + 1;
           unsigned bad;
           uint64_t phase;
-          const bool earlier = candidate.fit_pass < best.fit_pass ||
-              (candidate.fit_pass == best.fit_pass && step < best.step_10000);
+          const bool earlier = candidate.origin_twice < best.origin_twice ||
+              (candidate.origin_twice == best.origin_twice && step < best.step_10000);
           if (!score_geometry(strong, count, candidate, best_bad, best_phase,
-                               earlier, bad, phase)) continue;
+                               earlier, bad, phase)) {
+            continue;
+          }
           if (bad < best_bad || (bad == best_bad &&
               (phase < best_phase || (phase == best_phase && earlier)))) {
             best = candidate;
@@ -140,15 +143,9 @@ bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
         }
       }
     }
-    const int last_cell = nearest_cell(strong[count - 1], best);
-    if (length_trial == 0 && bytes < kMaxWireBytes &&
-        last_cell >= int(bytes * 10) && last_cell < int((bytes + 1) * 10)) {
-      ++bytes;
-      continue;
-    }
-    break;
+    if (best.bytes) return true;
   }
-  return true;
+  return best.bytes != 0;
 }
 
 void remove_recovery_tails(const uint8_t *bins, const uint16_t *strong,
@@ -195,10 +192,15 @@ bool weak_pair_in_cell(const uint8_t *bins, size_t gates, unsigned cell,
 }  // namespace
 
 void reset_rx_timing() { learned_step_10000 = 0; }
+void accept_rx_timing(const WireBurst &burst) {
+  if (burst.length >= 32 && burst.credible_uart())
+    learned_step_10000 = burst.baud_step_10000;
+}
 
 bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
                        uint8_t pulse_cutoff) {
   out = WireBurst{};
+  visits = 0;
   if (!bins || !gate_count || gate_count > kMaxBurstGates) return false;
   // Foreground-only decoding uses static buffers to fit the 8 KiB loop stack.
   static uint16_t strong[kMaxStrongGates];
@@ -211,9 +213,20 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
   if (!strong_count) return false;
 
   static Geometry geometry;
-  if (!fit_geometry(strong, strong_count, gate_count, geometry)) return false;
+  if (!fit_geometry(strong, strong_count, gate_count, geometry)) {
+    out.fit_visits = visits;
+    return false;
+  }
+  out.fit_visits = visits;
   map_cells(strong, strong_count, geometry);
   remove_recovery_tails(bins, strong, strong_count, geometry, out);
+  for (size_t gate = 0; gate < gate_count; ++gate) {
+    if (bins[gate] != kInvalidGate) continue;
+    ++out.invalid_samples;
+    const int cell = nearest_cell(unsigned(gate), geometry);
+    if (cell >= 0 && cell < int(geometry.bytes * 10) &&
+        !geometry.occupied[cell]) return false;
+  }
 
   for (unsigned byte = 0; byte < geometry.bytes; ++byte) {
     const unsigned base = byte * 10;
@@ -236,8 +249,7 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
   out.baud_step_10000 = uint16_t(geometry.step_10000);
   out.origin_twice = int16_t(geometry.origin_twice);
   out.fit_pass = geometry.fit_pass;
-  if (out.length >= 32 && out.credible_uart())
-    learned_step_10000 = geometry.step_10000;
+
   return true;
 }
 

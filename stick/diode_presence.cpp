@@ -238,7 +238,7 @@ DiodeProbe diode_probe(unsigned pin)
   restore(pin);
   if (!can_charge(pin)) return {bias_state(pin), false};
   const DiodeState state = diode_presence_detect(pin);
-  return {state, state != DiodeState::Missing};
+  return {state, true};
 }
 
 DiodeState diode_presence_detect(unsigned sensor_pin)

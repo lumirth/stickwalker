@@ -519,6 +519,10 @@ void RasterMirror(u8 width, u8 height, u8 *raster)
 /* Blink the low-battery icon for four refresh phases, then hide it for four. */
 void RenderBattery(u8 x, u8 y)
 {
+#ifdef PW_STICK_S3
+  (void)x;
+  (void)y;
+#else
   u8 *raster;
 
   if (g_state.events.bits.batteryLow == 0) {
@@ -532,6 +536,7 @@ void RenderBattery(u8 x, u8 y)
   EepromRead(PW_EEPROM_MEMBER_ADDRESS(EEPROM_UI, UiResources, battery), raster,
              sizeof(((UiResources *)0)->battery));
   DisplayBlit(x, y, 8, 8, raster);
+#endif
 }
 
 /* Preserve masked destination pixels before adding the source. The first

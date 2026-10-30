@@ -41,6 +41,7 @@ uint PacketChecksum(u8 *bytes, u32 length)
 #include "stick/ir_transport.h"
 #include "stick/diode_status.h"
 static u8 stickEepromSessionReady;
+static u16 stickLastObservationTick;
 #define IR_TIMER_NOW() StickIrTicks()
 #ifdef PW_STICK_BENCH_CONTROL
 void StickPortTrace(const char *text);
@@ -296,12 +297,56 @@ typedef char IrcHeaderMatchesPayloadOffset[sizeof(IrcHeader) == IR_HEADER_BYTES
                                                ? 1
                                                : -1];
 
+#ifdef PW_STICK_S3
+#include "stick/ir_packet_validation.h"
+/* An isolated leading optical pulse can frame as FF on the wire. Recover
+ * only this bounded prefix, with independent header/body/session checks. */
+static u8 StickRealignPacket(u8 *packet, u8 length)
+{
+  u8 skip;
+  for (skip = 1; skip <= 2 && skip + IR_HEADER_BYTES <= length; ++skip) {
+    u8 *candidate;
+    u16 received;
+    u16 computed;
+    unsigned bodyLength;
+    if (packet[skip - 1] != (0xff ^ PW_IR_TRANSPORT_XOR))
+      break;
+    candidate = packet + skip;
+    if (!StickPacketCommandKnown(candidate[0]))
+      continue;
+    bodyLength = length - skip - IR_HEADER_BYTES;
+    if (!StickPacketBodyValid(candidate[0], candidate + IR_HEADER_BYTES,
+                              bodyLength, g_work.irc.work.bulkBytesRemaining))
+      continue;
+    if (candidate[0] < IR_ACK &&
+        (g_work.irc.work.handshakePhase < IR_PHASE_INITIATOR ||
+         StickReadBe32(candidate + 4) != g_work.irc.work.sessionToken))
+      continue;
+    received = candidate[2] | ((u16)candidate[3] << 8);
+    candidate[2] = candidate[3] = 0;
+    computed = PacketChecksum(candidate, length - skip);
+    candidate[2] = received;
+    candidate[3] = received >> 8;
+    if (computed == received) {
+      u8 index;
+      length -= skip;
+      for (index = 0; index < length; ++index)
+        packet[index] = candidate[index];
+      StickIrResynchronized(skip);
+      return length;
+    }
+  }
+  return length;
+}
+#endif
+
 /* Start probing with a token from the PRNG state, clear session progress,
  * and send the one-byte connection probe. */
 void IrBegin(void)
 {
 #ifdef PW_STICK_S3
   StickPlatformPrepareIr();
+  StickConnectionBegin();
   stickEepromSessionReady = StickEepromSessionBegin();
   if (!stickEepromSessionReady) {
     g_state.irResult = IR_RESULT_CONNECTION_ERROR;
@@ -436,15 +481,23 @@ void IrProtocolTick(void)
     return;
   }
   {
+    static u8 incoming[IR_HEADER_BYTES + IR_PAYLOAD_BYTES + 2];
     u8 length;
     u16 lastObservationTick;
-    if (StickIrTakeBurst(g_work.irc.packet, PW_IR_RX_WINDOW_CAPACITY, &length,
+    if (StickIrTakeBurst(incoming, sizeof(incoming), &length,
                          &lastObservationTick)) {
       u16 index;
-      g_state.irReceivedBytes = length;
       for (index = 0; index < length; index++)
-        g_work.irc.packet[index] ^= PW_IR_TRANSPORT_XOR;
-      g_state.irTimerReference = lastObservationTick;
+        incoming[index] ^= PW_IR_TRANSPORT_XOR;
+      length = StickRealignPacket(incoming, length);
+      if (length > PW_IR_RX_WINDOW_CAPACITY) {
+        StickIrRejectPacket(2);
+        return;
+      }
+      for (index = 0; index < length; index++)
+        g_work.irc.packet[index] = incoming[index];
+      g_state.irReceivedBytes = length;
+      stickLastObservationTick = lastObservationTick;
     }
   }
   receivedBytes = g_state.irReceivedBytes;
@@ -509,6 +562,9 @@ void IrProtocolTick(void)
     if (g_work.irc.packet[0] != IR_CONNECT) {
       return;
     }
+#ifdef PW_STICK_S3
+    g_state.irTimerReference = stickLastObservationTick;
+#endif
     /* The probing phase answers CONNECT. */
     switch (g_work.irc.work.handshakePhase) {
     case IR_PHASE_PROBING:
@@ -524,12 +580,22 @@ void IrProtocolTick(void)
     return;
   }
 
+#ifdef PW_STICK_S3
+  if (g_state.irReceivedBytes < IR_HEADER_BYTES) {
+    StickIrRejectPacket(2);
+    g_state.irReceivedBytes = 0;
+    return;
+  }
+#endif
   header = (IrcHeader *)g_work.irc.packet;
   receivedChecksum = (header->checksumLo + (header->checksumHi << 8));
   header->checksumLo = 0;
   header->checksumHi = 0;
   computedChecksum = PacketChecksum(g_work.irc.packet, g_state.irReceivedBytes);
   if (receivedChecksum != computedChecksum) {
+#ifdef PW_STICK_S3
+    StickIrRejectPacket(1);
+#endif
 #ifdef PW_STICK_BENCH_CONTROL
     StickIrTraceChecksumFailure(g_work.irc.packet, g_state.irReceivedBytes,
                                 receivedChecksum, computedChecksum);
@@ -557,20 +623,32 @@ void IrProtocolTick(void)
   payloadLength -= IR_HEADER_BYTES;
 
   payload = g_work.irc.packet + IR_HEADER_BYTES;
+#ifdef PW_STICK_S3
+  if (!StickPacketBodyValid(command, payload, payloadLength,
+                            g_work.irc.work.bulkBytesRemaining)) {
+    StickIrRejectPacket(2);
+    g_state.irReceivedBytes = 0;
+    return;
+  }
+#endif
   if (command < IR_ACK) {
     if (receivedToken != g_work.irc.work.sessionToken) {
+#ifdef PW_STICK_S3
+      StickIrRejectPacket(3);
+#endif
       goto packetDone;
     }
     if (g_work.irc.work.handshakePhase < IR_PHASE_INITIATOR) {
+#ifdef PW_STICK_S3
+      StickIrRejectPacket(4);
+#endif
       goto packetDone;
     }
   }
 #ifdef PW_STICK_S3
-  StickDiodeReceivedPacket();
-  if (IR_TIMER_ELAPSED(g_state.irTimerReference) <
-      PW_IR_INACTIVITY_TICKS - 0x100) {
-    StickPlatformPresentIr();
-  }
+  g_state.irTimerReference = stickLastObservationTick;
+  StickIrAcceptPacket(command, g_work.irc.work.handshakePhase,
+                      g_work.irc.work.bulkPhase);
 #endif
   switch (command) {
   case IR_RESPONSE:
@@ -1326,9 +1404,6 @@ void IrFinish(void)
     if (!StickEepromHealthy())
       g_work.irc.work.completionAction = IR_ACTION_NONE;
   }
-  StickDiodeEnd(g_state.irResult == IR_RESULT_CONNECTION_ERROR ||
-                g_state.irResult == IR_RESULT_NO_RESPONSE ||
-                g_state.irResult == IR_RESULT_RECEIVE_OVERFLOW);
 #ifdef PW_STICK_BENCH_CONTROL
   StickPortTrace("PW_STICK_AFTER_IR_STOP");
 #endif
@@ -1353,5 +1428,6 @@ void IrFinish(void)
 #ifdef PW_STICK_BENCH_CONTROL
   StickPortTrace("PW_STICK_AFTER_EEPROM_COMMIT");
 #endif
+  StickIrSessionResult(g_state.irResult);
 #endif
 }

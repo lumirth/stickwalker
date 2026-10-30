@@ -88,11 +88,18 @@ def stage(sketch: Path, artwork: str) -> dict:
     generated = ("\n".join(lines) + "\n").encode("ascii")
     (sketch / "rom_assets.h").write_bytes(generated)
     inputs += list(selected.values())
-    return {
+    record = {
         "source_sha256": {p.relative_to(ROOT).as_posix(): digest(p) for p in inputs},
         "artwork": artwork,
         "rom_assets_sha256": hashlib.sha256(generated).hexdigest(),
     }
+    record["build_id"] = hashlib.sha256(
+        json.dumps(record["source_sha256"], sort_keys=True).encode()
+    ).hexdigest()[:12]
+    (sketch / "stick_build.h").write_text(
+        '#define PW_STICK_BUILD_ID "' + record["build_id"] + '"\n'
+    )
+    return record
 
 
 def build(args) -> None:

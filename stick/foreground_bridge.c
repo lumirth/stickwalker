@@ -15,10 +15,7 @@ void MotionSessionEnd(void);
 
 int StickForegroundIsIr(void) { return g_task == IrProtocolTick; }
 int StickForegroundIsConnectionScreen(void) {
-  SystemFlags flags;
-  flags.byte = g_state.flags.byte;
-  return g_state.view == VIEW_IR_RESULT ||
-         (g_state.view == VIEW_HOME && !flags.bits.registered);
+  return g_state.view == VIEW_IR_RESULT;
 }
 int StickForegroundIsMain(void) { return g_task == MainTick; }
 int StickForegroundIsBeep(void) { return g_task == BeepTick; }

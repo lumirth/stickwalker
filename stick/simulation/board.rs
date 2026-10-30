@@ -12,6 +12,8 @@ pub struct Inputs {
     pub optical: Vec<Vec<(u64, bool)>>,
     pub cycle: u64,
     pub vbus_mv: Option<u16>,
+    pub battery_mv: Option<u16>,
+    pub vbus_fail: bool,
     pub peer: Option<crate::peer::OpticalPeer>,
     pub local_echo: bool,
     pub reply_window_erases: u64,
@@ -75,6 +77,13 @@ impl I2cDevice for Registers {
         Some((47, 48))
     }
     fn start(&mut self, read: bool) -> bool {
+        if read
+            && matches!(self.device, Device::Pmic)
+            && self.pointer == 0x24
+            && self.inputs.lock().unwrap().vbus_fail
+        {
+            return false;
+        }
         if !read {
             self.first = true;
         }
@@ -116,6 +125,13 @@ impl I2cDevice for Registers {
                     4
                 }
             }
+            Device::Pmic if reg == 0x22 || reg == 0x23 => self
+                .inputs
+                .lock()
+                .unwrap()
+                .battery_mv
+                .unwrap_or(4000)
+                .to_le_bytes()[reg - 0x22],
             Device::Pmic if reg == 0x24 || reg == 0x25 => self
                 .inputs
                 .lock()
