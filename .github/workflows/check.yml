@@ -12,42 +12,15 @@ concurrency:
 env:
   SHARD_COUNT: 5
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  linux-build:
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: arduino/setup-arduino-cli@v2
-        with:
-          version: '1.5.1'
-      - name: Install simulator tools
-        run: |
-          rustup toolchain install 1.98.1 --profile minimal
-          rustup default 1.98.1
-      - name: Install the firmware SDK
-        run: |
-          arduino-cli config init
-          arduino-cli config add board_manager.additional_urls https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
-          arduino-cli core update-index
-          arduino-cli core install m5stack:esp32@3.3.9
-          arduino-cli lib install 'M5GFX@0.2.29'
-          arduino-cli lib install --no-deps 'M5Unified@0.2.21'
-      - run: python -m pip install uv==0.12.13
-      - run: uv sync --locked
-      - name: Build production firmware and simulator
-        run: |
-          uv run python stick/build_port.py --output-dir stick/.build/e2e-firmware
-          uv run python stick/simulation/bootstrap.py
+      - uses: ./.github/actions/build-firmware
       - uses: actions/upload-artifact@v4
         with:
-          name: firmware-build-${{ matrix.os }}
+          name: firmware-build
           path: |
             stick/.build/e2e-firmware/build-manifest.json
             stick/.build/e2e-firmware/PwStick.ino.bin
@@ -63,14 +36,41 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  macos-smoke:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-firmware
+      - name: Install Tesseract
+        run: |
+          if ! command -v tesseract >/dev/null; then brew install tesseract; fi
+      - name: Check macOS firmware build
+        run: uv run python stick/check.py --use-build --use-prepared-simulator --scenario settings --scenario peer-storage
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: macos-smoke-failure
+          path: stick/.build/e2e-results/
+          include-hidden-files: true
+          retention-days: 7
+
   scenarios:
-    needs: build
+    needs: linux-build
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        shard: [1, 2, 3, 4, 5]
-    runs-on: ${{ matrix.os }}
+        include:
+          - group: 1
+            first: 1
+            second: 2
+          - group: 2
+            first: 3
+            second: 4
+          - group: 3
+            first: 5
+            second: 0
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -78,66 +78,76 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install Tesseract
-        shell: bash
         run: |
           if ! command -v tesseract >/dev/null; then
-            if [[ "$RUNNER_OS" == "Linux" ]]; then
-              sudo apt-get update
-              sudo apt-get install -y tesseract-ocr
-            else
-              brew install tesseract
-            fi
+            sudo apt-get update
+            sudo apt-get install -y tesseract-ocr
           fi
       - run: python -m pip install uv==0.12.13
       - run: uv sync --locked
       - uses: actions/download-artifact@v4
         with:
-          name: firmware-build-${{ matrix.os }}
+          name: firmware-build
           path: stick/.build
       - name: Run firmware scenarios
+        shell: bash
         run: |
           chmod +x stick/.build/simulator/target/release/stickwalker-e2e
-          uv run python stick/check.py --use-build --use-prepared-simulator --shard '${{ matrix.shard }}/${{ env.SHARD_COUNT }}'
+          pids=()
+          for shard in '${{ matrix.first }}' '${{ matrix.second }}'; do
+            if [[ "$shard" == 0 ]]; then continue; fi
+            uv run --no-sync python stick/check.py --use-build --use-prepared-simulator \
+              --output-dir "stick/.build/e2e-results/shard-$shard" --shard "$shard/$SHARD_COUNT" &
+            pids+=("$!")
+          done
+          status=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || status=1
+          done
+          exit "$status"
       - name: Collect scenario summary
         if: always()
         shell: bash
         run: |
-          if [[ ! -d stick/.build/e2e-results ]]; then exit 0; fi
-          result=$(find stick/.build/e2e-results -name results.json -print -quit)
-          if [[ -z "$result" ]]; then exit 0; fi
-          run_directory=$(dirname "$result")
-          summary="$RUNNER_TEMP/firmware-summary"
-          mkdir -p "$summary"
-          cp "$result" "$summary/results.json"
-          for file in "$run_directory/diode-presence/missing.png" \
-                      "$run_directory/diode/reversed.png" \
-                      "$run_directory/diode-ready/"ready-*.png \
-                      "$run_directory/connect/no-peer.png" \
-                      "$run_directory/diode/unknown.png" \
-                      "$run_directory/connection-details/failed.png"; do
-            if [[ -f "$file" ]]; then
-              relative=${file#"$run_directory/"}
-              mkdir -p "$summary/$(dirname "$relative")"
-              cp "$file" "$summary/$relative"
-            fi
+          for shard in '${{ matrix.first }}' '${{ matrix.second }}'; do
+            directory="stick/.build/e2e-results/shard-$shard"
+            if [[ ! -d "$directory" ]]; then continue; fi
+            result=$(find "$directory" -name results.json -print -quit)
+            if [[ -z "$result" ]]; then continue; fi
+            run_directory=$(dirname "$result")
+            summary="$RUNNER_TEMP/firmware-summary/shard-$shard"
+            mkdir -p "$summary"
+            cp "$result" "$summary/results.json"
+            for file in "$run_directory/diode-presence/missing.png" \
+                        "$run_directory/diode/reversed.png" \
+                        "$run_directory/diode-ready/"ready-*.png \
+                        "$run_directory/connect/no-peer.png" \
+                        "$run_directory/diode/unknown.png" \
+                        "$run_directory/connection-details/failed.png"; do
+              if [[ -f "$file" ]]; then
+                relative=${file#"$run_directory/"}
+                mkdir -p "$summary/$(dirname "$relative")"
+                cp "$file" "$summary/$relative"
+              fi
+            done
           done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: firmware-summary-${{ matrix.os }}-${{ matrix.shard }}
+          name: firmware-summary-${{ matrix.group }}
           path: ${{ runner.temp }}/firmware-summary/
           retention-days: 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: firmware-e2e-${{ matrix.os }}-${{ matrix.shard }}
+          name: firmware-e2e-${{ matrix.group }}
           path: stick/.build/e2e-results/
           include-hidden-files: true
-          retention-days: 14
+          retention-days: 7
 
   coverage:
     if: ${{ !cancelled() }}
-    needs: [build, scenarios]
+    needs: scenarios
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -151,11 +161,11 @@ jobs:
         with:
           pattern: firmware-summary-*
           path: ${{ runner.temp }}/firmware-summaries
-      - name: Verify complete coverage and build icon previews
-        run: uv run python stick/verify_ci_results.py "$RUNNER_TEMP/firmware-summaries" "$RUNNER_TEMP/firmware-atlases" --shards "$SHARD_COUNT"
+      - name: Verify complete coverage and build icon preview
+        run: uv run python stick/verify_ci_results.py "$RUNNER_TEMP/firmware-summaries" "$RUNNER_TEMP/firmware-atlas" --shards "$SHARD_COUNT"
       - uses: actions/upload-artifact@v4
         with:
-          name: firmware-margin-atlases
-          path: ${{ runner.temp }}/firmware-atlases/
+          name: firmware-margin-atlas
+          path: ${{ runner.temp }}/firmware-atlas/
           if-no-files-found: error
           retention-days: 14
