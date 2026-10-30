@@ -60,6 +60,41 @@ SCENARIOS = (
     *OPTICAL_SCENARIOS,
 )
 
+SCENARIO_COST = {
+    "peer-initial": 300,
+    "peer-prefix-byte": 185,
+    "peer-malformed": 180,
+    "peer-noise": 150,
+    "peer-transfer": 140,
+    "peer-transfer-compressed": 140,
+    "peer-slow": 130,
+    "peer-return": 75,
+    "peer-play": 70,
+    "margin-power": 60,
+    "connection-details": 45,
+}
+
+
+def shard_scenarios(index: int, count: int) -> tuple[str, ...]:
+    if not 1 <= index <= count <= len(SCENARIOS):
+        raise ValueError(f"Shard must be between 1 and {len(SCENARIOS)} and not exceed its count")
+    loads = [0] * count
+    assignments = {}
+    for scenario in sorted(SCENARIOS, key=lambda name: -SCENARIO_COST.get(name, 30)):
+        shard = min(range(count), key=loads.__getitem__)
+        assignments[scenario] = shard
+        loads[shard] += SCENARIO_COST.get(scenario, 30)
+    return tuple(scenario for scenario in SCENARIOS if assignments[scenario] == index - 1)
+
+
+def parse_shard(value: str) -> tuple[int, int]:
+    try:
+        index, count = (int(part) for part in value.split("/"))
+        shard_scenarios(index, count)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("expected a valid shard as INDEX/COUNT") from error
+    return index, count
+
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -356,9 +391,14 @@ def main() -> None:
     parser.add_argument(
         "--use-build", action="store_true", help="use a matching retained production build"
     )
+    parser.add_argument(
+        "--use-prepared-simulator", action="store_true", help="use a verified prepared simulator"
+    )
     parser.add_argument("--arduino-cli", default="arduino-cli")
     parser.add_argument("--config-file", type=Path)
-    parser.add_argument("--scenario", action="append", choices=SCENARIOS)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--scenario", action="append", choices=SCENARIOS)
+    selection.add_argument("--shard", type=parse_shard, metavar="INDEX/COUNT")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "stick/.build/e2e-results")
     args = parser.parse_args()
     os.chdir(ROOT)
@@ -384,7 +424,7 @@ def main() -> None:
     for name, expected in manifest["outputs"].items():
         if digest(build / name) != expected:
             raise RuntimeError(f"Firmware hash differs from its build record: {name}")
-    binary, rom = prepare()
+    binary, rom = prepare(reuse=args.use_prepared_simulator)
     destination = args.output_dir.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix="run-", dir=destination))
@@ -414,6 +454,8 @@ def main() -> None:
         "firmware_sources_sha256": manifest["source_sha256"],
         "simulator_revision": REVISION,
         "simulator_patch_sha256": digest(ROOT / "stick/simulation/soc.patch"),
+        "simulator_binary_sha256": digest(binary),
+        "simulator_rom_sha256": digest(rom),
         "scenarios": {},
         "complete": False,
     }
@@ -424,6 +466,7 @@ def main() -> None:
             "stick/simulation/bootstrap.py",
             "stick/simulation/board.rs",
             "stick/simulation/main.rs",
+            "stick/simulation/Cargo.toml",
             "stick/simulation/Cargo.lock",
             "stick/simulation/settings.actions",
             "stick/simulation/connect.actions",
@@ -450,7 +493,7 @@ def main() -> None:
             "stick/audits/diode_feedback.cpp",
         )
     }
-    scenarios = args.scenario or SCENARIOS
+    scenarios = shard_scenarios(*args.shard) if args.shard else (args.scenario or SCENARIOS)
     fixture = None
     bare_scenarios = (
         "settings",

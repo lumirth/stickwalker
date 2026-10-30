@@ -53,6 +53,8 @@ Qualification of automatic restart requires a two-sided exchange using the stock
 
 `stick/check.py` runs the compiled production firmware against simulated GPIO, optical signals and storage. The connection scenarios include full uploads, compressed uploads, Walker exchange, readback, slower input timing, leading noise, a one-byte noise prefix, malformed packets and interrupted storage. The UI scenarios check diode states, both rotations, both appearances, input layouts and wake behavior.
 
+CI builds the firmware and simulator once per platform, then runs the scenarios in five shards. A final check verifies that every scenario completed with matching build and test inputs. For a focused local run, pass `--scenario diode`; to run one group, pass `--shard 1/5`.
+
 Each run retains its firmware image, source hashes, screenshots, optical traffic, saved flash and results in `stick/.build/`. Simulator results establish behavior under the simulated inputs. Physical cartridge transfers, other units and lighting conditions require hardware qualification.
 
 The physical app-only upgrade check starts with a full flash backup and compares the decoded EEPROM before and after boot. Registration and Pokémon data must survive. The private backup and EEPROM exports stay outside version control.
