@@ -245,6 +245,15 @@ def expect_overlay(folder: Path, path: Path) -> None:
         raise AssertionError(f"{path}: settings overlay did not return")
 
 
+def expect_reboot(folder: Path) -> None:
+    for line in (folder / "run.log").read_text().splitlines():
+        if line.startswith("cycles="):
+            counters = dict(field.split("=", 1) for field in line.split())
+            if int(counters["reboots"]) > 0:
+                return
+    raise AssertionError(f"{folder}: expected a simulated reboot")
+
+
 def expect_cursor(path: Path, x: int, y: int) -> None:
     image = Image.open(path).rotate(90, expand=True).convert("L")
     for row in range(8):
@@ -594,6 +603,7 @@ def main() -> None:
                 },
             )
         if scenario == "settings":
+            expect_reboot(folder)
             console = (folder / "console.txt").read_text()
             assert "PW_STICK_DIAGNOSTICS version=1 " in console
             assert "PW_STICK_LINK none" in console
@@ -965,6 +975,7 @@ def main() -> None:
                 "warm": expect_tones(folder / "warm.pcm", 1),
             }
         elif scenario.startswith("recovery-"):
+            expect_reboot(folder)
             if screen_region(folder / "before-reset.png", NATIVE_HEADER) != screen_region(
                 folder / "after-reset.png", NATIVE_HEADER
             ):
@@ -987,6 +998,7 @@ def main() -> None:
                 },
             }
         elif scenario in EXCHANGE_SCENARIOS:
+            expect_reboot(folder)
             report = (folder / "peer.txt").read_text()
             if "complete=true error=None" not in report:
                 raise AssertionError(f"{scenario} failed:\n{report[:1500]}")
@@ -1066,6 +1078,7 @@ def main() -> None:
                 "peer": report,
             }
         elif scenario == "peer-storage":
+            expect_reboot(folder)
             for name in ("written", "restored"):
                 report = (folder / f"{name}.txt").read_text()
                 if any(

@@ -60,12 +60,12 @@ jobs:
         include:
           - group: 1
             first: 1
-            second: 2
-          - group: 2
-            first: 3
             second: 4
+          - group: 2
+            first: 2
+            second: 5
           - group: 3
-            first: 5
+            first: 3
             second: 0
     runs-on: ubuntu-latest
     timeout-minutes: 30

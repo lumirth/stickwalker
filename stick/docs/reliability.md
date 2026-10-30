@@ -59,4 +59,4 @@ Each run retains its firmware image, source hashes, screenshots, optical traffic
 
 The physical app-only upgrade check starts with a full flash backup and compares the decoded EEPROM before and after boot. Registration and Pokémon data must survive. The private backup and EEPROM exports stay outside version control.
 
-[Receiver validation](../audits/reliability-2026-10-29.md) and [margin validation](../audits/margin-status-2026-10-29.md) record the measured results.
+[Receiver validation](../audits/reliability-2026-10-29.md), [margin validation](../audits/margin-status-2026-10-29.md) and [workflow performance](../audits/ci-performance-2026-10-30.md) record the measured results.
