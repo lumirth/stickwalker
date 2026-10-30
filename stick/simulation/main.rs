@@ -144,8 +144,12 @@ fn main() {
             ),
             ["adc-bias", pin, up, both, down] => machine.bus.analog_set(
                 pin.parse().unwrap(),
-                esp_periph::AnalogSource::Bias([0.0, down.parse().unwrap(),
-                    up.parse().unwrap(), both.parse().unwrap()]),
+                esp_periph::AnalogSource::Bias([
+                    0.0,
+                    down.parse().unwrap(),
+                    up.parse().unwrap(),
+                    both.parse().unwrap(),
+                ]),
             ),
             ["cap", pin, low, high] => {
                 machine.bus.periph.rtc.touch_caps[pin.parse::<usize>().unwrap()] =
@@ -205,6 +209,23 @@ fn main() {
                 std::fs::write(out.join(name), bytes).unwrap();
                 std::fs::write(out.join(format!("{name}.rate")), rate.to_string()).unwrap();
             }
+            ["peer", "noise", enabled] => {
+                if let Some(peer) = &mut inputs.lock().unwrap().peer {
+                    peer.noise = if *enabled == "byte" {
+                        2
+                    } else if *enabled == "on" {
+                        1
+                    } else {
+                        0
+                    };
+                }
+            }
+            ["peer", "malformed", path, mode] => {
+                inputs.lock().unwrap().peer = Some(peer::OpticalPeer::with_malformed(
+                    std::fs::read(path).unwrap(),
+                    mode.parse().unwrap(),
+                ));
+            }
             ["peer", "start"] => {
                 inputs.lock().unwrap().peer = Some(peer::OpticalPeer::new());
             }
@@ -214,6 +235,21 @@ fn main() {
             ["peer", "start", baud, turnaround] => {
                 inputs.lock().unwrap().peer = Some(
                     peer::OpticalPeer::new()
+                        .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
+                );
+            }
+            ["peer", "put-initial", course, image, baud, turnaround] => {
+                inputs.lock().unwrap().peer = Some(
+                    peer::OpticalPeer::with_initial_put(
+                        std::fs::read(course).unwrap(),
+                        std::fs::read(image).unwrap(),
+                    )
+                    .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
+                );
+            }
+            ["peer", "return", baud, turnaround] => {
+                inputs.lock().unwrap().peer = Some(
+                    peer::OpticalPeer::with_return()
                         .timing(baud.parse().unwrap(), turnaround.parse().unwrap()),
                 );
             }

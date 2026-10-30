@@ -15,4 +15,19 @@ For two-key layouts, M+R window sets how much time you have to press the second 
 
 Contrast controls the Stick's backlight.
 
-The diode icon appears by the connector when connecting: × means missing, arrows mean reverse the diode, and solid means connected.
+The connector margin contains the diode indicator and battery indicator.
+
+| Diode indicator | Meaning |
+| --- | --- |
+| Outline with × | Diode not detected. |
+| Arrows | Reverse the diode. |
+| Outline with ? | Diode presence is uncertain. |
+| Outline with ! | Receiver blocked. Check wiring, contact and light. |
+| Solid diode | Diode detected. |
+| Diode with check mark | Received a valid packet. |
+
+A check mark confirms received traffic. The game's connection result reports whether the operation completed. The indicator remains briefly after an exchange, or while its connection result is open.
+
+Battery bars show the voltage estimate and refresh while the screen is awake. A question mark means the reading is unavailable. The cable mark means USB power is present.
+
+[Connection troubleshooting](troubleshooting.md).

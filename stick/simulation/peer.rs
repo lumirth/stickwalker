@@ -43,7 +43,17 @@ struct Page {
     write: bool,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ConsoleOperation {
+    Start,
+    Update,
+    Return,
+}
+
 struct Put {
+    operation: ConsoleOperation,
+    image: Vec<u8>,
+    image_offset: usize,
     compressed: bool,
     bytes: Vec<u8>,
     offset: usize,
@@ -62,6 +72,16 @@ const WALKER_SEGMENTS: [(usize, usize, usize); 3] = [
     (0x993e, 0xf580, 320),
     (0xcc00, 0xdc00, 548),
 ];
+
+impl Put {
+    fn reads(&self) -> &'static [(u16, usize)] {
+        if self.operation == ConsoleOperation::Return {
+            &[(0x8f00, 42), (0xce80, 3404), (0xb800, 1736)]
+        } else {
+            &[(0xce80, 3404), (0xb800, 1736)]
+        }
+    }
+}
 
 struct Walker {
     image: Vec<u8>,
@@ -97,6 +117,8 @@ pub struct OpticalPeer {
     put: Option<Put>,
     status: Vec<u8>,
     walker: Option<Walker>,
+    malformed: Option<u8>,
+    pub noise: u8,
 }
 
 impl OpticalPeer {
@@ -127,7 +149,15 @@ impl OpticalPeer {
             put: None,
             status: Vec::new(),
             walker: None,
+            malformed: None,
+            noise: 0,
         }
+    }
+
+    pub fn with_malformed(image: Vec<u8>, mode: u8) -> Self {
+        let mut peer = Self::with_page(0xf600, image[0xf600..0xf680].to_vec(), false).unwrap();
+        peer.malformed = Some(mode);
+        peer
     }
 
     pub fn timing(mut self, baud: u64, turnaround_us: u64) -> Self {
@@ -141,6 +171,9 @@ impl OpticalPeer {
         assert_eq!(bytes.len(), 10_430);
         let mut peer = Self::new();
         peer.put = Some(Put {
+            operation: ConsoleOperation::Update,
+            image: Vec::new(),
+            image_offset: 0,
             compressed: false,
             bytes,
             offset: 0,
@@ -151,6 +184,20 @@ impl OpticalPeer {
             read_offset: 0,
             read_count: 0,
         });
+        peer
+    }
+
+    pub fn with_initial_put(bytes: Vec<u8>, image: Vec<u8>) -> Self {
+        let mut peer = Self::with_put(bytes);
+        let put = peer.put.as_mut().unwrap();
+        put.operation = ConsoleOperation::Start;
+        put.image = image[0x280..0x8ed0].to_vec();
+        peer
+    }
+
+    pub fn with_return() -> Self {
+        let mut peer = Self::with_put(vec![0; 10430]);
+        peer.put.as_mut().unwrap().operation = ConsoleOperation::Return;
         peer
     }
 
@@ -240,10 +287,19 @@ impl OpticalPeer {
 
     fn put_page(&mut self) {
         let put = self.put.as_mut().unwrap();
-        if put.offset == put.bytes.len() && put.record_offset == put.records.len() {
+        if put.image_offset == put.image.len()
+            && put.offset == put.bytes.len()
+            && put.record_offset == put.records.len()
+        {
             self.put_read();
         } else {
-            let (address, bytes) = if put.offset < put.bytes.len() {
+            let (address, bytes) = if put.image_offset < put.image.len() {
+                let address = 0x280 + put.image_offset;
+                let end = (put.image_offset + 128).min(put.image.len());
+                let bytes = put.image[put.image_offset..end].to_vec();
+                put.image_offset = end;
+                (address, bytes)
+            } else if put.offset < put.bytes.len() {
                 let address = 0xd700 + put.offset;
                 let end = (put.offset + 128).min(put.bytes.len());
                 let bytes = put.bytes[put.offset..end].to_vec();
@@ -278,13 +334,13 @@ impl OpticalPeer {
     fn put_read(&mut self) {
         // HGSS phc_lib.c: course, trainer record, PHCData, distribution data,
         // checksum/ping, put commit and one-way shutdown.
-        const READS: [(u16, usize); 2] = [(0xce80, 3404), (0xb800, 1736)];
         let put = self.put.as_mut().unwrap();
-        if put.read_segment == READS.len() {
+        let reads = put.reads();
+        if put.read_segment == reads.len() {
             self.phase = Phase::PutPing;
             self.send(0x24, 1, self.session, &[]);
         } else {
-            let (base, length) = READS[put.read_segment];
+            let (base, length) = reads[put.read_segment];
             let address = base + put.read_offset as u16;
             put.read_count = (length - put.read_offset).min(128);
             let count = put.read_count as u8;
@@ -441,6 +497,10 @@ impl OpticalPeer {
         packet.extend_from_slice(payload);
         let checksum = checksum(&packet).to_le_bytes();
         packet[2..4].copy_from_slice(&checksum);
+        self.send_raw(&packet);
+    }
+
+    fn send_raw(&mut self, packet: &[u8]) {
         self.trace += &format!(
             "{} {} {}\n",
             self.now,
@@ -449,6 +509,14 @@ impl OpticalPeer {
         );
         let start = self.now + self.turnaround;
         self.pulses.clear();
+        if self.noise != 0 {
+            for lead_us in [500, if self.noise == 2 { 87 } else { 26 }] {
+                self.pulses.push_back(LightPulse {
+                    start: start - lead_us * (CPU_HZ / 1_000_000),
+                    end: start - lead_us * (CPU_HZ / 1_000_000) + 400,
+                });
+            }
+        }
         for (index, byte) in packet.iter().enumerate() {
             let wire = byte ^ 0xaa;
             for bit in 0..10 {
@@ -553,7 +621,27 @@ impl OpticalPeer {
                 }
                 if self.put.is_some() {
                     self.phase = Phase::PutAccepted;
-                    self.send(0x52, 1, self.session, &self.status.clone());
+                    let command = match self.put.as_ref().unwrap().operation {
+                        ConsoleOperation::Start => 0x32,
+                        ConsoleOperation::Update => 0x52,
+                        ConsoleOperation::Return => 0x40,
+                    };
+                    self.send(command, 1, self.session, &self.status.clone());
+                } else if let Some(mode) = self.malformed.take() {
+                    match mode {
+                        0 => self.send_raw(&[0x02, 0xf6, 0xf8, 0x02]),
+                        1 => self.send(0x0a, 0xf6, self.session, &[]),
+                        2 => self.send(0x0c, 2, self.session, &[0xf6, 0, 200]),
+                        3 => self.send(0x06, 0, self.session, &[0, 42]),
+                        _ => self.send(0x10, 2, self.session, &[0; 4]),
+                    }
+                    let mut invalid = std::mem::take(&mut self.pulses);
+                    let previous = self.now;
+                    self.now = self.transmit_end + CPU_HZ / 500;
+                    self.read_page();
+                    self.now = previous;
+                    invalid.append(&mut self.pulses);
+                    self.pulses = invalid;
                 } else if let Some(page) = &self.page {
                     if page.write {
                         let address = page.address;
@@ -587,8 +675,21 @@ impl OpticalPeer {
                 self.page_verified = true;
                 self.shutdown();
             }
-            Phase::PutAccepted if command == 0x54 && argument == 2 && payload.is_empty() => {
-                self.put_page();
+            Phase::PutAccepted
+                if argument == 2
+                    && payload.is_empty()
+                    && command
+                        == match self.put.as_ref().unwrap().operation {
+                            ConsoleOperation::Start => 0x34,
+                            ConsoleOperation::Update => 0x54,
+                            ConsoleOperation::Return => 0x42,
+                        } =>
+            {
+                if self.put.as_ref().unwrap().operation == ConsoleOperation::Return {
+                    self.put_read();
+                } else {
+                    self.put_page();
+                }
             }
             Phase::PutPage if command == 4 && payload.is_empty() => {
                 if argument != (self.put.as_ref().unwrap().last_address >> 8) as u8 {
@@ -597,7 +698,16 @@ impl OpticalPeer {
                 }
                 self.put_page();
             }
-            Phase::PutCommitted if command == 0x5a && argument == 2 && payload.is_empty() => {
+            Phase::PutCommitted
+                if argument == 2
+                    && payload.is_empty()
+                    && command
+                        == match self.put.as_ref().unwrap().operation {
+                            ConsoleOperation::Start => 0x38,
+                            ConsoleOperation::Update => 0x5a,
+                            ConsoleOperation::Return => 0x50,
+                        } =>
+            {
                 self.shutdown();
             }
             Phase::PutRead if command == 0x0e && argument == 2 => {
@@ -606,13 +716,15 @@ impl OpticalPeer {
                     self.fail("DS PHC/distribution read has the wrong length".into());
                     return;
                 }
-                if put.read_segment == 0 && put.read_offset == 0 && payload[10..12] != FIXTURE_WATTS
+                if put.reads()[put.read_segment].0 == 0xce80
+                    && put.read_offset == 0
+                    && payload[10..12] != FIXTURE_WATTS
                 {
                     self.fail("DS PHCData contains incorrectly ordered Watts".into());
                     return;
                 }
                 put.read_offset += put.read_count;
-                let length = if put.read_segment == 0 { 3404 } else { 1736 };
+                let length = put.reads()[put.read_segment].1;
                 if put.read_offset == length {
                     put.read_segment += 1;
                     put.read_offset = 0;
@@ -621,7 +733,12 @@ impl OpticalPeer {
             }
             Phase::PutPing if command == 0x26 && argument == 2 && payload.is_empty() => {
                 self.phase = Phase::PutCommitted;
-                self.send(0x5a, 1, self.session, &[]);
+                let command = match self.put.as_ref().unwrap().operation {
+                    ConsoleOperation::Start => 0x38,
+                    ConsoleOperation::Update => 0x5a,
+                    ConsoleOperation::Return => 0x4e,
+                };
+                self.send(command, 1, self.session, &[]);
             }
             Phase::WalkerStatus if command == 0x12 && argument == 2 && payload.len() == 104 => {
                 if payload[91] & 3 != 3 {

@@ -12,8 +12,7 @@ void StickDiodeReceivedPacket(void);
 void StickDiodeEnd(unsigned connection_error);
 void StickDiodeService(void);
 uint64_t StickDiodeNextDeadline(void);
-void StickDiodeDraw(void);
-void StickDiodeInvalidate(void);
+unsigned StickDiodeVisible(void);
 #ifdef PW_STICK_BENCH_CONTROL
 unsigned StickDiodeProbe(void);
 unsigned StickDiodeBiasProbe(void);

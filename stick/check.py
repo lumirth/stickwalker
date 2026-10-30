@@ -24,6 +24,17 @@ sys.path.insert(0, str(ROOT / "stick/simulation"))
 from bootstrap import REVISION, prepare  # noqa: E402
 from fixture import course, storage  # noqa: E402
 
+PUT_SCENARIOS = (
+    "peer-transfer",
+    "peer-transfer-compressed",
+    "peer-noise",
+    "peer-prefix-byte",
+    "peer-slow",
+    "peer-initial",
+)
+EXCHANGE_SCENARIOS = PUT_SCENARIOS + ("peer-return", "peer-play")
+OPTICAL_SCENARIOS = EXCHANGE_SCENARIOS + ("peer-malformed",)
+
 SCENARIOS = (
     "settings",
     "connect",
@@ -42,9 +53,7 @@ SCENARIOS = (
     "recovery-truncated",
     "peer",
     "peer-storage",
-    "peer-transfer",
-    "peer-transfer-compressed",
-    "peer-play",
+    *OPTICAL_SCENARIOS,
 )
 
 
@@ -87,11 +96,15 @@ def expect_appearance(path: Path, light: bool) -> None:
 
 def expect_diode(path: Path, state: str | None) -> None:
     image = Image.open(path).rotate(90, expand=True).convert("L")
-    bits = bytes(image.getpixel((4 + col, 4 + row)) >= 128
-                 for row in range(16) for col in range(16))
+    bits = bytes(
+        image.getpixel((4 + col, 4 + row)) >= 128 for row in range(16) for col in range(16)
+    )
     hashes = {
         "missing": "9dd801c7cf41981ecdab05068b9aafad57b6991fd9086bc5b3d115556ae61325",
         "connected": "59df9fbf1e7334530d2c4dfdb0f6abd4aea4de8f585b714e208583cacc793cbd",
+        "unknown": "8fd5e17294d62ee5ecb2a7d38defb96b6b60c8d3457c87b3c10af29095d79b52",
+        "blocked": "a17ceb5e48e4b17f1e1222bb8adbf65633ba59e7fdb09714e908078bccd56ffb",
+        "receiving": "bdf4e99c99573ec69981136a482f02e5975f7f18052354e67d0b013c3f6c9322",
     }
     if state is None:
         assert not any(bits), f"{path}: diode feedback did not clear"
@@ -361,7 +374,15 @@ def main() -> None:
     }
     scenarios = args.scenario or SCENARIOS
     fixture = None
-    bare_scenarios = ("settings", "connect", "diode", "diode-presence", "diode-timeout", "diode-stall", "diode-ready")
+    bare_scenarios = (
+        "settings",
+        "connect",
+        "diode",
+        "diode-presence",
+        "diode-timeout",
+        "diode-stall",
+        "diode-ready",
+    )
     if any(name not in bare_scenarios for name in scenarios):
         fixture = storage(build / "PwStick.ino.partitions.bin", out)
         evidence["fixture_sha256"] = digest(out / "fixture.eeprom")
@@ -370,20 +391,67 @@ def main() -> None:
         folder = out / scenario
         folder.mkdir(exist_ok=True)
         scenario_fixture = fixture
-        if scenario.startswith("recovery-") or scenario == "peer-play":
-            scenario_fixture = storage(build / "PwStick.ino.partitions.bin", folder, scenario)
+        if scenario.startswith("recovery-") or scenario in ("peer-play", "peer-return"):
+            scenario_fixture = storage(
+                build / "PwStick.ino.partitions.bin",
+                folder,
+                "peer-play" if scenario == "peer-return" else scenario,
+            )
         action = "recovery" if scenario.startswith("recovery-") else scenario
         if scenario == "diode-stall":
             action = "diode-timeout"
+        if scenario in PUT_SCENARIOS or scenario == "peer-return":
+            action = (
+                "peer-transfer-compressed"
+                if scenario == "peer-transfer-compressed"
+                else "peer-transfer"
+            )
+        if scenario == "peer-malformed":
+            action = "peer-storage"
         script = ROOT / f"stick/simulation/{action}.actions"
-        if scenario in ("peer-transfer", "peer-transfer-compressed", "peer-play"):
+        if scenario in OPTICAL_SCENARIOS:
             script = folder / f"{scenario}.actions"
-            actions = (ROOT / f"stick/simulation/{scenario}.actions").read_text()
-            if scenario.startswith("peer-transfer"):
+            actions = (ROOT / f"stick/simulation/{action}.actions").read_text()
+            if scenario in PUT_SCENARIOS:
                 source = folder / "course.bin"
                 source.write_bytes(course())
             else:
-                source = folder / "fixture.eeprom"
+                source = (
+                    out / "fixture.eeprom"
+                    if scenario == "peer-malformed"
+                    else folder / "fixture.eeprom"
+                )
+            if scenario in ("peer-noise", "peer-prefix-byte"):
+                actions = actions.replace(
+                    "peer echo on",
+                    "peer echo on\npeer noise "
+                    + ("byte" if scenario == "peer-prefix-byte" else "on"),
+                )
+            if scenario == "peer-initial":
+                initial = bytearray((out / "fixture.eeprom").read_bytes())
+                for address in range(0x280, 0x8CB0, 128):
+                    initial[address] ^= 1
+                uploaded = folder / "initial-image.eeprom"
+                uploaded.write_bytes(initial)
+                actions = actions.replace(
+                    "peer put PUBLIC_FIXTURE",
+                    "peer put-initial PUBLIC_FIXTURE " + str(uploaded),
+                )
+            if scenario == "peer-return":
+                actions = actions.replace("peer put PUBLIC_FIXTURE", "peer return")
+            if scenario == "peer-slow":
+                actions = actions.replace("115760", "114817")
+            if scenario == "peer-malformed":
+                template = (ROOT / "stick/simulation/peer.actions").read_text()
+                first = template.index("peer start")
+                last = template.index("peer report")
+                transfer = template[first:last]
+                actions = "run 4000\n"
+                for mode in range(5):
+                    actions += transfer.replace(
+                        "peer start", f"peer malformed PUBLIC_FIXTURE {mode}"
+                    )
+                    actions += f"peer report malformed-{mode}.txt\npeer stop\nreset\nrun 4000\n"
             script.write_text(actions.replace("PUBLIC_FIXTURE", str(source)))
         if scenario == "battery":
             script = folder / "battery.actions"
@@ -429,12 +497,15 @@ def main() -> None:
                     **os.environ,
                     **(
                         {"STICK_E2E_OPCODE_TIMING": "1", "STICK_E2E_FLASH_TIMING": "300,20000"}
-                        if scenario in ("peer-transfer", "peer-transfer-compressed", "peer-play")
+                        if scenario in OPTICAL_SCENARIOS
                         else {}
                     ),
                 },
             )
         if scenario == "settings":
+            console = (folder / "console.txt").read_text()
+            assert "PW_STICK_DIAGNOSTICS version=1 " in console
+            assert "PW_STICK_LINK none" in console
             expect_screen(folder / "defaults.png", "STICK SETTINGS", "3-key", "Left side down")
             expect_screen(folder / "settings.png", "STICK SETTINGS", "Left side down", "Dark")
             expect_appearance(folder / "settings.png", light=False)
@@ -447,7 +518,7 @@ def main() -> None:
                 "Unsaved controls use L/M/R and left-side-down; buttons change rotation and appearance, and reset retains both."
             )
         elif scenario == "connect":
-            expect_diode(folder / "no-peer.png", None)
+            expect_diode(folder / "no-peer.png", "unknown")
             expect_screen(folder / "settings-after.png", "STICK SETTINGS")
             expect_screen(folder / "settings-retry.png", "STICK SETTINGS")
             if (folder / "first.optical").read_text().strip():
@@ -499,11 +570,6 @@ def main() -> None:
                     raise AssertionError(f"{name}: diode icon differs from approved artwork")
             for name, rotated in (
                 ("idle", False),
-                ("unknown", False),
-                ("bright", False),
-                ("resistive", False),
-                ("expired", False),
-                ("corrected", False),
                 ("rotated-left", True),
             ):
                 image = (
@@ -523,20 +589,22 @@ def main() -> None:
                     for col in range(16)
                 ):
                     raise AssertionError(f"{name}: diode icon did not clear")
+            expect_diode(folder / "corrected.png", "connected")
+            for name in ("unknown", "bright", "resistive", "expired"):
+                expect_diode(folder / f"{name}.png", "blocked")
             evidence["scenarios"][scenario] = (
                 "Ambiguous and illuminated-reversed inputs never drive GPIO5 high or reboot; "
                 "approved icons occupy the diode margin in both rotations and themes, "
-                "uncertain inputs stay quiet, faults persist while relevant, and leaving clears feedback."
+                "blocked inputs show a warning, faults persist while relevant, and leaving clears feedback."
             )
         elif scenario == "diode-peer":
             peer = (folder / "peer.txt").read_text()
             if "complete=true error=None" not in peer:
                 raise AssertionError(f"Optical peer did not complete: {peer}")
-            expect_diode(folder / "connected.png", None)
+            expect_diode(folder / "connected.png", "receiving")
+            expect_diode(folder / "retained.png", "receiving")
             expect_diode(folder / "expired.png", None)
-            evidence["scenarios"][scenario] = (
-                "A completed exchange clears diode confirmation immediately."
-            )
+            evidence["scenarios"][scenario] = "Received traffic remains visible after the exchange."
         elif scenario == "diode-ready":
             observed = False
             for index in range(8):
@@ -546,31 +614,34 @@ def main() -> None:
                 except AssertionError:
                     pass
             assert observed, "Connected diode was never shown during connection"
-            expect_diode(folder / "finished.png", None)
+            expect_diode(folder / "finished.png", "connected")
             diode_report(folder / "finished.txt")
             evidence["scenarios"][scenario] = (
-                "The inserted diode is shown during connection, then clears on completion without lingering on the result."
+                "Diode presence is shown during connection and retained on the relevant result."
             )
         elif scenario == "diode-presence":
             for name in ("missing", "missing-connect", "missing-persist", "missing-uncertain"):
                 expect_diode(folder / f"{name}.png", "missing")
-            expect_diode(folder / "inserted.png", None)
-            for name in ("missing-left", "inserted-expired"):
+            expect_diode(folder / "inserted.png", "missing")
+            expect_diode(folder / "inserted-expired.png", "missing")
+            for name in ("missing-left",):
                 expect_diode(folder / f"{name}.png", None)
             bounded = diode_report(folder / "missing-bounded.txt")
             idle = diode_report(folder / "missing-idle.txt")
             assert bounded["touch_scans"] == idle["touch_scans"], "Missing detection kept polling"
             blocked = diode_report(folder / "missing-connect.txt")
-            assert blocked["high_drives"] == "0", "Empty socket was strongly precharged"
-            assert not (folder / "missing.optical").read_text().strip(), "Empty socket transmitted"
+            assert int(blocked["high_drives"]) > 0, "Advisory absence blocked safe reception"
+            assert bytes([0xFC]) in optical_frames(folder / "missing.optical"), (
+                "An uncertain absence estimate prevented listening"
+            )
             diode_report(folder / "restored.txt")
             evidence["scenarios"][scenario] = (
-                "Empty capacitance shows the approved missing icon and blocks reception startup; "
-                "the fault persists in the result, clears on leaving or correction, and rechecks stop."
+                "Empty capacitance is advisory and permits safe listening; "
+                "the measured state persists on the result, clears on leaving, and rechecks stop."
             )
         elif scenario in ("diode-timeout", "diode-stall"):
-            expect_diode(folder / "unknown.png", None)
-            expect_diode(folder / "unknown-expired.png", None)
+            expect_diode(folder / "unknown.png", "unknown")
+            expect_diode(folder / "unknown-expired.png", "unknown")
             bounded = diode_report(folder / "timeout-bounded.txt")
             idle = diode_report(folder / "timeout-idle.txt")
             assert bounded["touch_scans"] == idle["touch_scans"], "Timed-out probe kept polling"
@@ -712,23 +783,40 @@ def main() -> None:
                     path.name: digest(path) for path in (folder / "fixture.store",)
                 },
             }
-        elif scenario in ("peer-transfer", "peer-transfer-compressed", "peer-play"):
+        elif scenario in EXCHANGE_SCENARIOS:
             report = (folder / "peer.txt").read_text()
             if "complete=true error=None" not in report:
                 raise AssertionError(f"{scenario} failed:\n{report[:1500]}")
             if "flash_erases_during_reply_window=0" not in report:
                 raise AssertionError("Flash erase occurred while a peer reply was pending")
             payload = saved_eeprom(folder, scenario_fixture[0], scenario_fixture[1].stat().st_size)
-            if scenario.startswith("peer-transfer"):
+            if scenario in PUT_SCENARIOS:
                 if payload[0x8F00 : 0x8F00 + 10430] != course():
                     raise AssertionError("DS put course differs after native commit/reset")
                 identity = (out / "fixture.eeprom").read_bytes()[0x83 : 0x83 + 40]
                 if payload[0xCC08:0xCC30] != identity:
                     raise AssertionError("DS trainer record did not survive native commit/reset")
-                if "received_frames=135" not in report or "watts=0064" not in report:
+                frames = 416 if scenario == "peer-initial" else 135
+                if f"received_frames={frames}" not in report or "watts=0064" not in report:
                     raise AssertionError(
                         "DS put did not complete course/record writes and PHC/distribution reads"
                     )
+                if scenario == "peer-initial":
+                    original = (out / "fixture.eeprom").read_bytes()
+                    expected = (folder / "initial-image.eeprom").read_bytes()
+                    assert original[0x280:0x8ED0] != expected[0x280:0x8ED0]
+                    assert payload[0x280:0x8ED0] == expected[0x280:0x8ED0], (
+                        "Initial image differs after commit"
+                    )
+            elif scenario == "peer-return":
+                for address in (0xED, 0x1ED):
+                    assert payload[address + 91] & 3 == 1, (
+                        "Return did not clear companion while preserving registration"
+                    )
+                original = (folder / "fixture.eeprom").read_bytes()
+                assert payload[0x83 : 0x83 + 40] == original[0x83 : 0x83 + 40], (
+                    "Return changed device identity"
+                )
             else:
                 identity = b"PUBLIC OPTICAL WALKER".ljust(40, b"\0")
                 if payload[0xDC00 + 548 + 8 : 0xDC00 + 548 + 48] != identity:
@@ -743,6 +831,15 @@ def main() -> None:
                 "result": "DS put/commit or native Walker peer exchange completes with retail baud, transmitter echo and instruction-cost timing; persisted state survives reset.",
                 "timing": "one-instruction quanta with opcode/branch/call/load-use costs; 300 us program and 20 ms sector erase busy periods; no analog/cache timing claim",
             }
+        elif scenario == "peer-malformed":
+            for mode in range(5):
+                report = (folder / f"malformed-{mode}.txt").read_text()
+                assert "complete=true" in report and "page_verified=true" in report, report
+            log = (folder / "console.txt").read_text()
+            assert log.count("malformed=1") == 5, "Each malformed packet must be diagnosed"
+            evidence["scenarios"][scenario] = (
+                "Malformed headers/bodies and H8 RAM writes are rejected; a subsequent valid read completes and the target page remains unchanged."
+            )
         elif scenario == "peer":
             report = (folder / "peer.txt").read_text()
             if (

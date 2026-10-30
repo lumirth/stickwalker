@@ -14,6 +14,7 @@
 #include "backlight.h"
 #include "peripheral_power.h"
 #include "diode_status.h"
+#include "margin_status.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -51,7 +52,7 @@ uint64_t next_deadline() {
   for (const uint64_t candidate : {next_input, next_vbus_check,
        StickDisplayNextDeadline(), StickSoundNextDeadline(),
        StickPeripheralNextDeadline(), StickSleepNextDeadline(),
-       StickSettingsNextDeadline(), StickDiodeNextDeadline()})
+       StickSettingsNextDeadline(), StickDiodeNextDeadline(), StickMarginNextDeadline()})
     if (candidate < deadline) deadline = candidate;
   return deadline;
 }
@@ -59,7 +60,7 @@ uint64_t next_deadline() {
 
 void StickPresentGame(int force) {
   if (StickSettingsIsOpen()) return;
-  StickDiodeDraw();
+  StickMarginDraw();
   if (force) StickDisplayInvalidate();
   const uint64_t revision = StickDisplayRevision();
   if (revision == presented_revision && !StickDisplayPresentationPending()) return;
@@ -108,6 +109,7 @@ extern "C" void StickPortLoop(void) {
   if (!ready) { delay(50); return; }
   if (StickDiagnosticsService()) return;
   StickNativeService();
+  if (!StickForegroundIsIr()) StickIrServiceDiagnostics();
   if (StickForegroundIsIr()) {
     previous_ir = true;
     StickNativeRun();
@@ -140,6 +142,7 @@ extern "C" void StickPortLoop(void) {
   StickDisplayPowerService();
   StickPeripheralPowerService();
   StickDiodeService();
+  StickMarginService();
 
   now = uint64_t(esp_timer_get_time());
   const unsigned task = StickNativeRun();

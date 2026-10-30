@@ -30,10 +30,9 @@ uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x0 PwS
 
 ## Update
 
-Return your Pokémon to HGSS first. Pre-release updates reset registration and walker progress. Button layout, rotation and appearance stay saved.
+Make a full flash backup first. This build preserves the existing EEPROM checkpoint and journal format. Update only the application to keep registration, Pokémon data, progress and device settings. Use the existing Stick S3 partition layout.
 
 ```sh
-uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT --after no-reset erase-region 0x670000 0x180000
 uvx --from esptool==5.1.0 esptool --chip esp32s3 --port PORT write-flash 0x10000 PwStick.ino.bin
 ```
 

@@ -107,7 +107,7 @@ int main()
   feedback.observe(DiodeState::Connected);
   assert(feedback.visible(false) == DiodeState::Connected);
   feedback.end();
-  assert(feedback.visible(true) == DiodeState::Hidden);
+  assert(feedback.visible(true) == DiodeState::Connected);
   for (auto fault : {DiodeState::Missing, DiodeState::Reversed}) {
     feedback.begin();
     feedback.observe(fault);
@@ -116,13 +116,17 @@ int main()
     assert(feedback.visible(true) == fault);
     assert(feedback.visible(false) == DiodeState::Hidden);
     feedback.observe(DiodeState::Connected);
-    assert(feedback.visible(true) == DiodeState::Hidden);
+    assert(feedback.visible(true) == DiodeState::Connected);
   }
   feedback.begin();
   feedback.observe(DiodeState::Unknown);
-  assert(feedback.visible(false) == DiodeState::Hidden);
+  assert(feedback.visible(false) == DiodeState::Unknown);
   feedback.end();
-  assert(feedback.visible(true) == DiodeState::Hidden);
+  assert(feedback.visible(true) == DiodeState::Unknown);
+  feedback.observe(DiodeState::Blocked);
+  assert(feedback.visible(true) == DiodeState::Blocked);
+  feedback.observe(DiodeState::Receiving);
+  assert(feedback.visible(true) == DiodeState::Receiving);
 
   assert(panel_rotation(unsigned(Orientation::LeftSideDown)) == 1);
   assert(panel_rotation(unsigned(Orientation::RightSideDown)) == 3);

@@ -49,7 +49,7 @@ uint8_t IRAM_ATTR __attribute__((noinline, noclone)) measure_ir_gate(
   }
   gpio_ll_output_enable(&GPIO, 5);
   if (late) {
-    measurement = uint8_t(240 | late);
+    measurement = kInvalidGate;
     ++health.phase_late;
   }
   *destination = measurement;

@@ -30,6 +30,12 @@ void StickIrSendFrame(const u8 *logical, u8 length);
 int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
                      u16 *lastObservationTick);
 int StickIrFailed(void);
+void StickIrAcceptPacket(unsigned command, unsigned phase, unsigned bulk_phase);
+void StickIrResynchronized(unsigned bytes);
+void StickIrRejectPacket(unsigned reason);
+void StickIrSessionResult(unsigned result);
+void StickIrServiceDiagnostics(void);
+const char *StickIrLastSummary(void);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickIrBenchTrace(int enabled);
 int StickIrBenchTraceEnabled(void);

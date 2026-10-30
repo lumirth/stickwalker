@@ -11,6 +11,7 @@
 #include "input_bridge.h"
 #include "native_runtime.h"
 #include "sound_bridge.h"
+#include "ir_transport.h"
 #include <M5Unified.h>
 #include <esp_timer.h>
 
@@ -35,6 +36,9 @@ void battery() {
   else screen->printf("Battery %u.%02u V  ~%d%%  %s", millivolts / 1000,
       (millivolts % 1000) / 10, percent,
       StickBoardPower().getVBUSVoltage() >= 4000 ? "USB" : "");
+  screen->fillRect(8, 125, 224, 8, StickDisplayBackground());
+  screen->setCursor(10, 125);
+  screen->print(StickIrLastSummary());
   last_battery = uint64_t(esp_timer_get_time());
 }
 

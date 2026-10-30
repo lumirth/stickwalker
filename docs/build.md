@@ -55,3 +55,5 @@ uv run ninja verify
 ```
 
 Extract the original artwork first to reproduce the reference ROM. Repeat with `--toolchain 6.02.02` when changing shared application code.
+
+[Connection reliability](../stick/docs/reliability.md) describes the receiver, storage and qualification limits. [Troubleshooting](../stick/docs/troubleshooting.md) includes the read-only capture command.

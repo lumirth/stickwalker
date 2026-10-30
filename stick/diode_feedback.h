@@ -9,33 +9,38 @@ enum class DiodeState : uint8_t {
   Missing,
   Reversed,
   Connected,
-  Unknown
+  Unknown,
+  Blocked,
+  Receiving
 };
 
-constexpr uint16_t kDiodeIcons[3][16] = {
+constexpr uint16_t kDiodeIcons[6][16] = {
     {0x0000, 0x0078, 0x0084, 0x0102, 0x0102, 0x0102, 0x0102, 0x01fe, 0x0048,
      0x0048, 0x4448, 0x2848, 0x1048, 0x2848, 0x4400, 0x0000},
     {0x0000, 0x0078, 0x00fc, 0x01f6, 0x01f6, 0x01fe, 0x01fe, 0x01fe, 0x0048,
      0x4048, 0xfc48, 0x4048, 0x0048, 0x0848, 0xfc00, 0x0800},
     {0x0000, 0x0078, 0x00fc, 0x01f6, 0x01f6, 0x01fe, 0x01fe, 0x01fe, 0x0048,
      0x0048, 0x0048, 0x0048, 0x0048, 0x0048, 0x0000, 0x0000},
+    {0x0000, 0x0078, 0x0084, 0x0102, 0x0102, 0x0102, 0x0102, 0x01fe, 0x0048,
+     0x3848, 0x4448, 0x2048, 0x1048, 0x0000, 0x1000, 0x0000},
+    {0x0000, 0x0078, 0x0084, 0x0102, 0x0102, 0x0102, 0x0102, 0x01fe, 0x0048,
+     0x1048, 0x1048, 0x1048, 0x1048, 0x0000, 0x1000, 0x0000},
+    {0x0000, 0x0078, 0x00fc, 0x01f6, 0x01f6, 0x01fe, 0x01fe, 0x01fe, 0x0048,
+     0x0048, 0x4048, 0x2048, 0x1248, 0x0c48, 0x0000, 0x0000},
 };
 
 struct DiodeFeedback {
-  DiodeState measurement = DiodeState::Unknown;
+  DiodeState measurement = DiodeState::Hidden;
   bool transferring = false;
 
   void begin() { measurement = DiodeState::Unknown; transferring = true; }
   void observe(DiodeState value) { measurement = value; }
   void end() { transferring = false; }
-  void clear() { measurement = DiodeState::Unknown; transferring = false; }
+  void clear() { measurement = DiodeState::Hidden; transferring = false; }
   DiodeState visible(bool result_open) const
   {
     if (!transferring && !result_open) return DiodeState::Hidden;
-    if (measurement == DiodeState::Missing || measurement == DiodeState::Reversed)
-      return measurement;
-    return transferring && measurement == DiodeState::Connected
-        ? DiodeState::Connected : DiodeState::Hidden;
+    return measurement;
   }
 };
 

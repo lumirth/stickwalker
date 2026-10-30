@@ -1,5 +1,6 @@
 #include "diode_status.h"
 #include "diode_feedback.h"
+#include "margin_status.h"
 #include "diode_presence.h"
 #include "board_hal.h"
 #include "board_settings.h"
@@ -14,34 +15,10 @@
 namespace {
 using pw_stick::DiodeState;
 pw_stick::DiodeFeedback feedback;
-bool dirty = true;
 bool blocked = false;
 unsigned rechecks = 0;
 uint64_t next_check = UINT64_MAX;
-DiodeState drawn = DiodeState::Hidden;
-
-void draw()
-{
-  if (!StickDisplayPanelIsReady() || StickSettingsIsOpen()) return;
-  const DiodeState visible = StickDisplayIsPowered()
-      ? feedback.visible(StickForegroundIsConnectionScreen()) : DiodeState::Hidden;
-  if (!dirty && visible == drawn) return;
-  auto *screen = StickBoardScreen();
-  const unsigned x = pw_stick::diode_icon_x(StickInputOrientation());
-  const unsigned y = pw_stick::diode_icon_y(StickInputOrientation());
-  uint16_t pixels[16 * 16];
-  const uint16_t background = StickDisplayBackground();
-  const uint16_t foreground = StickDisplayForeground();
-  for (unsigned row = 0; row < 16; ++row) {
-    const uint16_t bits = visible == DiodeState::Hidden
-        ? 0 : pw_stick::kDiodeIcons[unsigned(visible) - 1][row];
-    for (unsigned col = 0; col < 16; ++col)
-      pixels[row * 16 + col] = bits & (1u << col) ? foreground : background;
-  }
-  screen->pushImage(x, y, 16, 16, pixels);
-  drawn = visible;
-  dirty = false;
-}
+uint64_t retain_until = 0;
 } // namespace
 
 extern "C" void StickDiodeBegin(void)
@@ -50,28 +27,30 @@ extern "C" void StickDiodeBegin(void)
   blocked = false;
   rechecks = 0;
   next_check = UINT64_MAX;
-  dirty = true;
+  StickMarginInvalidate();
 }
 
 extern "C" int StickDiodePreflight(void)
 {
   const auto probe = pw_stick::diode_probe();
-  feedback.observe(probe.state);
+  feedback.observe(probe.receive_safe ? probe.state :
+      probe.state == DiodeState::Reversed ? DiodeState::Reversed : DiodeState::Blocked);
   blocked = !probe.receive_safe;
-  dirty = true;
-  draw();
+  StickMarginInvalidate();
+  StickMarginDraw(true);
   return probe.receive_safe;
 }
 
 extern "C" void StickDiodeReceivedPacket(void)
 {
-  feedback.observe(DiodeState::Connected);
+  feedback.observe(DiodeState::Receiving);
 }
 
 extern "C" void StickDiodeEnd(unsigned)
 {
   feedback.end();
-  dirty = true;
+  retain_until = uint64_t(esp_timer_get_time()) + 3000000;
+  StickMarginInvalidate();
   if (blocked) {
     rechecks = 3;
     next_check = uint64_t(esp_timer_get_time()) + 500000;
@@ -81,7 +60,8 @@ extern "C" void StickDiodeEnd(unsigned)
 extern "C" void StickDiodeService(void)
 {
   if (StickForegroundIsIr()) return;
-  if (StickSettingsIsOpen() || !StickForegroundIsConnectionScreen()) {
+  if (StickSettingsIsOpen() || (!StickForegroundIsConnectionScreen() &&
+      uint64_t(esp_timer_get_time()) >= retain_until)) {
     feedback.clear();
     next_check = UINT64_MAX;
     rechecks = 0;
@@ -93,21 +73,21 @@ extern "C" void StickDiodeService(void)
   }
   const uint64_t now = uint64_t(esp_timer_get_time());
   if (now < next_check) return;
+  if (!rechecks) return;
   --rechecks;
   const auto probe = pw_stick::diode_probe();
   if (probe.state != DiodeState::Unknown) {
     feedback.observe(probe.state);
-    dirty = true;
+    StickMarginInvalidate();
   }
   if (probe.state == DiodeState::Connected) rechecks = 0;
   next_check = rechecks ? now + 500000 : UINT64_MAX;
 }
 
 extern "C" uint64_t StickDiodeNextDeadline(void) { return next_check; }
-extern "C" void StickDiodeInvalidate(void) { dirty = true; }
-extern "C" void StickDiodeDraw(void)
-{
-  if (!StickForegroundIsIr()) draw();
+extern "C" unsigned StickDiodeVisible(void) {
+  return unsigned(feedback.visible(StickForegroundIsConnectionScreen() ||
+      uint64_t(esp_timer_get_time()) < retain_until));
 }
 
 #ifdef PW_STICK_BENCH_CONTROL
