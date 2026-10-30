@@ -31,7 +31,7 @@ For custom graphics, see [editing artwork](../assets/README.md).
 
 ## Checks
 
-Install Rust 1.98.1 and Tesseract. On macOS, install Tesseract with `brew install tesseract`. On Debian or Ubuntu, use `sudo apt-get install tesseract-ocr`. Then run the firmware workflows.
+Install Rust 1.98.1, then run the firmware workflows.
 
 ```sh
 uv run python stick/check.py

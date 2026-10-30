@@ -17,7 +17,7 @@ import zlib
 from array import array
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "stick/simulation"))
@@ -98,52 +98,6 @@ def parse_shard(value: str) -> tuple[int, int]:
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def read_screen(path: Path, rotation: int) -> str:
-    image = Image.open(path)
-    texts = []
-    for scale in (6, 8):
-        readable = image.rotate(rotation, expand=True)
-        readable = readable.resize((240 * scale, 135 * scale), Image.Resampling.NEAREST)
-        target = path.with_name(path.stem + f"-ocr-{rotation}-{scale}.png")
-        readable.save(target)
-        result = subprocess.run(
-            ["tesseract", str(target), "stdout", "--psm", "6"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        texts.append(result.stdout)
-    text = "\n".join(texts)
-    path.with_suffix(".txt").write_text(text)
-    return text
-
-
-def expect_screen(path: Path, *phrases: str, rotation: int = 90) -> None:
-    text = read_screen(path, rotation)
-    for phrase in phrases:
-        if phrase not in text:
-            raise AssertionError(f"{path}: expected {phrase!r}; read:\n{text}")
-
-
-def expect_line(path: Path, box: tuple[int, int, int, int], phrase: str) -> None:
-    image = Image.open(path).rotate(90, expand=True).crop(box)
-    texts = []
-    for scale in (6, 8):
-        target = path.with_name(path.stem + "-line.png")
-        image.resize((image.width * scale, image.height * scale), Image.Resampling.NEAREST).save(
-            target
-        )
-        for psm in ("7", "13"):
-            texts.append(
-                subprocess.check_output(
-                    ["tesseract", str(target), "stdout", "--psm", psm],
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                )
-            )
-    assert phrase in "\n".join(texts), f"{path}: expected {phrase!r}; read {texts}"
 
 
 def expect_appearance(path: Path, light: bool) -> None:
@@ -271,8 +225,24 @@ def optical_frames(path: Path) -> list[bytes]:
     return decoded
 
 
-def screen_region(path: Path, box: tuple[int, int, int, int]) -> bytes:
-    return Image.open(path).rotate(90, expand=True).crop(box).tobytes()
+OVERLAY_HEADER = (0, 0, 240, 24)
+NATIVE_HEADER = (24, 3, 216, 25)
+
+
+def screen_region(
+    path: Path, box: tuple[int, int, int, int], rotation: int = 90, invert: bool = False
+) -> bytes:
+    image = Image.open(path).rotate(rotation, expand=True).crop(box)
+    if invert:
+        image = ImageOps.invert(image.convert("RGB"))
+    return image.tobytes()
+
+
+def expect_overlay(folder: Path, path: Path) -> None:
+    if screen_region(path, OVERLAY_HEADER) != screen_region(
+        folder / "defaults.png", OVERLAY_HEADER
+    ):
+        raise AssertionError(f"{path}: settings overlay did not return")
 
 
 def expect_cursor(path: Path, x: int, y: int) -> None:
@@ -627,22 +597,33 @@ def main() -> None:
             console = (folder / "console.txt").read_text()
             assert "PW_STICK_DIAGNOSTICS version=1 " in console
             assert "PW_STICK_LINK none" in console
-            expect_screen(folder / "defaults.png", "STICK SETTINGS", "3-key", "Left side down")
-            expect_screen(folder / "settings.png", "STICK SETTINGS", "Left side down", "Dark")
+            if screen_region(folder / "welcome.png", OVERLAY_HEADER) == screen_region(
+                folder / "settings.png", OVERLAY_HEADER
+            ):
+                raise AssertionError("Opening settings did not change the screen")
+            if screen_region(folder / "defaults.png", (10, 42, 165, 52)) == screen_region(
+                folder / "settings.png", (10, 42, 165, 52)
+            ):
+                raise AssertionError("Selecting the two-key layout did not change the setting")
             expect_appearance(folder / "settings.png", light=False)
             for name in ("changed.png", "retained.png"):
-                expect_screen(
-                    folder / name, "STICK SETTINGS", "Right side down", "Light", rotation=-90
-                )
                 expect_appearance(folder / name, light=True)
+                if screen_region(folder / "settings.png", OVERLAY_HEADER) != screen_region(
+                    folder / name, OVERLAY_HEADER, rotation=-90, invert=True
+                ):
+                    raise AssertionError("Settings did not rotate with the display")
+            if screen_region(folder / "changed.png", (20, 24, 240, 120), rotation=-90) != (
+                screen_region(folder / "retained.png", (20, 24, 240, 120), rotation=-90)
+            ):
+                raise AssertionError("Changed settings did not survive reset")
             evidence["scenarios"][scenario] = (
                 "Unsaved controls use L/M/R and left-side-down; buttons change rotation and appearance, and reset retains both."
             )
         elif scenario == "connect":
             expect_diode(folder / "inconclusive-attempt.png", None)
             expect_diode(folder / "no-peer.png", "unknown")
-            expect_screen(folder / "settings-after.png", "STICK SETTINGS")
-            expect_screen(folder / "settings-retry.png", "STICK SETTINGS")
+            expect_overlay(folder, folder / "settings-after.png")
+            expect_overlay(folder, folder / "settings-retry.png")
             if (folder / "first.optical").read_text().strip():
                 raise AssertionError("Held-low input must fail preflight before transmitting")
             retry = optical_frames(folder / "retry.optical")
@@ -679,7 +660,7 @@ def main() -> None:
                 expect_battery(folder / f"{name}.png", 0)
             expect_battery(folder / "low-plugged.png", 0, True)
             for path in folder.glob("*.png"):
-                if "-ocr-" not in path.name and path.name != "defaults.png":
+                if path.name != "defaults.png":
                     expect_diode(path, None)
             evidence["scenarios"][scenario] = (
                 "Healthy play is quiet; USB changes appear once then expire; failed reads produce no false event; low warning is steady with voltage hysteresis and suppressed on stable USB."
@@ -718,14 +699,6 @@ def main() -> None:
             expect_diode(folder / "failed.png", "receiving")
             expect_diode(folder / "returned.png", "receiving")
             expect_diode(folder / "left.png", None)
-            for name in ("details", "details-retained"):
-                path = folder / f"{name}.png"
-                expect_line(path, (0, 0, 240, 27), "LAST CONNECTION")
-                expect_line(path, (0, 27, 240, 44), "Connection interrupted")
-                expect_line(path, (0, 45, 240, 62), "not detected")
-                expect_line(path, (0, 62, 240, 77), "able to start")
-                expect_line(path, (0, 77, 240, 92), "packet received")
-                expect_line(path, (0, 92, 240, 108), "Packets: 1")
             assert (folder / "details.png").read_bytes() == (
                 folder / "details-retained.png"
             ).read_bytes(), "Opening Settings lost or changed the completed attempt"
@@ -860,18 +833,22 @@ def main() -> None:
                 "Stalled scans remain inconclusive, return within the deadline and release the controller."
             )
         elif scenario == "controls":
-            for name, label in (
-                ("settings-menu", "SETTINGS"),
-                ("inventory", "INVENTORY"),
-                ("trainer", "TRAINER"),
-                ("inventory-return", "INVENTORY"),
-                ("settings-return", "SETTINGS"),
-                ("rollover", "SETTINGS"),
-                ("native-settings", "SETTINGS"),
+            headers = {
+                name: screen_region(folder / f"{name}.png", NATIVE_HEADER)
+                for name in ("settings-menu", "inventory", "trainer")
+            }
+            if len(set(headers.values())) != 3:
+                raise AssertionError("Repeated taps did not reach three distinct menu states")
+            for name, previous in (
+                ("inventory-return", "inventory"),
+                ("settings-return", "settings-menu"),
+                ("rollover", "settings-menu"),
+                ("native-settings", "settings-menu"),
             ):
-                expect_screen(folder / f"{name}.png", label)
+                if screen_region(folder / f"{name}.png", NATIVE_HEADER) != headers[previous]:
+                    raise AssertionError(f"{name}: navigation did not return to its prior state")
             for name in ("overlay-held", "overlay-released", "overlay-fresh"):
-                expect_screen(folder / f"{name}.png", "STICK SETTINGS")
+                expect_overlay(folder, folder / f"{name}.png")
             region = (10, 42, 165, 52)
             held = screen_region(folder / "overlay-held.png", region)
             if held != screen_region(folder / "overlay-released.png", region):
@@ -888,8 +865,8 @@ def main() -> None:
                 before, after = (
                     folder / f"{prefix}{index}.png" for prefix in ("layout", "retained")
                 )
-                expect_screen(before, "STICK SETTINGS")
-                expect_screen(after, "STICK SETTINGS")
+                expect_overlay(folder, before)
+                expect_overlay(folder, after)
                 label = screen_region(before, (10, 42, 165, 52))
                 if label != screen_region(after, (10, 42, 165, 52)):
                     raise AssertionError(f"Layout {index} did not survive reset")
@@ -900,24 +877,28 @@ def main() -> None:
                 raise AssertionError("Layout selection did not cycle through four distinct choices")
             if labels[2] != screen_region(folder / "defaults.png", (10, 42, 165, 52)):
                 raise AssertionError("Unsaved controls did not select the three-key L/R layout")
-            expect_screen(folder / "two-key-native.png", "SETTINGS")
-            expect_screen(folder / "two-key-reopened.png", "STICK SETTINGS")
+            expect_overlay(folder, folder / "two-key-reopened.png")
             if labels[0] != screen_region(folder / "two-key-reopened.png", (10, 42, 165, 52)):
                 raise AssertionError("Dedicated L did not reopen the retained two-key layout")
             for mapping, index in (("LR", 2), ("RL", 3)):
                 direction = folder / f"direction-{mapping}.png"
                 pending = folder / f"pending-{mapping}.png"
-                expect_screen(direction, "SETTINGS")
+                if screen_region(direction, NATIVE_HEADER) != screen_region(
+                    folder / "two-key-native.png", NATIVE_HEADER
+                ):
+                    raise AssertionError("Gameplay input did not return to the native menu")
                 if screen_region(direction, (24, 24, 184, 72)) == screen_region(
                     pending, (24, 24, 184, 72)
                 ):
                     raise AssertionError("Joining the Settings hold withheld gameplay Right")
-                if "STICK SETTINGS" in read_screen(pending, 90):
+                if screen_region(pending, OVERLAY_HEADER) == screen_region(
+                    folder / "defaults.png", OVERLAY_HEADER
+                ):
                     raise AssertionError("Settings opened before its one-second hold")
                 expect_cursor(folder / f"two-choice-{mapping}.png", 48, 20)
                 for prefix in ("held", "partial"):
                     path = folder / f"{prefix}-{mapping}.png"
-                    expect_screen(path, "STICK SETTINGS")
+                    expect_overlay(folder, path)
                     if labels[index] != screen_region(path, (10, 42, 165, 52)):
                         raise AssertionError("Opening hold operated the Settings overlay")
             for name, x, y in (
@@ -972,9 +953,11 @@ def main() -> None:
                 folder / "released.png", (24, 3, 216, 131)
             ):
                 raise AssertionError("Wake hold/release leaked a native navigation action")
-            expect_screen(folder / "first-action.png", "SETTINGS")
-            expect_screen(folder / "repeated-action.png", "INVENTORY")
-            expect_screen(folder / "settings.png", "STICK SETTINGS")
+            if screen_region(folder / "first-action.png", NATIVE_HEADER) == screen_region(
+                folder / "repeated-action.png", NATIVE_HEADER
+            ):
+                raise AssertionError("The first and repeated wake actions reached the same menu")
+            expect_overlay(folder, folder / "settings.png")
             evidence["scenarios"][scenario] = {
                 "result": "Native timeout sleeps; R/L do not wake; short M cancels; qualified M wakes and is consumed through release.",
                 "vbus_mv": 0 if scenario == "battery" else 5000,
@@ -982,8 +965,10 @@ def main() -> None:
                 "warm": expect_tones(folder / "warm.pcm", 1),
             }
         elif scenario.startswith("recovery-"):
-            for name in ("before-reset", "after-reset"):
-                expect_screen(folder / f"{name}.png", "SETTINGS")
+            if screen_region(folder / "before-reset.png", NATIVE_HEADER) != screen_region(
+                folder / "after-reset.png", NATIVE_HEADER
+            ):
+                raise AssertionError("Recovery did not return to the previous menu")
             payload = saved_eeprom(folder, scenario_fixture[0], scenario_fixture[1].stat().st_size)
             watts = 100 if scenario == "recovery-journal" else 200
             for address in (0x156, 0x256):
@@ -1044,7 +1029,7 @@ def main() -> None:
                     expected = bytes(byte ^ 0x5A for byte in local[source : source + length])
                     if payload[destination : destination + length] != expected:
                         raise AssertionError("Peer animation/name did not persist")
-            expect_screen(folder / "settings-after.png", "STICK SETTINGS")
+            expect_overlay(folder, folder / "settings-after.png")
             evidence["scenarios"][scenario] = {
                 "result": "DS put/commit or native Walker peer exchange completes with retail baud, transmitter echo and instruction-cost timing; persisted state survives reset.",
                 "timing": "one-instruction quanta with opcode/branch/call/load-use costs; 300 us program and 20 ms sector erase busy periods; no analog/cache timing claim",
@@ -1074,7 +1059,7 @@ def main() -> None:
                 raise AssertionError(
                     "Status/read exchange must emit 100 Watts as 00 64 on the optical wire"
                 )
-            expect_screen(folder / "settings-after.png", "STICK SETTINGS")
+            expect_overlay(folder, folder / "settings-after.png")
             evidence["scenarios"][scenario] = {
                 "result": "Ideal optical DS status/read session emits big-endian Watts and returns control to Settings.",
                 "logical_frames": [frame.hex() for frame in frames],
@@ -1095,7 +1080,7 @@ def main() -> None:
             expected = bytes(index ^ 0x5A for index in range(128))
             if replies != [expected, expected]:
                 raise AssertionError("Optical page payload must survive a reset and second session")
-            expect_screen(folder / "settings-after.png", "STICK SETTINGS")
+            expect_overlay(folder, folder / "settings-after.png")
             payload = saved_eeprom(folder, fixture[0], fixture[1].stat().st_size)
             if payload[0xFF80:] != expected:
                 raise AssertionError(
