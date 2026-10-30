@@ -227,7 +227,9 @@ uint32_t IRAM_ATTR __attribute__((noinline, noclone)) sample_receive_turn(
       rmt_ll_enable_interrupt(&RMT, kTxDone, true);
     }
 
-    const uint32_t readout = origin + 450;
+    // Preserve exposure when a pulse straddles reset. A long dark crossing
+    // can remain censored: its measured lower bound still supplies contrast.
+    const uint32_t readout = origin + 560;
     if (int32_t(esp_cpu_get_cycle_count() - readout) >= 0) late = true;
     while (int32_t(esp_cpu_get_cycle_count() - readout) < 0) {}
     pw_stick::IrObservation observation = 0;
@@ -254,8 +256,8 @@ uint32_t IRAM_ATTR __attribute__((noinline, noclone)) sample_receive_turn(
         // The pre-read timestamp of the last confirmed high and the
         // post-read timestamp of the first low bracket the CPU-observed
         // crossing. Round outward; never use a finite upper as a dark lower.
-        // A valid gate ends before origin+694/695, with ramp>=origin+450,
-        // so its elapsed delay is below 245 and fits this 254-cycle encoding.
+        // A valid gate ends before origin+694/695, with ramp>=origin+560,
+        // so its elapsed delay is below 135 and fits this 254-cycle encoding.
         observation = elapsed <= pw_stick::kObservationMaxCycles
             ? pw_stick::IrObservation(
                 ((high_until / pw_stick::kObservationQuantum) <<

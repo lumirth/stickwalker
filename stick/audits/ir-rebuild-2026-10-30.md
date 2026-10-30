@@ -13,7 +13,7 @@ baseline and receiver replay wrapper were also removed. There is no alternate
 legacy path or runtime selection between receivers.
 
 The nine replaced implementation/header files contained 1,492 lines. Their
-five replacements contain 1,346 lines, a reduction of 146 lines (9.8%), before
+five replacements contain 1,348 lines, a reduction of 144 lines (9.7%), before
 counting the deleted replay wrapper and obsolete timing baseline. Test-model
 extensions and evidence documentation are separate from this production-code
 comparison.
@@ -42,7 +42,7 @@ Overruns fail before unread input is overwritten.
 
 At the required 240 MHz CPU clock, the fixed schedule alternates 694 and 695
 cycles for 345,600 observations per second. Release and readout are scheduled
-at offsets 65 and 450; threshold polling stops against the next origin minus
+at offsets 65 and 560; threshold polling stops against the next origin minus
 70 cycles. Each probe checks that cutoff before reading GPIO. The turn's
 independent 140 ms wall deadline is checked inside each integration interval.
 
@@ -50,7 +50,7 @@ Each 16-bit observation contains two seven-bit bounds in two-cycle units, plus
 explicit flags for censoring and invalidity. Finite measurements retain the
 last-confirmed-high lower bound rounded down and first-confirmed-low upper
 bound rounded up. Censored measurements retain only the lower bound. Valid
-readout ends before the next gate, so its elapsed delay is below 245 cycles and
+readout ends before the next gate, so its elapsed delay is below 135 cycles and
 fits the 254-cycle encoding limit. The first observation after a service
 interval marks a discontinuity. A late electrical phase is an erasure; it
 cannot silently become a plausible dark sample.
@@ -78,6 +78,58 @@ identically and did not exercise this boundary. Preserving both measured bounds
 removes the assumption without a learned reference, a tuned timing correction
 or additional ring RAM. The complete-transfer suite now includes this fixed
 24,545.3-ohm boundary profile, with readback and reboot verification.
+
+### Common optical margin
+
+The fixed schedule allocates time to photocurrent integration before measuring
+the remaining crossing delay. It does not require a complete finite dark
+measurement: a censored dark lower bound can supply the contrast reference.
+This permits a longer exposure without extending the gate period or teardown.
+
+In the pinned instruction-cost model, the actual GPIO release occurs between
+origin plus 70 and 75 cycles, and the initial input read between plus 563 and
+567. Every valid gate therefore has at least 488 cycles of floating integration;
+the maximum gap between these integration windows is 207 cycles. A SIR pulse of
+the specified widths can overlap at most two windows. One overlap must be at
+least half the pulse duration minus that gap, regardless of the pulse's phase.
+For a minimum pulse duration `P`, minimum integration `W`, maximum gate period
+`G` (all in CPU cycles), and CPU frequency `f`, the sufficient charge condition is
+`I_min * (P - (G - W)) / (2 * f) > C_max * (V_charge_max - V_threshold_min)`.
+The pulse must be longer than the integration gap. This makes the electrical
+envelope explicit; the dark-reference and valid-timing bounds are also required.
+
+| Physical input family | Minimum pulse | Guaranteed overlap in one gate | Captured signal charge | Charge needed to reach the input threshold |
+| --- | --- | --- | --- | --- |
+| 22–65 kΩ, 12 pF, 1.6 V threshold, 60 µA signal | 388 cycles | 90.5 cycles | 22.625 pC | 20.4 pC |
+| 45 kΩ, 11 pF, 1.5 V threshold, 80 µA signal | 339 cycles | 66 cycles | 22 pC | 19.8 pC |
+
+The calculation uses a 3.3 V initial charge and conservatively ignores light
+during pull-down and the helpful background discharge. For these stated circuit
+inputs, at least one observation of each pulse is already low, giving a finite
+upper bound of zero. This is an analytic bound over pulse phase, with about
+11% charge headroom, rather than a fitted setting for one failing waveform.
+
+The ramp timestamp is at most origin plus 579, leaving at least 45 cycles
+before the fixed read cutoff. The confirmed-high probe at relative timestamp
+37 supplies an outward-rounded lower bound of 36 cycles. Even the fastest
+22 kΩ dark crossing occurs after 45.67 cycles from pull enable in this model,
+so that probe remains high. Finite or censored dark observations therefore
+provide at least 36 cycles, leaving 30 cycles beyond the six-cycle contrast floor
+against the guaranteed zero upper bound of a lit observation.
+
+The nine-gate neighborhood also contains a dark reference for ordinary SIR
+data. Conservatively, one pulse can affect at most two observations: the
+557-cycle physical observation aperture plus a pulse of at most 410 cycles
+spans less than two gate periods. At pulse spacing of at least 2,000 cycles,
+at most four pulses can affect any nine-gate window. At most eight observations
+are affected, leaving one dark reference. Arbitrary dense noise does not have
+this guarantee and must pass the separate framing and packet-admission rules.
+
+These bounds apply to the stated circuit and instruction models. They do not
+replace qualification of real GPIO latency, recharge behavior, diode
+capacitance, photocurrent, background variation or physical timing interference.
+
+### Byte and packet framing
 
 UART framing uses three gates per bit. Each observed pulse is a possible byte
 origin; its fixed interpretation has one deterministic successor. Origins that
@@ -183,6 +235,33 @@ than adding a command whitelist, timing search or error-triggered rewind. The
 other 36 scenarios passed on that intermediate image; it was not accepted as a
 complete verification pass.
 
+The first interval-based candidate then passed all 38 local workflows, but its
+[CI build failed the RC boundary transfer](https://github.com/lumirth/stickwalker/actions/runs/41115014249)
+after 35 transmitted replies. The retained CI image and simulator reproduced
+the same failure locally, with byte-identical peer report and SRAM capture.
+The sampler instruction bytes matched the local build, but the two builds
+entered the exchange at different phases. There were no acquisition erasures,
+overwide pulses, ambiguity rejections or capacity faults. Of the 136 request
+bytes, the first decoded as `00` instead of `02`; the other 135 were exact.
+
+The missed bit split across two gates, each measured as `[16,34]`, while the
+nearby dark lower bounds were 36. Only two cycles of contrast were proven, below
+the fixed six-cycle requirement. The bounds were honest; the earlier schedule
+did not guarantee enough exposure when a pulse straddled the recharge interval.
+The replacement moves the fixed readout from offset 450 to 560, giving the
+common optical margin derived above. The classifier, contrast floor, local
+window and readout cutoff retain their contracts. This correction changes the
+acquisition schedule rather than accepting an unproven pulse.
+
+An additional complete-transfer case uses the existing 45 kΩ / 11 pF / 1.5 V /
+80 µA circuit and 339-cycle pulse, at 115,200 baud with seven extra cycles
+between bytes. Each byte spans exactly 30 nominal gates before that gap, so
+successive byte origins deliberately move through the sampling phase. The
+136 starts in a maximum frame cover the phase circle with gaps no larger than
+about 7.7 cycles. The fixture drives ordinary light pulses and verifies the full
+transfer, native commit and reboot recovery. It expands phase coverage without
+using acquisition state to select the stimulus or expected bytes.
+
 The malformed-input workflow also includes a deliberately ambiguous physical
 pulse train. Its 112-byte page-write interpretation begins `02b79e43`, while
 an earlier UART origin produces `a007eee0`; both have valid checksums, the same
@@ -208,10 +287,10 @@ The retained production candidate uses Arduino CLI 1.5.1, M5Stack ESP32 core
 
 | Item | Identifier |
 | --- | --- |
-| Build ID | `3ab0678aa719` |
-| Application SHA256 | `3ed0c7d25dbecdac547133823edd978bb23a07cbc5a8e411faa8d2aa2dcc9e93` |
-| ELF SHA256 | `5cf25f0ab7ce3c01b1606ab9c600eb2958b4dddec74300aaa5b732e1101f153b` |
-| Acquisition function SHA256 | `5751d5754002fc6232fc734d9cee6408e23ded54dfb77e58b1e51dead037a738` |
+| Build ID | `c0a1d71d25c5` |
+| Application SHA256 | `35d26a5395b9bfb6a83fa79a0df8edd738ff9c691c3fab69d5e09e6abdf125df` |
+| ELF SHA256 | `1580b52a671200eb1047f009d091f9795450056455e03fd81354bb390a2b3f6b` |
+| Acquisition function SHA256 | `5ae94b8d5739085ccbd71bf568d8184e3352169878657f55f459b40589bcd805` |
 
 The acquisition function occupies 579 bytes entirely in IRAM, with no direct or
 indirect calls and no new stack spills. Its body is identical in the production
@@ -221,7 +300,7 @@ before the following release. Finite readout leaves at least 39 cycles before
 the next gate. The first observation of every receive turn is explicitly invalid
 and cannot become peer data. This does not assert zero timing error on hardware.
 
-The full verification workflow contains 38 scenarios. Its final completion
+The full verification workflow contains 39 scenarios. Its final completion
 status and retained result identifiers are recorded in the pull request; an
 interrupted or partial run is not a completed pass. Each run records the image,
 firmware-source, verification-source and simulator hashes, and the CI coverage

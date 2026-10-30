@@ -35,6 +35,7 @@ PUT_SCENARIOS = (
     "peer-rc-low",
     "peer-rc-high",
     "peer-rc-boundary",
+    "peer-rc-phase",
     "peer-rc-gap",
     "peer-immediate",
     "peer-deadline",
@@ -79,6 +80,7 @@ SCENARIO_COST = {
     "peer-rc-low": 150,
     "peer-rc-high": 150,
     "peer-rc-boundary": 150,
+    "peer-rc-phase": 150,
     "peer-rc-gap": 160,
     "peer-immediate": 140,
     "peer-deadline": 150,
@@ -567,6 +569,7 @@ def main() -> None:
                 "peer-rc-low": "22000 12 1.6 60 0.05",
                 "peer-rc-high": "65000 12 1.6 60 0.05",
                 "peer-rc-boundary": "24545.3 12 1.6 60 0.05",
+                "peer-rc-phase": "45000 11 1.5 80 0.05",
                 "peer-rc-gap": "45000 11 1.5 80 0.05",
             }
             if scenario in circuits:
@@ -577,6 +580,14 @@ def main() -> None:
                 actions = actions.replace("115760", "114817")
                 actions = actions.replace(
                     "peer echo on", "peer echo on\npeer waveform 347 339 4166"
+                )
+            if scenario == "peer-rc-phase":
+                # A nominal byte spans exactly 30 gates. Seven extra cycles
+                # walk its start pulse around the gate throughout each page,
+                # independently of the firmware's initial acquisition phase.
+                actions = actions.replace("115760", "115200")
+                actions = actions.replace(
+                    "peer echo on", "peer echo on\npeer waveform 0 339 7"
                 )
             if scenario == "peer-immediate":
                 actions = actions.replace("115760 5000", "115760 1")
@@ -1073,6 +1084,9 @@ def main() -> None:
                 raise AssertionError("Flash erase occurred while a peer reply was pending")
             if scenario.startswith("peer-rc-"):
                 assert "model=continuous-rc-photocurrent" in report, report
+            if scenario == "peer-rc-phase":
+                for field in ("phase_cycles=0", "pulse_cycles=339", "byte_gap_cycles=7"):
+                    assert field in report.splitlines(), report
             payload = saved_eeprom(folder, scenario_fixture[0], scenario_fixture[1].stat().st_size)
             if scenario in PUT_SCENARIOS:
                 if payload[0x8F00 : 0x8F00 + 10430] != course():
