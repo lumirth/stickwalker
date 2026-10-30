@@ -297,12 +297,8 @@ typedef char IrcHeaderMatchesPayloadOffset[sizeof(IrcHeader) == IR_HEADER_BYTES
                                                ? 1
                                                : -1];
 
-/* Start probing with a token from the PRNG state, clear session progress,
- * and send the one-byte connection probe. */
 #ifdef PW_STICK_S3
 #include "stick/ir_packet_validation.h"
-#endif
-#ifdef PW_STICK_S3
 /* An isolated leading optical pulse can frame as FF on the wire. Recover
  * only this bounded prefix, with independent header/body/session checks. */
 static u8 StickRealignPacket(u8 *packet, u8 length)
@@ -344,6 +340,8 @@ static u8 StickRealignPacket(u8 *packet, u8 length)
 }
 #endif
 
+/* Start probing with a token from the PRNG state, clear session progress,
+ * and send the one-byte connection probe. */
 void IrBegin(void)
 {
 #ifdef PW_STICK_S3

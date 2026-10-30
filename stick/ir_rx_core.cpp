@@ -88,8 +88,6 @@ bool fit_geometry(const uint16_t *strong, unsigned count, size_t gate_count,
   best = Geometry{};
   unsigned best_bad = 0;
   uint64_t best_phase = UINT64_MAX;
-  // A short noise prefix may precede the real start. Bound both the discarded
-  // interval and anchor count; never search arbitrary subsequences of a frame.
   for (unsigned anchor_index = 0; anchor_index < count && anchor_index < 4 &&
        strong[anchor_index] - strong[0] <= 12; ++anchor_index) {
     visit_limit = visits + 90000;
@@ -222,7 +220,6 @@ bool decode_wire_burst(const uint8_t *bins, size_t gate_count, WireBurst &out,
   out.fit_visits = visits;
   map_cells(strong, strong_count, geometry);
   remove_recovery_tails(bins, strong, strong_count, geometry, out);
-  // A late gate did not observe the wire. Do not silently invent an idle bit.
   for (size_t gate = 0; gate < gate_count; ++gate) {
     if (bins[gate] != kInvalidGate) continue;
     ++out.invalid_samples;

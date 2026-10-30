@@ -7,7 +7,6 @@
 #include "sound_bridge.h"
 #include "board_hal.h"
 #include "diode_status.h"
-#include "diode_feedback.h"
 
 #include <Arduino.h>
 #include <driver/dedic_gpio.h>
@@ -632,7 +631,9 @@ extern "C" void StickIrSendFrame(const u8 *logical, u8 length) {
     return;
   }
   __atomic_store_n(&tx_busy, true, __ATOMIC_RELEASE);
+#ifdef PW_STICK_BENCH_CONTROL
   const int64_t started_us = esp_timer_get_time();
+#endif
   const bool sent = pw_stick::transmit_logical(logical, length);
   if (peer_request_us) {
     const unsigned elapsed = unsigned(esp_timer_get_time() - peer_request_us);

@@ -2,7 +2,7 @@
 
 A transfer can fail after its opening handshake succeeds. HGSS sends hundreds of chunks during an initial upload and abandons an established exchange after an unrecovered packet error. Receiver errors therefore matter even when a device usually connects.
 
-The receiver now fits packet length and bit timing together. An unlearned timing estimate must complete the full search; validated learned timing can use the fast pass. It requires valid UART start and stop bits, searches for a start after a bounded short noise prefix, and limits the fitting work. An isolated pulse one byte before a packet needs additional protocol validation. The receive buffer allows two extra bytes while the protocol checks the command, body size, checksum and session before removing that prefix. The native packet buffer remains 136 bytes.
+The receiver now fits packet length and bit timing together. An unlearned timing estimate cannot use the fast-pass shortcut. Learned timing can use the shortcut after protocol validation. The decoder requires valid UART start and stop bits, searches for a start after a bounded short noise prefix, and limits the fitting work. An isolated pulse one byte before a packet needs additional protocol validation. The receive buffer allows two extra bytes while the protocol checks the command, body size, checksum and session before removing that prefix. The native packet buffer remains 136 bytes.
 
 Short rejected flashes leave the sampler listening. After a released event, listening resumes without the no-event scheduler delay or millisecond alignment wait. Late measurements use the reserved value 254, distinct from a valid delay and from no threshold crossing. A late measurement cannot establish an idle bit. A healthy pulse in the same cell can still establish a zero. The receiver learns timing only after protocol validation.
 
@@ -14,7 +14,7 @@ The charge-safety check still prevents the sampler from driving a held-low input
 
 The connection record keeps the original presence measurement, receiver-start safety, accepted packets and final result independently. Settings reads the same record used for the margin. A received packet supersedes an earlier advisory absence estimate in the margin while preserving both facts in Last connection. The result is finalized after native completion and storage health checks.
 
-The solid diode and outline have distinct meanings. Curved waves indicate accepted protocol traffic, not transfer completion. Single-byte probes and raw receiver activity alone do not earn the waves. Successful operations clear the icon; failures can retain useful evidence while their result remains open. Unregistered devices return home after the native result animation, which also clears the margin. Unknown preflight is quiet while safe listening proceeds.
+The solid diode indicates a detected component. Curved waves indicate accepted protocol traffic. The game reports transfer completion. Single-byte probes and raw receiver activity alone do not earn the waves. Successful operations clear the icon; failures can retain useful evidence while their result remains open. Unregistered devices return home after the native result animation, which also clears the margin. Unknown preflight is quiet while safe listening proceeds.
 
 Actionable results recheck every two seconds while awake and visible, with two consistent safe results and at least one second between ordinary displayed changes. Unsafe input is handled immediately. A corrected diode is shown for two seconds. Checks pause in Settings and stop on sleep or result exit; opening Settings preserves history. A physical presence check previously took about 129 ms on one device; this is not a timing guarantee for other hardware. No additional probes or margin drawing run during active reception or storage replies.
 
@@ -30,7 +30,7 @@ The firmware skips optional LCD work before established protocol replies. It pub
 
 ## Receiver margin
 
-The charge/discharge receiver depends on the diode, contact, board characteristics, light and alignment. The current capture and decoder cutoff remains 124. Changing only the decoder threshold cannot recover light that never starts a capture, and a lower cutoff cannot repair saturation.
+The charge-and-discharge receiver depends on the diode, contact, board characteristics, light and alignment. The current capture and decoder cutoff remains 124. Changing only the decoder threshold cannot recover light that never starts a capture, and a lower cutoff cannot repair saturation.
 
 The physical check on 2026-10-29 detected the inserted diode and completed 69,120 passive gates without a transport fault. The final 32,768 retained gates were above the activity cutoff. Their most frequent value was 144. Two late gates occurred across the complete passive run. This checks one unit under its current room conditions. It does not measure the signal margin of another diode, board, cartridge or lighting setup.
 
@@ -57,4 +57,4 @@ Each run retains its firmware image, source hashes, screenshots, optical traffic
 
 The physical app-only upgrade check starts with a full flash backup and compares the decoded EEPROM before and after boot. Registration and Pokémon data must survive. The private backup and EEPROM exports stay outside version control.
 
-[Validation record](../audits/reliability-2026-10-29.md).
+[Receiver validation](../audits/reliability-2026-10-29.md) and [margin validation](../audits/margin-status-2026-10-29.md) record the measured results.

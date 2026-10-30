@@ -34,7 +34,6 @@ run 100
 screen missing-connect.png
 diode report missing-connect.txt
 optical missing.optical
-# Plugging the diode in while the failed result is visible.
 cap 5 20.2 17.9
 run 9000
 screen inserted.png
