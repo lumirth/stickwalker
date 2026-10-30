@@ -15,7 +15,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 EXPECTED = {"back": 90, "put": 133}
 
 
@@ -34,13 +33,13 @@ def run_one(root: Path, name: str, mode: str, course: Path) -> dict:
         report = json.loads(result.stdout)
         stats = report["receiver_stats"] or ""
         valid = int(re.search(r"(?<!in)valid=(\d+)", stats).group(1))
-        invalid = int(re.search(r"invalid=(\d+)", stats).group(1))
+        failed = int(re.search(r"failed=(\d+)", stats).group(1))
         peer_error = report["last_peer_state"]["error"]
         stick_done = report["stick_done"]
-        row.update(valid=valid, invalid=invalid, peer_error=peer_error,
+        row.update(valid=valid, failed=failed, peer_error=peer_error,
                    stick_done=stick_done)
         row["ok"] = (result.returncode == 0 and valid == EXPECTED[mode] and
-                     invalid == 0 and peer_error == 15 and
+                     failed == 0 and peer_error == 15 and
                      stick_done == "PW_STICK_IR_DONE result=0")
     except (KeyError, TypeError, ValueError, AttributeError):
         row["failure"] = "incomplete trial report; inspect stderr and artifacts"

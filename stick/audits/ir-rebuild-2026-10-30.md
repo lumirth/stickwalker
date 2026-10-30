@@ -13,7 +13,7 @@ baseline and receiver replay wrapper were also removed. There is no alternate
 legacy path or runtime selection between receivers.
 
 The nine replaced implementation/header files contained 1,492 lines. Their
-five replacements contain 1,202 lines, a reduction of 290 lines (19.4%), before
+five replacements contain 1,346 lines, a reduction of 146 lines (9.8%), before
 counting the deleted replay wrapper and obsolete timing baseline. Test-model
 extensions and evidence documentation are separate from this production-code
 comparison.
@@ -23,9 +23,10 @@ The replacement removes these assumptions:
 | Previous assumption | Replacement contract |
 | --- | --- |
 | An absolute crossing-delay cutoff identifies optical activity. | Every observation is retained while listening; local contrast identifies candidate pulses. |
-| No crossing can be represented by a large numerical sample. | Finite crossing upper bounds, censored lower bounds and invalid measurements have distinct representations. |
+| A crossing delay can be treated as an exact scalar. | Finite last-high/first-low intervals, censored lower bounds and invalid measurements have distinct representations. |
 | Optical burst completion grants permission to stop sampling. | Only native admission of a handled request, a timeout, or termination grants a service turn. |
 | A packet can supply a fitted baud and timing origin. | Each UART byte supplies its own start origin on one fixed sampling schedule. |
+| A false UART start must eventually fail stop-bit framing. | Every observed start remains independently representable until native packet admission resolves competing interpretations. |
 | Task or ISR completion marks the end of local light. | The sampler observes the sticky RMT hardware completion event and retains input across it. |
 | A flash append below the receive timeout proves timely service. | Diagnostics measure accepted request/reply and completed-reply intervals; storage ownership is checked separately. |
 | Preserving the old gate's instruction bytes preserves correctness. | The complete acquisition owner is inspected and exercised as compiled code; physical timing still requires measurement. |
@@ -45,30 +46,69 @@ at offsets 65 and 450; threshold polling stops against the next origin minus
 70 cycles. Each probe checks that cutoff before reading GPIO. The turn's
 independent 140 ms wall deadline is checked inside each integration interval.
 
-Each 16-bit observation contains a finite delay or censored lower bound, plus
-explicit flags for censoring and invalidity. The first observation after a
-service interval marks a discontinuity. A late electrical phase is an erasure;
-it cannot silently become a plausible dark sample.
+Each 16-bit observation contains two seven-bit bounds in two-cycle units, plus
+explicit flags for censoring and invalidity. Finite measurements retain the
+last-confirmed-high lower bound rounded down and first-confirmed-low upper
+bound rounded up. Censored measurements retain only the lower bound. Valid
+readout ends before the next gate, so its elapsed delay is below 245 cycles and
+fits the 254-cycle encoding limit. The first observation after a service
+interval marks a discontinuity. A late electrical phase is an erasure; it
+cannot silently become a plausible dark sample.
 
-`ir_receiver.cpp` uses a nine-observation upper envelope with four gates of
-lookahead and a fixed six-cycle contrast floor. Censored background can provide
-a conservative reference, but a censored current sample cannot prove a pulse.
-This is a local signal operation, not calibration state. The decoder needs no
-idle history and never uses command expectations or checksums to choose bits.
+`ir_receiver.cpp` takes the largest actual lower bound in a nine-observation
+neighborhood, with four gates of lookahead and a fixed six-cycle contrast floor.
+A pulse requires that reference to exceed the current finite upper bound by
+the floor. Censored background can provide a conservative reference, but a
+censored current sample cannot prove a pulse. This is a local signal operation,
+not calibration state. The decoder needs no idle history and never uses
+command expectations or checksums to choose bits.
 
-UART framing uses three gates per bit and a fresh origin for every byte. An
-actual framing contradiction can retry a bounded history of pulse starts.
-The receiver keeps only the last 136 bytes and uses the original wrapping
-Timer W timestamps for frame separation. Noise which itself forms valid UART
-is left for the independent native protocol to reject.
+For a constant dark crossing time `T`, every neighbor lower bound satisfies
+`L <= T` and the current finite upper bound satisfies `T <= U`. Therefore
+`max(L) - U <= 0`: probe quantization alone cannot create a light decision.
+The earlier scalar representation lacked this property. Its ordinary compiled
+finite interval was 17 cycles wide, larger than the six-cycle contrast floor.
+With fixed resistance 24,545.3 ohms, capacitance 12 pF, threshold 1.6 V and
+background current 0.05 microamps, a no-light run produced 141 scalar readings
+of 54 cycles and 115 of 64 cycles in 256 settled observations. The continuous
+physical RC model generated that variation without injecting receiver samples.
+The replacement represents those readings as overlapping intervals `[36,54]`
+and `[46,64]`. The earlier low- and high-resistance cases happened to quantize
+identically and did not exercise this boundary. Preserving both measured bounds
+removes the assumption without a learned reference, a tuned timing correction
+or additional ring RAM. The complete-transfer suite now includes this fixed
+24,545.3-ohm boundary profile, with readback and reboot verification.
+
+UART framing uses three gates per bit. Each observed pulse is a possible byte
+origin; its fixed interpretation has one deterministic successor. Origins that
+converge share decoded tails in a bounded graph. Each possible packet follows
+at most 136 bytes, with original wrapping Timer W timestamps deciding native
+frame boundaries. Native validation selects among these fixed interpretations;
+it cannot alter optical classifications, bit timing or byte values.
+
+The graph stores 2,048 pulse origins. One unresolved 136-byte path contains at
+most 1,224 pulses, with at most 16 pending byte origins and 512 additional pulses
+from a 1,024-observation input batch: 1,752 entries fit within the fixed capacity.
+A selected frame and its origin identifiers are copied, so examined prefixes
+can be released while other interpretations remain. A work-limited poll must
+finish ready graph work before admitting another raw batch. It returns to the
+native timeout check between work allowances; overflow is an explicit failure.
+An erased measurement or a light run wider than two gates discards all
+uncommitted graph state in constant time, including a selected packet whose
+competing interpretations remain unresolved. A queued pre-disruption frame
+can be lost; missing evidence cannot turn it into a uniquely valid packet.
 
 ## Native ownership, storage and transmission
 
 `ir_packet.h` describes whether a message is rejected, leaves reception open,
 or invokes a native handler. Command shape, session state and checksum are
 independent of optical decoding. A valid complete packet takes precedence over
-packet-shaped bytes in its payload; otherwise exactly one valid suffix can
-remove a noise prefix. The old special case for leading `FF` bytes is gone.
+its exact byte-boundary suffixes, including packet-shaped payload bytes. A
+checked packet also dominates an overlapping unchecksummed FC probe. Distinct
+checked interpretations of overlapping input are rejected as ambiguous. The
+validation callback has no session, diagnostic-counter or storage side effects;
+only the resolved frame reaches a native handler. The old special case for
+leading `FF` bytes and the separate byte-suffix repair pass are gone.
 
 Ignored `0x2E` traffic, duplicate establishment replies and unrelated page ACKs
 leave acquisition running and do not renew the receive deadline. A normal turn
@@ -132,6 +172,26 @@ read. The strict invalid-measurement checks and simulator timing were retained.
 Independent review also corrected TX-fence publication ordering, ring block
 ownership, and the stop-failure/storage path.
 
+The full noise scenario exposed a deeper framing error in an intermediate
+replacement image. A pulse 26 microseconds before the Watts request created
+the entirely valid UART interpretation `99e9590e637ece46ce8a02`, while the same
+unchanged optical samples also supported the correct `0c02540e637ece46ce8a02`.
+The interpretations converged at their fourth byte; there was no later UART
+contradiction to trigger recovery. Acquisition had no erasures. The greedy
+receiver was therefore replaced with the origin graph described above, rather
+than adding a command whitelist, timing search or error-triggered rewind. The
+other 36 scenarios passed on that intermediate image; it was not accepted as a
+complete verification pass.
+
+The malformed-input workflow also includes a deliberately ambiguous physical
+pulse train. Its 112-byte page-write interpretation begins `02b79e43`, while
+an earlier UART origin produces `a007eee0`; both have valid checksums, the same
+session token and the same 104-byte body. Three ordinary SIR pulses precede the
+page by five, four and two bit periods. The interpretations merge before the
+token. Neither may trigger a handler or EEPROM write. The independent peer
+then requires an unambiguous read of the target page to return its unchanged
+bytes and complete normally.
+
 Two existing UI assertions depended on the old observation timing. The
 advisory-absence snapshot occurs during active reception, when the pin may be
 in its recharge phase; only that snapshot permits an enabled output, while
@@ -148,18 +208,20 @@ The retained production candidate uses Arduino CLI 1.5.1, M5Stack ESP32 core
 
 | Item | Identifier |
 | --- | --- |
-| Build ID | `a97b87ae69cf` |
-| Application SHA256 | `f8096c0c2e5415a0e92782be0f1df05535893167a83a8073d9979d6d275e100d` |
-| ELF SHA256 | `9449214d028aeeda9e9c9847bfb6972271a27a703cb61d8d19a92aa4d0b323d1` |
-| Acquisition function SHA256 | `e60f95ee9f9c4b7530e15aea396dfe69c09f86aa8d6bd969926bb2ce95d60624` |
+| Build ID | `3ab0678aa719` |
+| Application SHA256 | `3ed0c7d25dbecdac547133823edd978bb23a07cbc5a8e411faa8d2aa2dcc9e93` |
+| ELF SHA256 | `5cf25f0ab7ce3c01b1606ab9c600eb2958b4dddec74300aaa5b732e1101f153b` |
+| Acquisition function SHA256 | `5751d5754002fc6232fc734d9cee6408e23ded54dfb77e58b1e51dead037a738` |
 
-The acquisition function occupies 559 bytes entirely in IRAM, with no direct or
-indirect calls. The compiled dark-readout path has at least 35 cycles before the
-next gate in the instruction-cost model. A single late startup observation was
-located at gate zero, already explicitly invalid and before initial FC. It was
-not delivered as peer data. This does not assert zero timing error on hardware.
+The acquisition function occupies 579 bytes entirely in IRAM, with no direct or
+indirect calls and no new stack spills. Its body is identical in the production
+and bench builds. The compiled dark-readout path has at least 30 cycles before
+the next gate in the instruction-cost model, and at least 97 cycles of recharge
+before the following release. Finite readout leaves at least 39 cycles before
+the next gate. The first observation of every receive turn is explicitly invalid
+and cannot become peer data. This does not assert zero timing error on hardware.
 
-The full verification workflow contains 37 scenarios. Its final completion
+The full verification workflow contains 38 scenarios. Its final completion
 status and retained result identifiers are recorded in the pull request; an
 interrupted or partial run is not a completed pass. Each run records the image,
 firmware-source, verification-source and simulator hashes, and the CI coverage

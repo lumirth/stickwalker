@@ -53,14 +53,14 @@ def main():
     args = parser.parse_args()
     text = collect(args.port) if args.port else args.log.read_text()
     match = re.search(
-        r"PW_STICK_RX_CAPTURE gates=(\d+) format=u16 first_gate=(\d+) "
+        r"PW_STICK_RX_CAPTURE gates=(\d+) format=interval-u16 first_gate=(\d+) "
         r"end_gate=(\d+) epoch_first=(\d+) epoch_us=(\d+)\r?\n"
         r"(.*?)PW_STICK_RX_CAPTURE_END",
         text,
         re.S,
     )
     if not match:
-        raise RuntimeError("No complete u16 optical capture in the response")
+        raise RuntimeError("No complete interval-u16 optical capture in the response")
     count = int(match[1])
     if count > 32768:
         raise RuntimeError("Capture exceeds the firmware limit")
@@ -78,7 +78,7 @@ def main():
     (args.output / "rx.json").write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "encoding": "u16le",
                 "gates": count,
                 "first_gate": first,
@@ -87,11 +87,15 @@ def main():
                 "latest_epoch_origin_us": epoch_us,
                 "gate_hz": 345600,
                 "cpu_hz": 240000000,
-                "cycles_mask": 0x3FFF,
+                "bound_mask": 0x7F,
+                "lower_shift": 7,
+                "cycles_per_unit": 2,
                 "censored_flag": 0x4000,
                 "invalid_flag": 0x8000,
-                "finite": "Threshold crossing delay upper bound in CPU cycles",
-                "censored": "Input still high at this delay; a lower bound, not a crossing",
+                "lower_cycles": "2 * ((observation >> 7) & 0x7f)",
+                "upper_cycles": "2 * (observation & 0x7f)",
+                "finite": "CPU-observed crossing delay interval; lower rounds down and upper rounds up",
+                "censored": "Only the lower bound is meaningful; the input was still high then",
                 "invalid": "Discontinuity: a missed scheduled measurement or a service boundary",
                 "timing": "The time origin describes the latest receive epoch only; earlier service gaps are marked invalid",
             },

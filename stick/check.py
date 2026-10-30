@@ -34,6 +34,7 @@ PUT_SCENARIOS = (
     "peer-initial",
     "peer-rc-low",
     "peer-rc-high",
+    "peer-rc-boundary",
     "peer-rc-gap",
     "peer-immediate",
     "peer-deadline",
@@ -77,6 +78,7 @@ SCENARIO_COST = {
     "peer-slow": 130,
     "peer-rc-low": 150,
     "peer-rc-high": 150,
+    "peer-rc-boundary": 150,
     "peer-rc-gap": 160,
     "peer-immediate": 140,
     "peer-deadline": 150,
@@ -564,6 +566,7 @@ def main() -> None:
             circuits = {
                 "peer-rc-low": "22000 12 1.6 60 0.05",
                 "peer-rc-high": "65000 12 1.6 60 0.05",
+                "peer-rc-boundary": "24545.3 12 1.6 60 0.05",
                 "peer-rc-gap": "45000 11 1.5 80 0.05",
             }
             if scenario in circuits:
@@ -595,7 +598,7 @@ def main() -> None:
                 last = template.index("peer report")
                 transfer = template[first:last]
                 actions = "run 4000\n"
-                for mode in range(5):
+                for mode in range(6):
                     actions += transfer.replace(
                         "peer start", f"peer malformed PUBLIC_FIXTURE {mode}"
                     )
@@ -1068,6 +1071,8 @@ def main() -> None:
                 raise AssertionError(f"{scenario} failed:\n{report[:1500]}")
             if "flash_erases_during_reply_window=0" not in report:
                 raise AssertionError("Flash erase occurred while a peer reply was pending")
+            if scenario.startswith("peer-rc-"):
+                assert "model=continuous-rc-photocurrent" in report, report
             payload = saved_eeprom(folder, scenario_fixture[0], scenario_fixture[1].stat().st_size)
             if scenario in PUT_SCENARIOS:
                 if payload[0x8F00 : 0x8F00 + 10430] != course():
@@ -1144,13 +1149,25 @@ def main() -> None:
                 "injected_keepalives": 100,
             }
         elif scenario == "peer-malformed":
-            for mode in range(5):
+            for mode in range(6):
                 report = (folder / f"malformed-{mode}.txt").read_text()
-                assert "complete=true" in report and "page_verified=true" in report, report
+                values = dict(line.split("=", 1) for line in report.splitlines() if "=" in line)
+                assert values["complete"] == "true" and values["page_verified"] == "true", report
+                assert values["received_frames"] == "5" and values["error"] == "none", report
             log = (folder / "console.txt").read_text()
-            assert log.count("malformed=1") == 5, "Each malformed packet must be diagnosed"
+            attempts = [
+                dict(re.findall(r"(\w+)=(\S+)", line))
+                for line in log.splitlines()
+                if line.startswith("PW_STICK_LINK build=")
+            ]
+            assert len(attempts) == 6, "Each independent malformed-input session must finish"
+            assert all(int(attempt["origins_rejected"]) > 0 for attempt in attempts[:5]), log
+            assert int(attempts[5]["ambiguous"]) > 0, "Two valid optical origins must be rejected"
+            assert all(attempt["overflow"] == "0" for attempt in attempts), log
             evidence["scenarios"][scenario] = (
-                "Malformed headers/bodies and H8 RAM writes are rejected; a subsequent valid read completes and the target page remains unchanged."
+                "Malformed headers/bodies, H8 RAM writes, and a physical waveform admitting two "
+                "different valid native packets receive no response; a subsequent valid read "
+                "completes and each target page remains unchanged."
             )
         elif scenario == "peer":
             report = (folder / "peer.txt").read_text()

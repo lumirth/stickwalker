@@ -280,44 +280,29 @@ static unsigned StickReceivedAction(const u8 *packet, unsigned length)
       g_work.irc.work.bulkBytesRemaining);
 }
 
-/* The receiver retains a bounded tail of UART bytes. Noise can itself make a
- * valid UART byte; only the native packet grammar can resolve that ambiguity.
- * A valid complete frame takes precedence: its payload may itself contain
- * packet-shaped bytes. Otherwise recover only one uniquely valid suffix.
- * This never changes an optical or UART decision. */
-static u8 StickFindPacketSuffix(u8 *packet, u8 length)
+/* Inspect an immutable UART interpretation without changing protocol state.
+ * Native grammar and checksum resolve byte-origin ambiguity; they never
+ * adjust the optical classifications or the fixed UART cell period. A
+ * checked packet supplies stronger evidence than an unchecksummed FC probe. */
+static unsigned StickValidateCandidate(const u8 *wire, unsigned length)
 {
-  unsigned offset;
-  unsigned selected = length;
-  for (offset = 0; offset + IR_HEADER_BYTES <= length; ++offset) {
-    u8 *candidate = packet + offset;
-    u16 received;
-    u16 computed;
-    if (!StickReceivedAction(candidate, length - offset))
-      continue;
-    received = candidate[2] | ((u16)candidate[3] << 8);
-    candidate[2] = candidate[3] = 0;
-    computed = PacketChecksum(candidate, length - offset);
-    candidate[2] = received;
-    candidate[3] = received >> 8;
-    if (computed != received)
-      continue;
-    if (offset == 0)
-      return length;
-    if (selected != length) {
-      StickIrRejectPacket(2);
-      return 0;
-    }
-    selected = offset;
-  }
-  if (selected && selected < length) {
-    unsigned index;
-    length -= selected;
-    for (index = 0; index < length; ++index)
-      packet[index] = packet[selected + index];
-    StickIrResynchronized(selected);
-  }
-  return length;
+  u8 packet[PW_IR_RX_WINDOW_CAPACITY];
+  unsigned index;
+  u16 received;
+  if (length == 1)
+    return (wire[0] ^ PW_IR_TRANSPORT_XOR) == IR_CONNECT &&
+                   g_work.irc.work.handshakePhase < IR_PHASE_INITIATOR
+               ? 1u
+               : 0u;
+  if (length < IR_HEADER_BYTES || length > sizeof(packet))
+    return 0;
+  for (index = 0; index < length; ++index)
+    packet[index] = wire[index] ^ PW_IR_TRANSPORT_XOR;
+  if (!StickReceivedAction(packet, length))
+    return 0;
+  received = packet[2] | ((u16)packet[3] << 8);
+  packet[2] = packet[3] = 0;
+  return PacketChecksum(packet, length) == received ? 2u : 0u;
 }
 #endif
 
@@ -469,12 +454,11 @@ void IrProtocolTick(void)
     static u8 incoming[IR_HEADER_BYTES + IR_PAYLOAD_BYTES];
     u8 length;
     u16 lastObservationTick;
-    if (StickIrTakeBurst(incoming, sizeof(incoming), &length,
-                         &lastObservationTick)) {
+    if (StickIrTakePacket(incoming, sizeof(incoming), &length,
+                          &lastObservationTick, StickValidateCandidate)) {
       u16 index;
       for (index = 0; index < length; index++)
         incoming[index] ^= PW_IR_TRANSPORT_XOR;
-      length = StickFindPacketSuffix(incoming, length);
       if (length > PW_IR_RX_WINDOW_CAPACITY) {
         StickIrRejectPacket(2);
         return;

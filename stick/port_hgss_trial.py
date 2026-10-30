@@ -7,7 +7,6 @@ import argparse
 import base64
 import hashlib
 import json
-import re
 import sys
 import time
 from pathlib import Path
@@ -123,15 +122,10 @@ def main() -> None:
                 if line.startswith("PW_STICK_IR_DONE"):
                     break
         (run / "stick-log.txt").write_text("\n".join(lines) + "\n")
-        predictions = [dict(length=int(m.group(1)), wire=m.group(2))
-                       for line in lines
-                       if (m := re.fullmatch(r"PW_STICK_TRIAL_FRAME length=(\d+) tick=\d+ wire=([0-9a-f]+)", line))]
-        burst_rows = [line for line in lines if line.startswith("PW_STICK_BURST")]
         prediction = dict(job=job, stick_done=next((line for line in lines
             if line.startswith("PW_STICK_IR_DONE")), None),
             receiver_stats=next((line for line in lines
-            if line.startswith("PW_STICK_IR_STATS")), None), bursts=burst_rows,
-            frames=predictions)
+            if line.startswith("PW_STICK_IR_STATS")), None))
         save(run / "prediction.json", prediction)
         final = peer.wait(job, maximum_seconds=22)
         save(run / "status.json", final)
@@ -145,7 +139,7 @@ def main() -> None:
         print(json.dumps(dict(job=job, commitment=commit, prediction_sha256=
             hashlib.sha256((run / "prediction.json").read_bytes()).hexdigest(),
             stick_done=prediction["stick_done"], receiver_stats=prediction["receiver_stats"],
-            bursts=burst_rows, last_peer_state=states[-1] if states else None), indent=2))
+            last_peer_state=states[-1] if states else None), indent=2))
 
 
 if __name__ == "__main__":

@@ -250,7 +250,9 @@ impl OpticalPeer {
     }
 
     pub fn with_malformed(image: Vec<u8>, mode: u8) -> Self {
-        let mut peer = Self::with_page(0xf600, image[0xf600..0xf680].to_vec(), false).unwrap();
+        assert!(mode <= 5);
+        let address = if mode == 5 { 0xb700 } else { 0xf600 };
+        let mut peer = Self::with_page(address, image[address as usize..address as usize + 128].to_vec(), false).unwrap();
         peer.malformed = Some(mode);
         peer
     }
@@ -658,6 +660,36 @@ impl OpticalPeer {
         self.send_raw(&packet);
     }
 
+    fn send_ambiguous(&mut self) {
+        // The same physical pulses have two valid UART interpretations, which
+        // merge before the session token: page write 02/b7 and event-map a0/07.
+        // Their checksum difference is (a0-02)*256 + (07-b7) = 0x9d50.
+        let mut packet = vec![0x02, 0xb7, 0, 0];
+        packet.extend_from_slice(&self.session);
+        packet.extend((0..104u8).map(|index| index ^ 0x5a));
+        packet[110..112].fill(0);
+        let correction = (0x439eu32 + 0xffff - u32::from(checksum(&packet))) % 0xffff;
+        packet[110..112].copy_from_slice(&(correction as u16).to_be_bytes());
+        assert_eq!(checksum(&packet), 0x439e);
+        let mut alternate = packet.clone();
+        alternate[..2].copy_from_slice(&[0xa0, 0x07]);
+        assert_eq!(checksum(&alternate), 0xe0ee);
+        packet[2..4].copy_from_slice(&0x439eu16.to_le_bytes());
+        alternate[2..4].copy_from_slice(&0xe0eeu16.to_le_bytes());
+
+        let start = self.now + self.turnaround + self.phase_cycles;
+        self.send_raw(&packet);
+        let width = self.pulse_cycles.unwrap_or(CPU_HZ * 3 / (self.baud * 16));
+        let mut prefix = VecDeque::new();
+        for bits_before in [5, 4, 2] {
+            let start = start - bits_before * CPU_HZ / self.baud;
+            prefix.push_back(LightPulse { start, end: start + width });
+        }
+        prefix.append(&mut self.pulses);
+        self.pulses = prefix;
+        self.trace += &format!("{start} AMBIGUOUS {}\n", hex(&alternate));
+    }
+
     fn send_raw(&mut self, packet: &[u8]) {
         if self
             .reply_limit
@@ -835,7 +867,9 @@ impl OpticalPeer {
                         1 => self.send(0x0a, 0xf6, self.session, &[]),
                         2 => self.send(0x0c, 2, self.session, &[0xf6, 0, 200]),
                         3 => self.send(0x06, 0, self.session, &[0, 42]),
-                        _ => self.send(0x10, 2, self.session, &[0; 4]),
+                        4 => self.send(0x10, 2, self.session, &[0; 4]),
+                        5 => self.send_ambiguous(),
+                        _ => unreachable!(),
                     }
                     let mut invalid = std::mem::take(&mut self.pulses);
                     let previous = self.now;

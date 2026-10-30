@@ -25,11 +25,13 @@ u16 StickIrTicks(void);
 void StickIrDelayTicks(u16 ticks);
 void StickIrSendByte(u8 logical);
 void StickIrSendFrame(const u8 *logical, u8 length);
-int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
-                     u16 *lastObservationTick);
+/* Pure candidate admission: 0 rejects, 1 admits an unchecksummed probe,
+ * and 2 admits a complete checked packet. It must not change session state. */
+typedef unsigned (*StickIrPacketValidator)(const u8 *wire, unsigned length);
+int StickIrTakePacket(u8 *wire, u8 capacity, u8 *length,
+                      u16 *lastObservationTick, StickIrPacketValidator validate);
 int StickIrFailed(void);
 void StickIrAcceptPacket(unsigned command, unsigned phase, unsigned bulk_phase);
-void StickIrResynchronized(unsigned bytes);
 void StickIrRejectPacket(unsigned reason);
 void StickIrSessionResult(unsigned result);
 void StickIrServiceDiagnostics(void);

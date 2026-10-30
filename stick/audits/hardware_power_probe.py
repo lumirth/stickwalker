@@ -9,11 +9,12 @@ This reports lifecycle/clock/sampling evidence, not supply current.
 """
 import argparse
 import json
-from pathlib import Path
 import re
 import subprocess
 import sys
 import time
+from pathlib import Path
+
 import serial
 
 
@@ -122,10 +123,10 @@ def main():
                 assert 'begin_errors=0 ' in sound and 'power_errors=0 ' in sound, sound
             assert fields(sound)['begins'] >= 2, sound
         elif args.mode == 'rx':
-            link.command('r', 3)
+            link.command('p', 3)
             link.command('tbPs')
-            last(link.rows, 'PW_STICK_TRIAL_START')
-            last(link.rows, 'PW_STICK_TRIAL_DONE')
+            last(link.rows, 'PW_STICK_PASSIVE_START')
+            last(link.rows, 'PW_STICK_PASSIVE_DONE')
             power = last(link.rows, 'PW_STICK_POWER_HW ')
             assert 'cpu_mhz=80 ' in power, power
             assert fields(last(link.rows, 'PW_STICK_POWER '))['ext_5v'] == 0

@@ -37,6 +37,7 @@ protocol state machine. The new complete-transfer scenarios include:
 | --- | --- |
 | `peer-rc-low` | 22 kΩ, 12 pF, 1.6 V threshold, 60 µA signal, 0.05 µA background |
 | `peer-rc-high` | 65 kΩ, with the other low-profile parameters unchanged |
+| `peer-rc-boundary` | 24545.3 Ω, with the other low-profile parameters unchanged; the dark crossing straddles a polling bin |
 | `peer-rc-gap` | 45 kΩ, 11 pF, 1.5 V, 80 µA signal; 114817 baud, 339-cycle pulses, 4166-cycle extra byte gaps, 347-cycle phase offset |
 | `peer-immediate` | Ideal optical model, local transmitter echo, and a peer reply beginning 1 µs after the completed transmission |
 | `peer-deadline` | Initial eight-byte FA begins 97.2 ms after FC and finishes after the Walker's 97.7 ms receive deadline; F8 and the complete transfer must meet the peer's unchanged 100 ms response limit |
@@ -48,6 +49,17 @@ ranges. The RC model has constant capacitance, resistance and photocurrent, a
 fixed input threshold, and ideal high-level recharge. It does not establish
 measured noise, nonlinear diode capacitance, ambient flicker, GPIO latency,
 interrupt interference, alignment, or optical recovery margins on hardware.
+
+The boundary resistance is deliberately chosen from the continuous circuit
+equation to put a dark crossing about 51 CPU cycles after pull-down begins.
+The compiled sampler's small integration-phase variation moves that crossing
+across a polling instant. With the earlier scalar representation, 256 settled
+dark gates at this fixed resistance contained 141 reported delays of 54 cycles
+and 115 of 64 cycles, despite no incident light. The interval representation
+preserves the overlapping bounds `[36,54]` and `[46,64]`, so that quantization
+step cannot establish optical contrast. The committed scenario uses this one
+fixed physical circuit for the entire transfer and the same independent packet,
+readback, and reboot checks as the other complete-transfer scenarios.
 
 `peer delay-frame COMMAND DELAY_US` delays the first matching hexadecimal
 command relative to the previous Walker transmission, without changing the
@@ -62,6 +74,20 @@ The existing `peer-storage` page ends with the valid eight-byte FA packet
 `fa013aa913579bdf`. Readback before and after reboot must preserve those bytes
 as page data, exercising admission of a valid outer packet with a valid nested
 suffix without using the receiver's implementation as the expected result.
+
+The sixth input in `peer-malformed` is genuinely ambiguous. A normal 112-byte
+packet starts `02 b7 9e 43`, followed by the real session token and a public
+104-byte payload. Its checksum is `439e`; the last payload word supplies the
+ordinary checksum correction. Three normal-width light pulses at five, four,
+and two bit periods before the packet create another valid UART interpretation
+starting `a0 07 ee e0`, with checksum `e0ee` and the same token and payload.
+The alternative byte origins occur at bit offsets −5, 5, 16, and 27, then merge
+with the original token at offset 40. Both interpretations satisfy the native
+packet shapes: a page write at `b700` and a 104-byte event-map request. This is
+one physical pulse train, not two injected decoded packets. The firmware must
+send no response to it; a later valid read must return the unchanged `b700`
+page, and the session must then finish normally. The other five malformed
+inputs retain their existing header, body, size, and unsupported-RAM checks.
 
 ## Transmit DMA
 

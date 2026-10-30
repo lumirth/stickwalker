@@ -51,8 +51,6 @@ unsigned sample_bclk_edges() {
 
 bool passive_capture = false;
 uint64_t passive_deadline_us = 0;
-bool receive_trial = false;
-uint64_t receive_deadline_us = 0;
 uint64_t timing_started_us = 0;
 uint64_t main_ticks = 0, beep_ticks = 0, input_polls = 0;
 uint64_t main_us = 0, beep_us = 0, input_us = 0, present_us = 0;
@@ -139,26 +137,6 @@ int StickDiagnosticsService(void) {
     }
     return 1;
   }
-  if (receive_trial) {
-    u8 wire[136], length;
-    u16 tick;
-    while (StickIrTakeBurst(wire, sizeof(wire), &length, &tick)) {
-      Serial.printf("PW_STICK_TRIAL_FRAME length=%u tick=%u wire=", length,
-                    tick);
-      for (unsigned i = 0; i < length; ++i) Serial.printf("%02x", wire[i]);
-      Serial.println();
-    }
-    StickIrResumeReception();
-    if (now >= receive_deadline_us || StickIrFailed()) {
-      StickIrStop();
-      receive_trial = false;
-      Serial.println("PW_STICK_TRIAL_DONE");
-      StickIrBenchTrace(0);
-    } else {
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
-    }
-    return 1;
-  }
   while (Serial.available()) {
     const int command = Serial.read();
     if (command == 'u' && !StickForegroundIsIr()) {
@@ -208,22 +186,6 @@ int StickDiagnosticsService(void) {
         StickIrBenchTrace(0);
       }
       return passive_capture;
-    }
-    if (command == 'r' && !StickForegroundIsIr()) {
-      StickIrBenchTrace(1);
-      StickConnectionBegin();
-      StickIrConfigure();
-      StickIrPassiveDiagnostic(0);
-      StickIrStart();
-      receive_trial = !StickIrFailed();
-      receive_deadline_us = uint64_t(esp_timer_get_time()) + 2000000;
-      Serial.println(receive_trial ? "PW_STICK_TRIAL_START" :
-                     "PW_STICK_TRIAL_ERROR");
-      if (!receive_trial) {
-        StickIrStop();
-        StickIrBenchTrace(0);
-      }
-      return receive_trial;
     }
     if (command == 'e' && !StickForegroundIsIr()) {
       const unsigned char *snapshot = StickEepromSnapshot();

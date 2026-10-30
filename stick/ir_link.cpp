@@ -93,11 +93,9 @@ esp_pm_lock_handle_t sleep_lock = nullptr;
 bool clocks_locked = false;
 #endif
 
-uint32_t valid_frames = 0;
 uint32_t checksum_failures = 0;
 uint32_t malformed_packets = 0;
 uint32_t rejected_session = 0;
-uint32_t resync_bytes = 0;
 uint32_t deadline_misses = 0;
 unsigned maximum_reply_us = 0;
 unsigned maximum_roundtrip_us = 0;
@@ -253,10 +251,22 @@ uint32_t IRAM_ATTR __attribute__((noinline, noclone)) sample_receive_turn(
       }
       if (crossed) {
         const uint32_t elapsed = esp_cpu_get_cycle_count() - ramp;
-        observation = elapsed <= pw_stick::kObservationCyclesMask
-            ? pw_stick::IrObservation(elapsed) : pw_stick::kObservationInvalid;
+        // The pre-read timestamp of the last confirmed high and the
+        // post-read timestamp of the first low bracket the CPU-observed
+        // crossing. Round outward; never use a finite upper as a dark lower.
+        // A valid gate ends before origin+694/695, with ramp>=origin+450,
+        // so its elapsed delay is below 245 and fits this 254-cycle encoding.
+        observation = elapsed <= pw_stick::kObservationMaxCycles
+            ? pw_stick::IrObservation(
+                ((high_until / pw_stick::kObservationQuantum) <<
+                 pw_stick::kObservationLowerShift) |
+                ((elapsed + pw_stick::kObservationQuantum - 1) /
+                 pw_stick::kObservationQuantum))
+            : pw_stick::kObservationInvalid;
       } else {
-        observation = pw_stick::IrObservation(pw_stick::kObservationCensored | high_until);
+        observation = pw_stick::IrObservation(pw_stick::kObservationCensored |
+            ((high_until / pw_stick::kObservationQuantum) <<
+             pw_stick::kObservationLowerShift));
         ++gate_health.timed_out;
       }
       REG_CLR_BIT(IO_MUX_GPIO5_REG, FUN_PD);
@@ -363,23 +373,28 @@ void print_session() {
   if (!attempt.started) { Serial.println("PW_STICK_LINK none"); return; }
   Serial.printf("PW_STICK_LINK build=%s result=%u preflight=%u battery_mv=%u "
                 "checked=%u safe=%u packets=%lu command=%02x phase=%u bulk=%u "
-                "framing=%lu erased=%lu checksum=%lu malformed=%lu session=%lu late=%lu low=%lu "
-                "resync=%lu reply_us=%u roundtrip_us=%u deadline_misses=%lu\n",
+                "bad_pulses=%lu erased=%lu origins_rejected=%lu ambiguous=%lu overflow=%lu "
+                "checksum=%lu malformed=%lu session=%lu late=%lu low=%lu "
+                "origins_skipped=%lu reply_us=%u roundtrip_us=%u deadline_misses=%lu\n",
       PW_STICK_BUILD_ID, attempt.result, attempt.preflight, attempt.battery_mv,
       unsigned(attempt.checked), unsigned(attempt.receive_safe),
       (unsigned long)attempt.packets, attempt.command, attempt.phase, attempt.bulk_phase,
       (unsigned long)receiver.stats().framing_errors,
       (unsigned long)receiver.stats().erasures,
+      (unsigned long)receiver.stats().rejected_origins,
+      (unsigned long)receiver.stats().ambiguities,
+      (unsigned long)receiver.stats().overflows,
       (unsigned long)checksum_failures, (unsigned long)malformed_packets,
       (unsigned long)rejected_session, (unsigned long)gate_health.phase_late,
-      (unsigned long)gate_health.already_low, (unsigned long)resync_bytes,
+      (unsigned long)gate_health.already_low,
+      (unsigned long)receiver.stats().skipped_origins,
       maximum_reply_us, maximum_roundtrip_us, (unsigned long)deadline_misses);
 }
 
 void print_capture() {
   const uint32_t end = __atomic_load_n(&produced, __ATOMIC_ACQUIRE);
   const uint32_t count = end < kRingSize ? end : kRingSize;
-  Serial.printf("PW_STICK_RX_CAPTURE gates=%lu format=u16 first_gate=%lu "
+  Serial.printf("PW_STICK_RX_CAPTURE gates=%lu format=interval-u16 first_gate=%lu "
                 "end_gate=%lu epoch_first=%lu epoch_us=%lld\n",
       (unsigned long)count, (unsigned long)(end - count), (unsigned long)end,
       (unsigned long)epoch_first, static_cast<long long>(epoch_us));
@@ -402,10 +417,10 @@ extern "C" void StickIrInitPins(void) {
 extern "C" void StickIrConfigure(void) {
   if (worker) { __atomic_store_n(&failed, true, __ATOMIC_RELEASE); return; }
   __atomic_store_n(&failed, false, __ATOMIC_RELEASE);
-  valid_frames = checksum_failures = malformed_packets = rejected_session = 0;
-  resync_bytes = deadline_misses = maximum_reply_us = maximum_roundtrip_us = 0;
+  checksum_failures = malformed_packets = rejected_session = 0;
+  deadline_misses = maximum_reply_us = maximum_roundtrip_us = 0;
   peer_completed_us = candidate_peer_us = previous_reply_us = 0;
-  receiver = pw_stick::IrReceiver{};
+  receiver.clear();
   gate_health = {};
   __atomic_store_n(&produced, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&released, 0, __ATOMIC_RELEASE);
@@ -536,7 +551,8 @@ extern "C" void StickIrStop(void) {
                   "valid=%lu failed=%u\n",
         (unsigned long)__atomic_load_n(&produced, __ATOMIC_ACQUIRE),
         (unsigned long)gate_health.already_low, (unsigned long)gate_health.timed_out,
-        (unsigned long)gate_health.phase_late, (unsigned long)valid_frames,
+        (unsigned long)gate_health.phase_late,
+        (unsigned long)receiver.stats().frames,
         unsigned(__atomic_load_n(&failed, __ATOMIC_ACQUIRE)));
     Serial.println("PW_STICK_STOP_COMPLETE");
   }
@@ -622,49 +638,53 @@ extern "C" void StickIrSendFrame(const u8 *logical, u8 length) {
 
 extern "C" void StickIrSendByte(u8 logical) { StickIrSendFrame(&logical, 1); }
 
-extern "C" int StickIrTakeBurst(u8 *wire, u8 capacity, u8 *length,
-                                 u16 *lastObservationTick) {
-  if (!wire || !length || !lastObservationTick || !ring || passive ||
+extern "C" int StickIrTakePacket(u8 *wire, u8 capacity, u8 *length,
+                                  u16 *lastObservationTick,
+                                  StickIrPacketValidator validate) {
+  if (!wire || !length || !lastObservationTick || !validate || !ring || passive ||
       __atomic_load_n(&failed, __ATOMIC_ACQUIRE)) return 0;
-  const uint32_t end = __atomic_load_n(&produced, __ATOMIC_ACQUIRE);
-  if (end - consumed > kRingSize) {
-    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
-    return 0;
-  }
-  // Bound one native poll. Noise can use CPU time, but cannot park acquisition
-  // or postpone the native timeout checks indefinitely.
-  const uint32_t first = consumed;
-  const uint32_t limit = end - consumed > 1024 ? consumed + 1024 : end;
+  // Exhaust ready graph work before admitting another raw batch. A bounded
+  // poll returns to the native timeout check even when interpretations remain;
+  // only a need for new observations permits the graph to grow again.
   pw_stick::IrFrame frame;
-  while (consumed != limit) {
-    const uint32_t gate = consumed++;
-    const uint16_t tick = consumed_tick;
-    consumed_fraction += 64000000;
-    if (consumed_fraction >= 675000000) {
-      consumed_fraction -= 675000000;
-      ++consumed_tick;
-    }
-    if (!receiver.push(ring[gate & kRingMask], gate, tick, frame))
-      continue;
-    if (frame.length > capacity ||
-        __atomic_load_n(&failed, __ATOMIC_ACQUIRE) ||
-        __atomic_load_n(&produced, __ATOMIC_ACQUIRE) - first > kRingSize) {
+  int result = receiver.poll(frame, validate, 1024);
+  if (result == pw_stick::kIrNeedObservations) {
+    const uint32_t end = __atomic_load_n(&produced, __ATOMIC_ACQUIRE);
+    if (end - consumed > kRingSize) {
       __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
       return 0;
     }
-    memcpy(wire, frame.bytes, frame.length);
-    *length = frame.length;
-    *lastObservationTick = frame.end_tick;
-    candidate_peer_us = observation_us(frame.end_gate);
-    resync_bytes += frame.discarded_prefix;
-    ++valid_frames;
+    const uint32_t limit = end - consumed > 1024 ? consumed + 1024 : end;
+    while (consumed != limit && !receiver.failed()) {
+      const uint32_t gate = consumed++;
+      const uint16_t tick = consumed_tick;
+      consumed_fraction += 64000000;
+      if (consumed_fraction >= 675000000) {
+        consumed_fraction -= 675000000;
+        ++consumed_tick;
+      }
+      receiver.push(ring[gate & kRingMask], gate, tick);
+    }
+    // Each pulse/byte node now owns its data independently of the raw ring.
     __atomic_store_n(&released, consumed, __ATOMIC_RELEASE);
-    return 1;
+    result = receiver.poll(frame, validate, 1024);
   }
-  if (__atomic_load_n(&produced, __ATOMIC_ACQUIRE) - first > kRingSize)
+  if (result == pw_stick::kIrFailed || receiver.failed() ||
+      __atomic_load_n(&produced, __ATOMIC_ACQUIRE) - consumed > kRingSize) {
     __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
-  __atomic_store_n(&released, consumed, __ATOMIC_RELEASE);
-  return 0;
+    return 0;
+  }
+  if (result != pw_stick::kIrFrameReady ||
+      __atomic_load_n(&failed, __ATOMIC_ACQUIRE)) return 0;
+  if (frame.length > capacity) {
+    __atomic_store_n(&failed, true, __ATOMIC_RELEASE);
+    return 0;
+  }
+  memcpy(wire, frame.bytes, frame.length);
+  *length = frame.length;
+  *lastObservationTick = frame.end_tick;
+  candidate_peer_us = observation_us(frame.end_gate);
+  return 1;
 }
 
 extern "C" int StickIrFailed(void) {
@@ -675,8 +695,6 @@ extern "C" void StickIrAcceptPacket(unsigned command, unsigned phase, unsigned b
   peer_completed_us = candidate_peer_us;
   StickConnectionAcceptPacket(command, phase, bulk_phase);
 }
-
-extern "C" void StickIrResynchronized(unsigned bytes) { resync_bytes += bytes; }
 
 extern "C" void StickIrRejectPacket(unsigned reason) {
   if (reason == 1) ++checksum_failures;
