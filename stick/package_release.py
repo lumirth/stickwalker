@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from stick.build_port import CORE, FQBN, LIBRARIES, source_inputs
+from stick.check_timing import FUNCTIONS
 from tools.common import InputError, digest, read_json, write_json
 
 REQUIRED = (
@@ -95,27 +96,25 @@ def validate_build(folder: Path, allow_ir_timing_change: bool = False) -> dict:
     if len(app) > 0x330000 or any(marker in app for marker in DIAGNOSTICS):
         raise InputError("Application exceeds app0 or contains bench diagnostics.")
     timing = read_json(folder / "ir-timing.json")
-    baseline = read_json(ROOT / "stick/ir-timing-baseline.json")
-    expected_functions = baseline["functions"]
     if (
         timing.get("elf_sha256") != manifest["outputs"]["PwStick.ino.elf"]
-        or timing.get("reference_app_sha256") != baseline["reference_app_sha256"]
-        or set(timing.get("functions", {})) != set(expected_functions)
+        or timing.get("verification") != "acquisition-iram-residency"
+        or set(timing.get("functions", {})) != set(FUNCTIONS)
+        or not timing.get("passed")
     ):
-        raise InputError("Missing or stale IR timing verification.")
-    for name, expected in expected_functions.items():
-        row = timing["functions"][name]
-        if not isinstance(row.get("bytes"), int) or row["bytes"] <= 0 or not re.fullmatch(
-            r"[0-9a-f]{64}", row.get("sha256", "")
+        raise InputError("Missing, stale or failed acquisition IRAM verification.")
+    for name, row in timing["functions"].items():
+        if (
+            not isinstance(row.get("bytes"), int)
+            or row["bytes"] <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", row.get("sha256", ""))
         ):
-            raise InputError(f"Incomplete IR timing record: {name}.")
-        if row.get("bytes") != expected["bytes"] or row.get("sha256") != expected["sha256"]:
-            if not allow_ir_timing_change:
-                raise InputError(
-                    f"IR timing changed: {name}; use --allow-ir-timing-change for a prerelease."
-                )
-    if not allow_ir_timing_change and not timing.get("passed"):
-        raise InputError("IR timing verification did not pass.")
+            raise InputError(f"Incomplete instruction record: {name}.")
+    if not timing.get("hardware_qualified") and not allow_ir_timing_change:
+        raise InputError(
+            "The replacement acquisition path needs physical qualification; "
+            "use --allow-ir-timing-change for a prerelease."
+        )
     return manifest
 
 
@@ -160,7 +159,7 @@ def package(args) -> None:
             {
                 "git_commit": commit,
                 "hardware_qualified": False,
-                "ir_baseline_identical": read_json(args.build_dir / "ir-timing.json")["passed"],
+                "acquisition_iram_verified": read_json(args.build_dir / "ir-timing.json")["passed"],
                 "runtime_archive": runtime.name,
                 "runtime_sha256": digest(runtime),
             }

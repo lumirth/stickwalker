@@ -187,6 +187,7 @@ fn main() {
                 .unwrap();
             }
             ["serial", text] => machine.bus.serial_input(text.as_bytes()),
+            ["sram", name] => std::fs::write(out.join(name), &machine.bus.sram).unwrap(),
             ["battery", millivolts] => {
                 inputs.lock().unwrap().battery_mv = Some(millivolts.parse().unwrap());
             }
@@ -248,6 +249,30 @@ fn main() {
             ["peer", "echo", enabled] => {
                 inputs.lock().unwrap().local_echo = *enabled == "on";
             }
+            ["peer", "keepalive", mode] => {
+                let mut state = inputs.lock().unwrap();
+                let peer = state.peer.as_mut().expect("start peer before keepalive");
+                assert!(matches!(*mode, "prefix" | "only" | "off"));
+                peer.keepalive_prefix = *mode == "prefix";
+                peer.keepalive_only = *mode == "only";
+            }
+            ["peer", "delay-frame", command, delay_us] => {
+                inputs.lock().unwrap().peer.as_mut().expect("start peer before delay-frame")
+                    .delayed_frame = Some((u8::from_str_radix(command, 16).unwrap(), delay_us.parse().unwrap()));
+            }
+            ["peer", "circuit", resistance, capacitance_pf, threshold, signal_ua, background_ua] => {
+                inputs.lock().unwrap().peer.as_mut().expect("start peer before circuit").circuit(
+                    resistance.parse().unwrap(), capacitance_pf.parse().unwrap(),
+                    threshold.parse().unwrap(), signal_ua.parse().unwrap(), background_ua.parse().unwrap(),
+                );
+            }
+            ["peer", "waveform", phase_cycles, pulse_cycles, byte_gap_cycles] => {
+                let mut state = inputs.lock().unwrap();
+                let peer = state.peer.as_mut().expect("start peer before waveform");
+                peer.phase_cycles = phase_cycles.parse().unwrap();
+                peer.pulse_cycles = Some(pulse_cycles.parse().unwrap());
+                peer.byte_gap_cycles = byte_gap_cycles.parse().unwrap();
+            }
             ["peer", "start", baud, turnaround] => {
                 inputs.lock().unwrap().peer = Some(
                     peer::OpticalPeer::new()
@@ -292,7 +317,10 @@ fn main() {
                 );
             }
             ["peer", mode @ ("write-page" | "read-page"), address] => {
-                let data = (0..128).map(|index| (index as u8) ^ 0x5a).collect();
+                let mut data: Vec<u8> = (0..128).map(|index| (index as u8) ^ 0x5a).collect();
+                // Payload bytes may themselves be a complete checksum-valid
+                // packet. They remain data in this valid enclosing page frame.
+                data[120..].copy_from_slice(&[0xfa, 1, 0x3a, 0xa9, 0x13, 0x57, 0x9b, 0xdf]);
                 inputs.lock().unwrap().peer = Some(
                     peer::OpticalPeer::with_page(
                         address.parse().unwrap(),

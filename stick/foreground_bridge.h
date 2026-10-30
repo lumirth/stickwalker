@@ -16,7 +16,6 @@ void StickForegroundDeviceMenuClosed(void);
 void StickForegroundCenterWake(void);
 void StickForegroundAcceptCenterInterrupt(void);
 void StickForegroundDiscardCenterInput(void);
-int StickForegroundIrHasInput(void);
 #ifdef PW_STICK_BENCH_CONTROL
 void StickForegroundBenchSleep(void);
 void StickForegroundBenchInactive(void);

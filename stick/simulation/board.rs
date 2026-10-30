@@ -249,6 +249,13 @@ impl BoardModel for StickS3 {
             peer.gpio_output(cycle, enabled, output);
         }
     }
+    fn gpio_pulls_at(&mut self, cycle: u64, pin: u8, up: bool, down: bool) {
+        if pin == 5 {
+            if let Some(peer) = self.inputs.lock().unwrap().peer.as_mut() {
+                peer.gpio_pulls(cycle, up, down);
+            }
+        }
+    }
     fn i2c_devices(&mut self) -> Vec<(u8, u8, Box<dyn I2cDevice>)> {
         self.devices
             .iter()

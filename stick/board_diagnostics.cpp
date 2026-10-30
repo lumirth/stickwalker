@@ -10,7 +10,7 @@
 #include "eeprom_backend.h"
 #include "foreground_bridge.h"
 #include "input_bridge.h"
-#include "ir_transport.h"
+#include "ir_link.h"
 #include "sound_bridge.h"
 #include "power_sleep.h"
 #include "backlight.h"

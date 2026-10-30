@@ -78,10 +78,18 @@ index 8918636..bcaa1a0 100644
          let mut a = AnalogInputs::new(1_000);
          a.set(4, AnalogSource::Wave { samples: Arc::new(vec![0.1, 0.2, 0.3]), rate_hz: 10.0, start_cycles: 500 });
 diff --git a/esp-periph/src/rmt.rs b/esp-periph/src/rmt.rs
-index ad89f33..b44ab63 100644
+index ad89f33..835b683 100644
 --- a/esp-periph/src/rmt.rs
 +++ b/esp-periph/src/rmt.rs
-@@ -14,6 +14,7 @@ pub struct RmtTxCh {
+@@ -1,6 +1,7 @@
+ use crate::device::{Device, WriteEffect};
+ use crate::regram::RegRam;
+ use emu_core::ClockDomain;
++use std::collections::VecDeque;
+ 
+ // ------------------------------------------------------------------ RMT (TX channels 0-3) — enough for WS2812 via the legacy driver
+ pub const RMT_MEM_WORDS: usize = 48;
+@@ -14,6 +15,7 @@ pub struct RmtTxCh {
      loop_count: u32,
      pub acc_cycles: i64,
      pub bits: Vec<bool>,
@@ -89,7 +97,7 @@ index ad89f33..b44ab63 100644
  }
  pub struct Rmt {
      pub ch: [RmtTxCh; 4],
-@@ -23,11 +24,13 @@ pub struct Rmt {
+@@ -23,11 +25,15 @@ pub struct Rmt {
      /// completed transmissions: (channel, bits)
      pub done: Vec<(usize, Vec<bool>)>,
      pub tx_count: u64,
@@ -97,14 +105,20 @@ index ad89f33..b44ab63 100644
 +    pub symbols: Vec<(usize, i64, [(u64, bool); 2])>,
      cpu_per_apb: i64,
      running: u8,
++    /// Channel 3 DMA FIFO. Symbols still take their programmed wire time.
++    pub dma_fifo: VecDeque<u32>,
  }
  impl Rmt {
 -    pub fn new(cpu_hz: u64) -> Self { Rmt { running: 0, cpu_per_apb: (cpu_hz / crate::APB_HZ) as i64, ch: Default::default(), mem: [0; RMT_MEM_WORDS * 8], int_raw: 0, int_ena: 0, sys_conf: 0, ram: RegRam::new(), done: Vec::new(), tx_count: 0 } }
-+    pub fn new(cpu_hz: u64) -> Self { Rmt { running: 0, cpu_per_apb: (cpu_hz / crate::APB_HZ) as i64, ch: Default::default(), mem: [0; RMT_MEM_WORDS * 8], int_raw: 0, int_ena: 0, sys_conf: 0, ram: RegRam::new(), done: Vec::new(), tx_count: 0, symbols: Vec::new(), waveforms: Vec::new() } }
++    pub fn new(cpu_hz: u64) -> Self { Rmt { running: 0, dma_fifo: VecDeque::new(), cpu_per_apb: (cpu_hz / crate::APB_HZ) as i64, ch: Default::default(), mem: [0; RMT_MEM_WORDS * 8], int_raw: 0, int_ena: 0, sys_conf: 0, ram: RegRam::new(), done: Vec::new(), tx_count: 0, symbols: Vec::new(), waveforms: Vec::new() } }
      pub fn is_running(&self) -> bool { self.running != 0 }
      pub fn irq(&self) -> bool { self.int_raw & self.int_ena != 0 }
      pub fn read(&self, off: u32) -> u32 {
-@@ -52,7 +55,7 @@ impl Rmt {
+@@ -49,10 +55,11 @@ impl Rmt {
+             0x20..=0x2c => {
+                 let n = ((off - 0x20) / 4) as usize;
+                 let c = &mut self.ch[n];
++                if n == 3 && v & ((1 << 1) | (1 << 23)) != 0 { self.dma_fifo.clear(); }
                  c.conf0 = v & !(1 << 7);   // TX_STOP is a command, not state: a read-modify-write after a stop must not stop the next start
                  if v & (1 << 2) != 0 { c.wr = 0; }                          // APB_MEM_RST
                  if v & (1 << 1) != 0 { c.rd = 0; c.mem_empty = false; c.end_pending = false; }      // MEM_RD_RST
@@ -113,7 +127,21 @@ index ad89f33..b44ab63 100644
                  if v & (1 << 7) != 0 { c.running = false; }                 // TX_STOP
                  self.running = (self.running & !(1 << n)) | ((c.running as u8) << n);
              }
-@@ -84,7 +87,7 @@ impl Rmt {
+@@ -64,6 +71,13 @@ impl Rmt {
+             _ => self.ram.write(off, v),
+         }
+     }
++    pub fn dma_fail(&mut self) {
++        self.int_raw |= 1 << 28;
++        self.ch[3].running = false;
++        self.running &= !(1 << 3);
++        self.dma_fifo.clear();
++    }
++
+     /// Advance transmitters by CPU cycles; symbols are consumed at their programmed duration.
+     pub fn tick(&mut self, cycles: u64) {
+         if !self.is_running() { return; }
+@@ -84,7 +98,7 @@ impl Rmt {
                          let progressed = c.rd != 0;
                          // Continuous output is not a completed WS2812 frame. Retain only
                          // the current lap, so a buzzer cannot accumulate host memory.
@@ -122,7 +150,7 @@ index ad89f33..b44ab63 100644
                          c.rd = 0;
                          if c.tx_lim & (1 << 19) != 0 {
                              c.loop_count += 1;
-@@ -101,6 +104,7 @@ impl Rmt {
+@@ -101,19 +115,24 @@ impl Rmt {
                      self.int_raw |= 1 << n;
                      self.tx_count += 1;
                      self.done.push((n, std::mem::take(&mut c.bits)));
@@ -130,16 +158,27 @@ index ad89f33..b44ab63 100644
                      break;
                  }
                  // No-wrap exhaustion is an empty-memory error, not an end marker
-@@ -112,7 +116,7 @@ impl Rmt {
+                 // (S3 TRM 37.4). Invalid block allocations must not index host RAM.
+                 let repeats = c.conf0 & ((1 << 3) | (1 << 4)) != 0; // continuous or wrap TX
+-                if mem_words > self.mem.len() - base || (c.rd >= mem_words && !repeats) {
++                let dma = n == 3 && c.conf0 & (1 << 25) != 0;
++                if !dma && (mem_words > self.mem.len() - base || (c.rd >= mem_words && !repeats)) {
+                     c.running = false;
+                     c.mem_empty = true;
                      self.int_raw |= 1 << (4 + n);
                      break;
                  }
 -                if c.rd != 0 && c.rd.is_multiple_of(mem_words) && c.conf0 & (1 << 3) != 0 { c.bits.clear(); }
+-                let sym = self.mem[base + (c.rd % mem_words)];
 +                if c.rd != 0 && c.rd.is_multiple_of(mem_words) && c.conf0 & (1 << 3) != 0 { c.bits.clear(); c.pulses.clear(); }
-                 let sym = self.mem[base + (c.rd % mem_words)];
++                let sym = if dma {
++                    let Some(symbol) = self.dma_fifo.pop_front() else { break; };
++                    symbol
++                } else { self.mem[base + (c.rd % mem_words)] };
                  let (d0, l0, d1, l1) = ((sym & 0x7fff) as i64, sym & 0x8000 != 0, ((sym >> 16) & 0x7fff) as i64, sym & 0x8000_0000 != 0);
                  if d0 == 0 { // end marker
-@@ -123,6 +127,10 @@ impl Rmt {
+                     c.end_pending = true;
+@@ -123,6 +142,10 @@ impl Rmt {
                  let high = if l0 { d0 } else { 0 } + if l1 { d1 } else { 0 };
                  let low = if !l0 { d0 } else { 0 } + if !l1 { d1 } else { 0 };
                  c.bits.push(high > low);
@@ -518,10 +557,16 @@ index b9cc33c..71f21d2 100644
              if t.config & (1 << 31) == 0 || t.config & (1 << 10) == 0 { continue; }
              let div = ((t.config >> 13) & 0xffff) as u64;
 diff --git a/esp-soc/src/board.rs b/esp-soc/src/board.rs
-index 03995a7..d93b113 100644
+index 03995a7..d9a2027 100644
 --- a/esp-soc/src/board.rs
 +++ b/esp-soc/src/board.rs
-@@ -37,6 +37,10 @@ pub trait BoardModel {
+@@ -33,10 +33,16 @@ pub trait BoardModel {
+     fn gpio_output_at(&mut self, _cycle: VirtualCycle, changes: &[(u8, bool)], _enabled: u64, _output: u64) {
+         if !changes.is_empty() { self.gpio_changes(changes); }
+     }
++    /// IO_MUX pull changes at the bus cycle, before the next GPIO input read.
++    fn gpio_pulls_at(&mut self, _cycle: VirtualCycle, _pin: u8, _up: bool, _down: bool) {}
+     /// A completed RMT transmission, decoded to bits by the peripheral model, with the pin the
      /// GPIO matrix has that channel routed to. Drivers that take a fresh channel per refresh
      /// (the Arduino NeoPixel one does) make the channel meaningless; the pin names the strip.
      fn rmt_frame(&mut self, _pin: u8, _bits: &[bool]) {}
@@ -567,7 +612,7 @@ index 59c4dc3..bace58c 100644
                  self.bus.set_defer(true);
              }
 diff --git a/esp32s3/src/bus.rs b/esp32s3/src/bus.rs
-index 394df15..52b1122 100644
+index 394df15..0aa3839 100644
 --- a/esp32s3/src/bus.rs
 +++ b/esp32s3/src/bus.rs
 @@ -57,10 +57,11 @@ pub struct SocBus {
@@ -604,7 +649,7 @@ index 394df15..52b1122 100644
              tlb: vec![TlbEntry::EMPTY; TLB_SIZE], page_ver: Vec::new(), ver_base: [0; 7], flash_epoch: BUS_EPOCHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) << 32, code_blk: Vec::new(), tick_pending: 0, tick_budget: 0, defer_mmio: false, mmio_deferred: false, vq_violations: 0,
              approximate_cache: None, approximate_cache_pending: 0, approximate_cache_fast_internal: false, approximate_cache_inline: false,
              approximate_cache_yield_miss: false,
-@@ -466,36 +467,41 @@ impl SocBus {
+@@ -466,38 +467,47 @@ impl SocBus {
          let a = addr & !3;
          // mmio-s1: SPI2 and GDMA writes reach only those two devices' sources (and RAM, the board),
          // so they re-derive interrupt lines only when one of those sources moved.
@@ -657,19 +702,26 @@ index 394df15..52b1122 100644
 +            }
          }
          self.periph.write32(a, v);
++        if (0x60009004..=0x600090c4).contains(&a) {
++            let pin = ((a - 0x60009004) / 4) as u8;
++            self.board.gpio_pulls_at(self.cycles, pin, v & (1 << 8) != 0, v & (1 << 7) != 0);
++        }
          if old_gpio_out != self.periph.gpio.out || old_gpio_enable != self.periph.gpio.enable {
-@@ -509,8 +515,8 @@ impl SocBus {
+             let changes = &self.periph.gpio.changes;
+             if let Some(events) = &mut self.gpio_events {
+@@ -509,8 +519,9 @@ impl SocBus {
          if let Some(port) = match a { 0x60000000 => Some(0), 0x60010000 => Some(1), 0x6002e000 => Some(2), _ => None } {
              if self.uart_pins { self.board.uart_tx(self.cycles, self.periph.uart_route(port), v as u8); }
          }
 -        self.complete_spi2_dma();
 -        self.deliver_spi2_transfer();
++        self.dma_rmt_step();
 +        for host in 0..2 { self.complete_spi_dma(host); }
 +        for host in 0..2 { self.deliver_spi_transfer(host); }
          // Resolved output changes can raise edge or level input interrupts.
          if spi {
              self.irq_dirty |= before != sources(&self.periph);
-@@ -522,7 +528,10 @@ impl SocBus {
+@@ -522,7 +533,10 @@ impl SocBus {
          if self.periph.spi_exec {
              self.periph.spi_exec = false;
              self.periph.spi1.execute(&mut self.flash, &mut self.psram);
@@ -681,7 +733,7 @@ index 394df15..52b1122 100644
          }
      }
  
-@@ -677,6 +686,24 @@ impl SocBus {
+@@ -677,6 +691,24 @@ impl SocBus {
  }
  
  impl Bus for SocBus {
@@ -706,7 +758,7 @@ index 394df15..52b1122 100644
      #[inline]
      fn read8(&mut self, addr: u32) -> Result<u8, Fault> { self.read8_access::<true>(addr) }
      fn read8_unpriced(&mut self, addr: u32) -> Result<u8, Fault> { self.read8_access::<false>(addr) }
-@@ -782,6 +809,7 @@ impl SocBus {
+@@ -782,6 +814,7 @@ impl SocBus {
              || p.wifi.link.ap().is_some() || p.wifi.link.net().is_some() || !p.wifi.tx_pending.is_empty()
              || p.aes.dma_pending || p.sha.dma_pending
              || p.spi2.has_pending_transfer() || p.spi2.dma_tx_pending.is_some()
@@ -714,7 +766,7 @@ index 394df15..52b1122 100644
              || p.rmt.ch.iter().any(|c| c.running) || !p.rmt.done.is_empty()
              || !p.gpio.changes.is_empty() || !p.gpio.input_changes.is_empty()
              || p.rtc.ram.read(0x98) & (1 << 31) != 0
-@@ -793,7 +821,7 @@ impl SocBus {
+@@ -793,7 +826,7 @@ impl SocBus {
      pub fn refresh_tick_budget(&mut self) {
          let cap = if self.cadence_active() { MAX_TICK_DEFER } else { QUIET_TICK_DEFER };
          let mut budget = self.periph.cycles_until_timer().clamp(1, cap);
@@ -723,7 +775,7 @@ index 394df15..52b1122 100644
              let until = u64::from(self.tick_pending).saturating_add(deadline.saturating_sub(self.cycles));
              budget = budget.min(until.clamp(1, u64::from(MAX_TICK_DEFER)) as u32);
          }
-@@ -818,6 +846,11 @@ impl SocBus {
+@@ -818,6 +851,11 @@ impl SocBus {
          // Reads may flush before the periodic backstop. Refresh for either edge
          // of a clocked source, without breaking every block that polls MMIO.
          self.irq_dirty |= self.periph.tick(cycles as u64);
@@ -735,18 +787,19 @@ index 394df15..52b1122 100644
          if self.uart_pins {
              for input in self.board.uart_rx(self.cycles) {
                  self.periph.uart_pin_input(&input);
-@@ -825,8 +858,8 @@ impl SocBus {
+@@ -825,8 +863,9 @@ impl SocBus {
              }
          }
          if self.board_edges { self.irq_dirty |= esp_soc::gpio::deliver_board_inputs(&mut *self.board, &mut self.periph.gpio, &mut self.gpio_events, self.cycles); }
 -        self.complete_spi2_dma();
 -        self.deliver_spi2_transfer();
++        self.dma_rmt_step();
 +        for host in 0..2 { self.complete_spi_dma(host); }
 +        for host in 0..2 { self.deliver_spi_transfer(host); }
          self.dma_i2s_step(cycles as u64);
          self.dma_cam_step(cycles as u64);
          self.dma_lcd_step(cycles as u64);
-@@ -844,7 +877,11 @@ impl SocBus {
+@@ -844,7 +883,11 @@ impl SocBus {
              self.board.gpio_output_at(self.cycles, ch, self.periph.gpio.enable, self.periph.gpio.out);
              self.periph.gpio.changes.clear();
          }
@@ -760,15 +813,67 @@ index 394df15..52b1122 100644
              for (ch, bits) in std::mem::take(&mut self.periph.rmt.done) {
                  let pin = self.periph.gpio.pin_for_signal(RMT_SIG_OUT0 + ch as u32).unwrap_or(u8::MAX);
 diff --git a/esp32s3/src/bus/dma.rs b/esp32s3/src/bus/dma.rs
-index 15f9120..98a1d4e 100644
+index 15f9120..33d9c5b 100644
 --- a/esp32s3/src/bus/dma.rs
 +++ b/esp32s3/src/bus/dma.rs
-@@ -53,52 +53,52 @@ impl DescriptorWalk {
+@@ -53,52 +53,104 @@ impl DescriptorWalk {
  }
  
  impl SocBus {
 -    pub(super) fn complete_spi2_dma(&mut self) {
 -        if let Some((deadline, _)) = &self.spi2_scheduled {
++    /// ESP32-S3 RMT channel 3 uses GDMA trigger 9. Feed only its 48-symbol
++    /// hardware FIFO, reading actual guest descriptors and buffers. Descriptor
++    /// EOF interrupts therefore occur as bytes are consumed, not at submission.
++    pub(super) fn dma_rmt_step(&mut self) {
++        if self.periph.rmt.ch[3].conf0 & (1 << 25) == 0 { return; }
++        let Some(index) = self.periph.gdma.out_channel_for(9) else { return; };
++        while self.periph.rmt.dma_fifo.len() < 48 {
++            let current = self.periph.gdma.out[index];
++            if !current.running || current.desc == 0 { break; }
++            let result = (|| {
++                let (control, descriptor) = self.try_dma_desc(current.desc)?;
++                if !descriptor.owner_dma {
++                    return Err(DmaDescriptorFault::NotOwned { descriptor: current.desc });
++                }
++                if current.buf_pos + 4 > descriptor.length || descriptor.length > descriptor.size {
++                    return Err(DmaDescriptorFault::PayloadTooShort { expected: current.buf_pos as usize + 4, actual: descriptor.length as usize });
++                }
++                let address = descriptor.buf.wrapping_add(current.buf_pos);
++                let symbol = self.read32_unpriced(address).map_err(|fault| DmaDescriptorFault::BufferRead { descriptor: current.desc, address, fault })?;
++                let mut channel = current;
++                channel.buf_pos += 4;
++                if channel.buf_pos == descriptor.length {
++                    if channel.conf0 & (1 << 2) != 0 {
++                        self.write32_unpriced(current.desc, control & !(1 << 31)).map_err(|fault| DmaDescriptorFault::Writeback { descriptor: current.desc, fault })?;
++                    }
++                    channel.int_raw |= 1;
++                    if descriptor.eof {
++                        channel.int_raw |= 1 << 1;
++                        channel.eof_desc = current.desc;
++                    }
++                    channel.desc = descriptor.next;
++                    channel.buf_pos = 0;
++                    if descriptor.next == 0 {
++                        channel.running = false;
++                        channel.int_raw |= 1 << 3;
++                    }
++                }
++                self.periph.gdma.out[index] = channel;
++                self.periph.rmt.dma_fifo.push_back(symbol);
++                Ok::<(), DmaDescriptorFault>(())
++            })();
++            if let Err(fault) = result {
++                eprintln!("[rmt] DMA descriptor fault: {fault:?}");
++                self.periph.gdma.out[index].running = false;
++                self.periph.gdma.out[index].int_raw |= 1 << 2;
++                self.periph.rmt.dma_fail();
++                self.irq_dirty = true;
++                break;
++            }
++            self.irq_dirty |= self.periph.gdma.out[index].irq();
++        }
++    }
 +    pub(super) fn complete_spi_dma(&mut self, host: usize) {
 +        if let Some((deadline, _)) = &self.spi_scheduled[host] {
              if self.cycles < *deadline { return; }
@@ -832,7 +937,7 @@ index 15f9120..98a1d4e 100644
                  return;
              }
          }
-@@ -112,25 +112,25 @@ impl SocBus {
+@@ -112,25 +164,25 @@ impl SocBus {
          channel.running = channel.running && completion.running;
          if let Some(descriptor) = completion.eof_desc { channel.eof_desc = descriptor; }
          channel.int_raw |= completion.raised_interrupts;
@@ -866,7 +971,7 @@ index 15f9120..98a1d4e 100644
          // Chip select and command/data lines are GPIOs. The board must see their preceding edges
          // before it receives the transaction.
          if !self.periph.gpio.changes.is_empty() {
-@@ -143,19 +143,19 @@ impl SocBus {
+@@ -143,19 +195,19 @@ impl SocBus {
              self.board.gpio_output_at(self.cycles, changes, self.periph.gpio.enable, self.periph.gpio.out);
              self.periph.gpio.changes.clear();
          }
