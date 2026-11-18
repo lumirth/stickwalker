@@ -1,3 +1,9 @@
 * text=auto eol=lf
-include/startup/iodefine.h -text -whitespace
-stick/simulation/*.patch -whitespace
+*.bin binary
+*.zlib binary
+*.ico binary
+*.icns binary
+*.png binary
+pokewalker/upstream/** -text
+pokewalker/upstream/include/startup/iodefine.h -whitespace
+e2e/*.patch -whitespace

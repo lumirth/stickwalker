@@ -1,0 +1,893 @@
+diff --git a/emu-core/src/bus.rs b/emu-core/src/bus.rs
+index b5140e3..10deaf1 100644
+--- a/emu-core/src/bus.rs
++++ b/emu-core/src/bus.rs
+@@ -99,6 +99,7 @@ impl Default for FastCacheLine {
+ }
+ 
+ pub trait Bus {
++    fn dedicated_inputs(&mut self, _core: usize) -> Option<u8> { None }
+     fn read8(&mut self, addr: u32) -> Result<u8, Fault>;
+     fn read16(&mut self, addr: u32) -> Result<u16, Fault>;
+     fn read32(&mut self, addr: u32) -> Result<u32, Fault>;
+diff --git a/esp-periph/src/rmt.rs b/esp-periph/src/rmt.rs
+index 26c51c6..6178547 100644
+--- a/esp-periph/src/rmt.rs
++++ b/esp-periph/src/rmt.rs
+@@ -38,6 +38,7 @@ pub struct RmtTxCh {
+     loop_count: u32,
+     pub acc_cycles: i64,
+     pub bits: Vec<bool>,
++    symbols: Vec<u32>,
+ }
+ pub struct Rmt {
+     pub ch: [RmtTxCh; 4],
+@@ -47,6 +48,9 @@ pub struct Rmt {
+     /// completed transmissions: (channel, bits)
+     pub done: Vec<(usize, Vec<bool>)>,
+     pub tx_count: u64,
++    pub completed_symbols: Vec<(usize, Vec<u32>, u32)>,
++    pub stream_symbols: bool,
++    pub started_symbols: Vec<(usize, u32, u32, u64)>,
+     /// S3 TX3 DMA symbols staged at MMIO boundaries; allocated on first use. It takes the
+     /// slot of the former `i64` clock ratio (now a `u8` after `running`), so `Rmt` keeps its layout.
+     dma_fifo: Option<Box<DmaQueue>>,
+@@ -54,7 +58,21 @@ pub struct Rmt {
+     cpu_per_apb: u8,
+ }
+ impl Rmt {
+-    pub fn new(cpu_hz: u64) -> Self { Rmt { running: 0, dma_fifo: None, cpu_per_apb: u8::try_from(cpu_hz / crate::APB_HZ).expect("CPU clock ratio fits u8"), ch: Default::default(), mem: [0; RMT_MEM_WORDS * 8], int_raw: 0, int_ena: 0, sys_conf: 0, ram: RegRam::new(), done: Vec::new(), tx_count: 0 } }
++    pub fn new(cpu_hz: u64) -> Self { Rmt { running: 0, dma_fifo: None, cpu_per_apb: u8::try_from(cpu_hz / crate::APB_HZ).expect("CPU clock ratio fits u8"), ch: Default::default(), mem: [0; RMT_MEM_WORDS * 8], int_raw: 0, int_ena: 0, sys_conf: 0, ram: RegRam::new(), done: Vec::new(), tx_count: 0, completed_symbols: Vec::new(), started_symbols: Vec::new(), stream_symbols: false } }
++    /// Pad level within the currently transmitted symbol (S3 TRM 37.3).
++    pub fn output_level(&self, channel: usize) -> bool {
++        let c = &self.ch[channel];
++        let Some(&symbol) = c.symbols.last().filter(|_| c.running) else {
++            return c.conf0 & (1 << 5) != 0;
++        };
++        let tick = i64::from(self.cpu_per_apb) * ((c.conf0 >> 8) & 0xff).max(1) as i64;
++        let first = (symbol & 0x7fff) as i64;
++        let second = ((symbol >> 16) & 0x7fff) as i64;
++        let elapsed = (first + second) * tick + c.acc_cycles;
++        if elapsed < first * tick { symbol & 0x8000 != 0 }
++        else { symbol & 0x8000_0000 != 0 }
++    }
++
+     pub fn is_running(&self) -> bool { self.running != 0 }
+     pub fn irq(&self) -> bool { self.int_raw & self.int_ena != 0 }
+     pub fn read(&self, off: u32) -> u32 {
+@@ -79,7 +97,7 @@ impl Rmt {
+                 c.conf0 = v & !(1 << 7);   // TX_STOP is a command, not state: a read-modify-write after a stop must not stop the next start
+                 if v & (1 << 2) != 0 { c.wr = 0; }                          // APB_MEM_RST
+                 if v & (1 << 1) != 0 { c.rd = 0; c.mem_empty = false; c.end_pending = false; }      // MEM_RD_RST
+-                if v & (1 << 0) != 0 { c.running = true; c.rd = 0; c.mem_empty = false; c.end_pending = false; c.since_thr = 0; c.acc_cycles = 0; c.bits.clear(); c.loop_count = 0; }   // TX_START
++                if v & (1 << 0) != 0 { c.running = true; c.rd = 0; c.mem_empty = false; c.end_pending = false; c.since_thr = 0; c.acc_cycles = 0; c.bits.clear(); c.symbols.clear(); c.loop_count = 0; }   // TX_START
+                 if v & (1 << 7) != 0 { c.running = false; }                 // TX_STOP
+                 self.running = (self.running & !(1 << n)) | ((c.running as u8) << n);
+             }
+@@ -140,6 +158,10 @@ impl Rmt {
+                 c.running = false;
+                 self.int_raw |= 1 << n;
+                 self.tx_count += 1;
++                let words = std::mem::take(&mut c.symbols);
++                if words.len() <= MAX_FRAME_BITS {
++                    self.completed_symbols.push((n, words, cycles_per_tick as u32));
++                }
+                 let bits = std::mem::take(&mut c.bits);
+                 if bits.len() <= MAX_FRAME_BITS { self.done.push((n, bits)); }
+                 break;
+@@ -163,7 +185,11 @@ impl Rmt {
+                 c.end_pending = true;
+                 continue;
+             }
+-            if c.bits.len() <= MAX_FRAME_BITS { c.bits.push(ws2812_bit!(d0, l0, d1, l1)); }
++            if c.bits.len() <= MAX_FRAME_BITS {
++                c.bits.push(ws2812_bit!(d0, l0, d1, l1));
++                c.symbols.push(sym);
++            }
++            if self.stream_symbols { self.started_symbols.push((n, sym, cycles_per_tick as u32, c.acc_cycles as u64)); }
+             c.acc_cycles -= (d0 + d1) * cycles_per_tick;
+             c.rd += 1;
+             c.since_thr += 1;
+diff --git a/esp-periph/src/rtc_cntl.rs b/esp-periph/src/rtc_cntl.rs
+index 592b9bc..dd0ee78 100644
+--- a/esp-periph/src/rtc_cntl.rs
++++ b/esp-periph/src/rtc_cntl.rs
+@@ -37,7 +37,7 @@ impl RtcCntl {
+                 1 => { self.ram.write(0x44, self.ram.read(0x44) | (1 << 3)); }   // INT_RAW.WDT
+                 2 => self.request_reset(RST_RTCWDT_CPU),
+                 3 => self.request_reset(RST_RTCWDT_SYS),
+-                4 => self.request_reset(RST_RTCWDT_RTC),
++                4 | 5 => self.request_reset(RST_RTCWDT_RTC), // Also used by esptool on the S3.
+                 _ => {}
+             }
+             if self.sw_reset { break; }
+diff --git a/esp-periph/src/spi_mem.rs b/esp-periph/src/spi_mem.rs
+index f64b8c8..d793f15 100644
+--- a/esp-periph/src/spi_mem.rs
++++ b/esp-periph/src/spi_mem.rs
+@@ -24,6 +24,8 @@ pub struct SpiMem {
+     pub regs: RegRam,
+     /// (memory, offset, len) ranges the last command wrote, for the bus's page versions
+     pub dirty: Vec<(DirtyMem, usize, usize)>,
++    // Clear-to-zero NOR writes permit restoration of the unprogrammed suffix on a simulated cut.
++    pub program_original: Option<(usize, [u8; 256])>,
+     pub w: [u32; 16],
+     pub pending_cmd: u32,
+     pub status: u32,
+@@ -80,7 +82,7 @@ pub fn flash_jedec(octal: bool, bytes: usize) -> [u8; 3] {
+ 
+ impl SpiMem {
+     pub fn new(is_spi1: bool) -> Self {
+-        let mut s = SpiMem { has_psram: true, addr_msb_aligned: false, regs: RegRam::new(), dirty: Vec::new(), w: [0; 16], pending_cmd: 0, status: 0x200, jedec: [0x20, 0x40, 0x17], is_spi1, log: false , psram_mr: [0x09, 0x0d, 0x8b, 0x00, 0x20, 0, 0, 0, 0x03], octal_flash: false, flash_cr2: 0, classic_quad: None };
++        let mut s = SpiMem { has_psram: true, addr_msb_aligned: false, regs: RegRam::new(), dirty: Vec::new(), program_original: None, w: [0; 16], pending_cmd: 0, status: 0x200, jedec: [0x20, 0x40, 0x17], is_spi1, log: false , psram_mr: [0x09, 0x0d, 0x8b, 0x00, 0x20, 0, 0, 0, 0x03], octal_flash: false, flash_cr2: 0, classic_quad: None };
+         // SPI1 comes out of reset with a command phase: USER.USR_COMMAND = 1 and USER2.USR_COMMAND_BITLEN = 7
+         // (IDF v5.5.4 components/soc/esp32c3/register/soc/spi_mem_reg.h:328,438; the S3 and C6 headers agree).
+         // The C3 ROM's `esp_rom_spiflash_read` only read-modify-writes the other USER bits and the low half of
+@@ -179,7 +181,22 @@ impl SpiMem {
+     fn w_bytes(&self, n: usize) -> Vec<u8> { let mut o = Vec::with_capacity(n); for i in 0..n { o.push((self.w[(i / 4) & 15] >> ((i % 4) * 8)) as u8); } o }
+     fn set_w_bytes(&mut self, data: &[u8]) { for w in self.w.iter_mut() { *w = 0; } for (i, b) in data.iter().enumerate().take(64) { self.w[i / 4] |= (*b as u32) << ((i % 4) * 8); } }
+ 
++    fn program(&mut self, flash: &mut [u8], offset: usize, data: &[u8]) {
++        let Some(flash) = flash.get_mut(offset..) else { return };
++        let len = flash.len().min(data.len());
++        if len <= 256 {
++            let mut original = [0xff; 256];
++            original[..len].copy_from_slice(&flash[..len]);
++            self.program_original = Some((offset, original));
++        }
++        for (cell, byte) in flash[..len].iter_mut().zip(data) {
++            *cell &= *byte;
++        }
++        self.dirty.push((DirtyMem::Flash, offset, len));
++    }
++
+     pub fn execute(&mut self, flash: &mut [u8], psram: &mut [u8]) {
++        self.program_original = None;
+         let cmd = self.pending_cmd; self.pending_cmd = 0;
+         let user = self.regs.read(0x18); let user1 = self.regs.read(0x1c); let user2 = self.regs.read(0x20);
+         let addr_reg = self.regs.read(0x4);
+@@ -282,7 +299,11 @@ impl SpiMem {
+                 0x04 => self.status &= !0x02,                      // WRDI
+                 0x01 | 0x31 | 0x11 => self.status &= !0x02,        // WRSR*: latch consumed (keep QE set)
+                 0x15 => self.set_w_bytes(&[0x00]),
+-                0x02 | 0x32 | 0x38 => { let d = self.w_bytes(mosi_bytes); for (i, b) in d.iter().enumerate() { let x = addr as usize + i; if x < fsize { flash[x] &= *b; } } self.dirty.push((DirtyMem::Flash, addr as usize, d.len())); self.status &= !0x02; }
++                0x02 | 0x32 | 0x38 => {
++                    let data = self.w_bytes(mosi_bytes);
++                    self.program(flash, addr as usize, &data);
++                    self.status &= !0x02;
++                }
+                 0x20 => { let a = (erase_addr as usize) & !0xfff; for b in flash.iter_mut().take((a + 0x1000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x1000)); self.status &= !0x02; }
+                 0x52 => { let a = (erase_addr as usize) & !0x7fff; for b in flash.iter_mut().take((a + 0x8000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x8000)); self.status &= !0x02; }
+                 0xd8 => { let a = (erase_addr as usize) & !0xffff; for b in flash.iter_mut().take((a + 0x10000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x10000)); self.status &= !0x02; }
+@@ -301,8 +322,7 @@ impl SpiMem {
+         if cmd & (1 << 25) != 0 {                                                                                // PP
+             let n = if addr_reg >> 24 != 0 { (addr_reg >> 24) as usize } else { mosi_bytes };
+             let d = self.w_bytes(n);
+-            for (i, b) in d.iter().enumerate() { let x = (fixed & 0xff_ffff) as usize + i; if x < fsize { flash[x] &= *b; } }
+-            self.dirty.push((DirtyMem::Flash, (fixed & 0xff_ffff) as usize, d.len()));
++            self.program(flash, (fixed & 0xff_ffff) as usize, &d);
+             self.status &= !0x02;
+         }
+         if cmd & (1 << 24) != 0 { let a = (fixed as usize) & !0xfff; for b in flash.iter_mut().take((a + 0x1000).min(fsize)).skip(a) { *b = 0xff; } self.dirty.push((DirtyMem::Flash, a, 0x1000)); self.status &= !0x02; }      // SE
+@@ -366,8 +386,7 @@ impl SpiMem {
+             0x02 | 0x12 => {                                                                  // PP, PP4B
+                 let d = self.w_bytes(mosi);
+                 if self.log { eprintln!("[spi1] octal flash: program {:#x} {:02x?}", addr, &d[..d.len().min(16)]); }
+-                for (i, b) in d.iter().enumerate() { let x = addr as usize + i; if x < fsize { flash[x] &= *b; } }
+-                self.dirty.push((DirtyMem::Flash, addr as usize, d.len()));
++                self.program(flash, addr as usize, &d);
+                 self.status &= !0x02;
+             }
+             0x20 | 0x21 => erase(self, flash, 0x1000),                                        // SE, SE4B
+diff --git a/esp-periph/src/timg.rs b/esp-periph/src/timg.rs
+index cdfa375..70cf1ca 100644
+--- a/esp-periph/src/timg.rs
++++ b/esp-periph/src/timg.rs
+@@ -6,6 +6,7 @@ use emu_core::ClockDomain;
+ 
+ // ------------------------------------------------------------------ Timer group (T0/T1 + WDT + RTC calibration)
+ pub struct TimerGroup {
++    pub rtc_calibration_hz: [u64; 4],
+     ram: RegRam,
+     pub t: [Timer; 2],
+     pub int_raw: u32, pub int_ena: u32,
+@@ -102,7 +103,7 @@ impl TimerGroup {
+     /// than 1.6 ms round to zero ticks and never fire.
+     pub fn new() -> Self {
+         let t = Timer { config: 0x6000_2000, ..Timer::default() };
+-        TimerGroup { ram: RegRam::new(), t: [t; 2], int_raw: 0, int_ena: 0 }
++        TimerGroup { rtc_calibration_hz: [RTC_SLOW_HZ; 4], ram: RegRam::new(), t: [t; 2], int_raw: 0, int_ena: 0 }
+     }
+     pub fn tick(&mut self, apb_ticks: u64) {
+         for i in 0..2 {
+@@ -116,7 +117,12 @@ impl TimerGroup {
+         }
+         match off {
+             0x68 => (self.ram.read(off) & !(1 << 15)) | (1 << 15),                       // RTCCALICFG: always RDY
+-            0x6c => { let n = (self.ram.read(0x68) >> 16) & 0x7fff; ((n as u64 * XTAL_HZ / RTC_SLOW_HZ) as u32) << 7 }   // RTCCALICFG1 value
++            0x6c => {
++                let config = self.ram.read(0x68);
++                let count = (config >> 16) & 0x7fff;
++                let hz = self.rtc_calibration_hz[((config >> 13) & 3) as usize];
++                ((u64::from(count) * XTAL_HZ / hz) as u32) << 7
++            }   // RTCCALICFG1 value
+             0x70 => self.int_ena, 0x74 => self.int_raw, 0x78 => self.int_raw & self.int_ena,
+             0xf8 => 0x2006191,
+             _ => self.ram.read(off),
+diff --git a/esp-periph/src/usb_serial_jtag.rs b/esp-periph/src/usb_serial_jtag.rs
+index b8b37bf..516a4b8 100644
+--- a/esp-periph/src/usb_serial_jtag.rs
++++ b/esp-periph/src/usb_serial_jtag.rs
+@@ -13,6 +13,8 @@ pub struct UsbSerialJtag {
+     pub dbg: bool,
+     pub sof_count: u64,
+     sof_acc: u64,
++    control_lines: u8,
++    download: bool,
+     pub tx_fifo: Vec<u8>,         // bytes written since last WR_DONE
+     pub tx_out: Vec<u8>,          // flushed bytes for the host
+     pub rx: std::collections::VecDeque<u8>,
+@@ -22,7 +24,20 @@ pub struct UsbSerialJtag {
+     ram: RegRam,
+ }
+ impl UsbSerialJtag {
+-    pub fn new(cpu_hz: u64) -> Self { UsbSerialJtag { sof_period: cpu_hz / 4000, connected: true, dbg: false, sof_count: 0, sof_acc: 0, tx_fifo: Vec::new(), tx_out: Vec::new(), rx_packets: Default::default(), rx: Default::default(), int_raw: 0, int_ena: 0, conf0: 0, ram: RegRam::new() } }
++    pub fn new(cpu_hz: u64) -> Self { UsbSerialJtag { sof_period: cpu_hz / 4000, connected: true, dbg: false, sof_count: 0, sof_acc: 0, control_lines: 0, download: false, tx_fifo: Vec::new(), tx_out: Vec::new(), rx_packets: Default::default(), rx: Default::default(), int_raw: 0, int_ena: 0, conf0: 0, ram: RegRam::new() } }
++    /// CDC SET_CONTROL_LINE_STATE, ESP32-S3 TRM Tables 33.4-3 and 33.4-4.
++    pub fn control_lines(&mut self, dtr: bool, rts: bool) -> Option<bool> {
++        if !self.connected { return None; }
++        let next = u8::from(dtr) | (u8::from(rts) << 1);
++        let previous = std::mem::replace(&mut self.control_lines, next);
++        match next {
++            0 => self.download = false,
++            1 => self.download = true,
++            2 if previous != 2 => return Some(self.download),
++            _ => {}
++        }
++        None
++    }
+     /// advance by CPU cycles; raise SOF interrupt every 1 ms of emulated time
+     pub fn tick(&mut self, cycles: u64) { if !self.connected { return; } self.sof_acc += cycles; if self.sof_acc >= self.sof_period { self.sof_acc -= self.sof_period; self.int_raw |= 1 << 1; if self.dbg { self.sof_count += 1; } } /* 4x per tick: HWCDC's tick hook clears it each tick */ }
+     pub fn read(&mut self, off: u32) -> u32 {
+diff --git a/esp-soc/src/board.rs b/esp-soc/src/board.rs
+index f4f471d..93dc945 100644
+--- a/esp-soc/src/board.rs
++++ b/esp-soc/src/board.rs
+@@ -33,6 +33,19 @@ pub trait BoardModel {
+     fn gpio_output_at(&mut self, _cycle: VirtualCycle, changes: &[(u8, bool)], _enabled: u64, _output: u64) {
+         if !changes.is_empty() { self.gpio_changes(changes); }
+     }
++    /// Additional execution cycles after a GPIO access in waveform mode.
++    fn pad_access_cycles(&mut self, _cycle: VirtualCycle, _pin: u8) -> u32 { 0 }
++    fn pad_pull_at(&mut self, _cycle: VirtualCycle, _pin: u8, _pulldown: bool) {}
++    /// Electrical pad input during a dedicated GPIO read.
++    fn pad_input_at(&mut self, _cycle: VirtualCycle, _pin: u8, _pulldown: bool) -> Option<bool> { None }
++    /// The two timed phases of each RMT symbol at the routed pin, in CPU cycles.
++    fn rmt_symbols(&mut self, _cycle: VirtualCycle, _pin: u8, _symbols: &[u32], _cycles_per_tick: u32) {}
++    /// A symbol starting now, before its two output phases have elapsed.
++    fn rmt_symbol_started(&mut self, _cycle: VirtualCycle, _pin: u8, _symbol: u32, _cycles_per_tick: u32) {}
++    /// If power fails during this program, only this many leading bytes reached the array.
++    fn flash_power_cut(&mut self, _offset: usize, _data: &[u8]) -> Option<usize> { None }
++    /// An external power controller can independently reset the chip.
++    fn take_power_reset(&mut self) -> bool { false }
+     /// A completed RMT transmission, decoded to bits by the peripheral model, with the pin the
+     /// GPIO matrix has that channel routed to. Drivers that take a fresh channel per refresh
+     /// (the Arduino NeoPixel one does) make the channel meaningless; the pin names the strip.
+diff --git a/esp-soc/src/machine.rs b/esp-soc/src/machine.rs
+index eccff1c..b8cf652 100644
+--- a/esp-soc/src/machine.rs
++++ b/esp-soc/src/machine.rs
+@@ -73,6 +73,8 @@ pub struct Machine<S: Soc> {
+     pub cores: Vec<S::Core>,
+     /// a secondary core held in reset by its SoC registers (reset when released)
+     core_held: Vec<bool>,
++    gpio_stalls: [u32; 4],
++    pub gpio_wait_cycles: u64,
+     /// Instructions each busy core runs per scheduling round (`QUANTUM`: 64 native, 256 on wasm32; the goldens
+     /// and pinned totals hold for these); another value changes the interleaving of two busy cores (EX047).
+     pub quantum: u64,
+@@ -147,7 +149,7 @@ impl<S: Soc> Machine<S> {
+     pub fn new(mac: [u8; 6], bus: S::Bus) -> Self {
+         Machine {
+             web_restart: false, button_reset: false, mac, reboots: 0, stubs: HashMap::new(), stub_bloom: 0, probe_bloom: 0, stub_hits: 0, fn_probes: HashMap::new(),
+-            cores: (0..S::CORES).map(|i| S::new_core_with_bus(i, &bus)).collect(), core_held: (0..S::CORES).map(|i| i > 0).collect(), quantum: QUANTUM, run_steps: 0, vq_stats: [0; 4], vq_skip: 0, vq_penalty: 0, vq_max: std::env::var("ESP32SIM_VQ").ok().and_then(|v| v.parse().ok()).unwrap_or(VQ_DEFAULT),
++            cores: (0..S::CORES).map(|i| S::new_core_with_bus(i, &bus)).collect(), core_held: (0..S::CORES).map(|i| i > 0).collect(), gpio_stalls: [0; 4], gpio_wait_cycles: 0, quantum: QUANTUM, run_steps: 0, vq_stats: [0; 4], vq_skip: 0, vq_penalty: 0, vq_max: std::env::var("ESP32SIM_VQ").ok().and_then(|v| v.parse().ok()).unwrap_or(VQ_DEFAULT),
+             bb_max: std::env::var("ESP32SIM_BB").ok().and_then(|v| v.parse().ok()).unwrap_or(BB_DEFAULT).min(4096), bb_stats: [0; 8],
+             bus, symbols: BTreeMap::new(),
+             dbg: Debug { stop_on_unimplemented: true, stop_after_exceptions: u64::MAX },
+@@ -304,6 +306,7 @@ impl<S: Soc> Machine<S> {
+     /// re-initialised; SRAM, RTC memories, efuses and the RTC-domain registers survive, as on
+     /// silicon. Returns the reset cause that the ROM will report.
+     pub fn reboot(&mut self) -> u32 {
++        self.gpio_stalls.fill(0);
+         // where core 0 was when the reset took effect (the C6 ROM prints it as `Saved PC`)
+         let pc = self.cores[0].pc();
+         self.bus.note_pc(pc);
+@@ -561,6 +564,7 @@ impl<S: Soc> Machine<S> {
+
+     fn run_unmodeled<const APPROXIMATE: bool>(&mut self, max_insns: u64) -> Stop {
+         assert!(self.quantum != 0, "scheduling quantum must be nonzero");
++        let waveform = self.bus.board_ref().uses_gpio_waveform();
+         let (cpi, max_quantum) = if APPROXIMATE { self.approximate_jit_timing.unwrap() } else { (1, self.quantum as u32) };
+         self.stub_bloom = self.stubs.keys().chain(S::function_hooks(&self.bus)).fold(0, |m, &pc| m | pc_bit(pc));
+         self.probe_bloom = self.fn_probes.keys().fold(0, |m, &pc| m | pc_bit(pc));
+@@ -587,7 +591,7 @@ impl<S: Soc> Machine<S> {
+             self.refresh_irq();
+             if self.bus.sw_reset() { self.drain_console(); return Stop::SwReset; }
+             if self.bus.cycles() >= self.max_cycles { self.drain_console(); return Stop::Halted; }
+-            for (i, state) in on.iter_mut().enumerate().take(S::CORES).skip(1) {
++            for (i, state) in on.iter_mut().enumerate().take(S::CORES) {
+                 *state = match S::core_state(&self.bus, i) {
+                     CoreState::Reset => { self.core_held[i] = true; false }
+                     CoreState::Held => false,
+@@ -700,6 +704,14 @@ impl<S: Soc> Machine<S> {
+             let mut round_elapsed = 0;
+             for i in 0..S::CORES {
+                 if !on[i] { continue; }
++                // Waveform transport runs one instruction per round. A pad access
++                // delays its core while the other core and optical time continue.
++                if waveform && self.gpio_stalls[i] != 0 {
++                    self.cores[i].advance_cycles(1);
++                    self.gpio_stalls[i] -= 1;
++                    self.gpio_wait_cycles += 1;
++                    continue;
++                }
+                 if idle[i] && !slow_path {
+                     self.cores[i].idle_advance(elapsed as u32);
+                     if i == 0 { self.run_steps += quantum; }
+@@ -747,6 +759,7 @@ impl<S: Soc> Machine<S> {
+                     }
+                     if i == 0 { self.run_steps += quantum; }
+                 }
++                if waveform { self.gpio_stalls[i] = self.bus.take_timing_penalty(); }
+                 round_elapsed = round_elapsed.max(elapsed + stalls[i]);
+                 if i == 0 { n += quantum; }
+             }
+diff --git a/esp32s3/src/bus.rs b/esp32s3/src/bus.rs
+index 017614d..525e9a3 100644
+--- a/esp32s3/src/bus.rs
++++ b/esp32s3/src/bus.rs
+@@ -49,6 +49,22 @@ pub struct SocBus {
+     pub rtc_fast: Vec<u8>,
+     pub rtc_slow: Vec<u8>,
+     pub flash: Vec<u8>,
++    pub sleep_cycles: u64,
++    pub sleep_entries: u64,
++    pub vdd_spi_off_cycles: u64,
++    sleep_vdd_spi_off: bool,
++    sleep_entered_slow: u64,
++    pub short_flash_sleep: bool,
++    pub active_residency: [u64; 3],
++    pub gpio_wakes: u64,
++    pub sleeping: bool,
++    pub flash_first_cycles: u64,
++    pub flash_next_cycles: u64,
++    pub flash_sector_cycles: u64,
++    pub flash_block_cycles: u64,
++    cpu_clock_fraction: u64,
++    pub(crate) flash_busy_until: u64,
++    sleep_entered: u64,
+     pub psram: Vec<u8>,
+     pub mmu: [u32; MMU_ENTRIES],
+     pub periph: Peripherals,
+@@ -60,8 +76,9 @@ pub struct SocBus {
+     /// Experimental register-derived SPI2 wire timing; disabled for baseline runs.
+     pub spi2_timing: bool,
+     spi2_scheduled: Option<(u64, Spi2DmaCompletion)>,
++    spi3_scheduled: Option<(u64, Spi2DmaCompletion)>,
+     spi2_pins: Option<esp_soc::board::SpiPins>,
+-    /// SPI3's DMA descriptor fault and routes, as SPI2's above (no wire timing).
++    /// SPI3 DMA descriptor fault and pin routes.
+     pub spi3_dma_fault: Option<DmaDescriptorFault>,
+     spi3_pins: Option<esp_soc::board::SpiPins>,
+     /// set by any peripheral write: interrupt lines must be re-evaluated before the next instruction
+@@ -98,6 +115,7 @@ pub struct SocBus {
+     pub(crate) defer_mmio: bool, pub(crate) mmio_deferred: bool, pub vq_violations: u64,
+     approximate_cache: Option<crate::approximate_cache::CacheTiming>,
+     approximate_cache_pending: u32,
++    pad_write_delay: u32,
+     approximate_cache_fast_internal: bool,
+     approximate_cache_inline: bool,
+     approximate_cache_yield_miss: bool,
+@@ -148,18 +166,18 @@ static BUS_EPOCHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
+ const UART_FIFOS: [u32; 3] = [0x6000_0000, 0x6001_0000, 0x6002_e000];
+
+ impl SocBus {
+-    pub(crate) fn cancel_spi2_timing(&mut self) { self.spi2_scheduled = None; self.spi2_pins = None; self.spi3_pins = None; }
++    pub(crate) fn cancel_spi2_timing(&mut self) { self.spi2_scheduled = None; self.spi3_scheduled = None; self.spi2_pins = None; self.spi3_pins = None; }
+
+     pub fn new(flash_size: usize, psram_size: usize, mac: [u8; 6]) -> Self { Self::with_sizes(flash_size, psram_size, mac) }
+     pub fn with_sizes(flash_size: usize, psram_size: usize, mac: [u8; 6]) -> Self {
+         let bus_uninit = SocBus {
+             ble: Default::default(),
+             sram: vec![0; SRAM_SIZE], irom: vec![0; (IROM_MASK_HIGH - IROM_MASK_LOW) as usize], drom: vec![0; (DROM_MASK_HIGH - DROM_MASK_LOW) as usize],
+-            rtc_fast: vec![0; 8192], rtc_slow: vec![0; 8192], flash: vec![0xff; flash_size], psram: vec![0; psram_size],
++            rtc_fast: vec![0; 8192], rtc_slow: vec![0; 8192], flash: vec![0xff; flash_size], sleep_cycles: 0, sleep_entries: 0, vdd_spi_off_cycles: 0, sleep_vdd_spi_off: false, sleep_entered_slow: 0, short_flash_sleep: false, active_residency: [0; 3], gpio_wakes: 0, sleeping: false, flash_first_cycles: 0, flash_next_cycles: 0, flash_sector_cycles: 0, flash_block_cycles: 0, cpu_clock_fraction: 0, flash_busy_until: 0, sleep_entered: 0, psram: vec![0; psram_size],
+             mmu: [MMU_INVALID; MMU_ENTRIES], periph: Peripherals::new(mac), board: Box::new(crate::board::Atech14::new()), uart_pins: false, cycles: 0, last_fault: None, spi2_dma_fault: None, irq_dirty: false, ena_latency: Default::default(), gpio_events: None, debug: Default::default(), board_edges: true,
+-            spi2_timing: false, spi2_scheduled: None, spi2_pins: None, spi3_dma_fault: None, spi3_pins: None,
++            spi2_timing: false, spi2_scheduled: None, spi3_scheduled: None, spi2_pins: None, spi3_dma_fault: None, spi3_pins: None,
+             tlb: vec![TlbEntry::EMPTY; TLB_SIZE], page_ver: Vec::new(), ver_base: [0; 7], flash_epoch: BUS_EPOCHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) << 32, code_blk: Vec::new(), tick_pending: 0, tick_budget: 0, defer_mmio: false, mmio_deferred: false, vq_violations: 0,
+-            approximate_cache: None, approximate_cache_pending: 0, approximate_cache_fast_internal: false, approximate_cache_inline: false,
++            approximate_cache: None, approximate_cache_pending: 0, pad_write_delay: 0, approximate_cache_fast_internal: false, approximate_cache_inline: false,
+             approximate_cache_yield_miss: false,
+             cache_resource: CacheResource::default(),
+             fetch_cache: xtensa_lx7::state::SharedFetchCache::default(),
+@@ -325,6 +343,17 @@ impl SocBus {
+         self.ena_latency.deadline().map_or(work, |d| work.min(d))
+     }
+
++    pub fn usb_control_lines(&mut self, dtr: bool, rts: bool) {
++        if self.sleeping { return; }
++        if let Some(download) = self.periph.usb.control_lines(dtr, rts) {
++            if download {
++                self.periph.rtc.ram.write(0x12c, self.periph.rtc.ram.read(0x12c) | 1);
++            }
++            self.periph.rtc.sw_reset = true;
++            self.periph.rtc.reset_cause = 0x15;
++        }
++    }
++
+     /// Size the per-page version table to the buffers. Call after replacing `flash` or `psram`.
+     pub fn rebuild_page_table(&mut self) {
+         let sizes = [self.sram.len(), self.irom.len(), self.flash.len(), self.psram.len(), self.drom.len(), self.rtc_fast.len(), self.rtc_slow.len()];
+@@ -519,6 +548,7 @@ impl SocBus {
+         }
+         if a == PERIPH_BASE + 0x25_000 && v & (1 << 24) != 0 {
+             self.spi3_dma_fault = None;
++            self.spi3_scheduled = None;
+         }
+         // GDMA block: OUT_RST (0x60) or an OUT_LINK START/RESTART (0x80) on the
+         // scheduled SPI2 source channel discards the transaction: the payload was
+@@ -550,6 +580,21 @@ impl SocBus {
+             self.spi3_pins = self.board.uses_spi_pins().then(|| self.periph.spi3_pins());
+         }
+         self.periph.write32(a, v);
++        if a == 0x6000_804c {
++            let raw = self.periph.rtc.ram.read(0x44) & !(v & 3);
++            self.periph.rtc.ram.write(0x44, raw);
++        }
++        if a == 0x6000_8018 && v & (1 << 31) != 0 {
++            self.sleeping = true;
++            self.sleep_entered = self.cycles;
++            self.sleep_entered_slow = self.periph.rtc.slow_ticks;
++            self.sleep_entries += 1;
++            // RTC state-machine ownership and SDIO_PD_EN, ESP32-S3 TRM.
++            let sdio = self.periph.rtc.ram.read(0x7c);
++            self.sleep_vdd_spi_off = sdio & (1 << 22) == 0 && sdio & (1 << 21) != 0;
++            self.update_sleep();
++        }
++
+         if matches!(a & !0xfff, 0x6000_4000 | 0x6000_9000) && self.board.uses_gpio_waveform() {
+             self.board.gpio_waveform_at(self.cycles, esp_soc::pins::ChipPins::S3.routes(&self.periph.gpio, &self.periph.io_mux));
+         }
+@@ -558,7 +603,7 @@ impl SocBus {
+             if let Some(events) = &mut self.gpio_events {
+                 for &(pin, level) in changes { events.push((self.cycles, pin, level)); }
+             }
+-            self.board.gpio_output_at(self.cycles, changes, self.periph.gpio.enable, self.periph.gpio.out);
++            self.board.gpio_output_at(self.cycles + u64::from(self.pad_write_delay), changes, self.periph.gpio.enable, self.periph.gpio.out);
+             self.periph.gpio.changes.clear();
+         }
+         if let Some(port) = match a { 0x60000000 => Some(0), 0x60010000 => Some(1), 0x6002e000 => Some(2), _ => None } {
+@@ -583,8 +628,37 @@ impl SocBus {
+         }
+         if self.periph.spi_exec {
+             self.periph.spi_exec = false;
++            if self.cycles >= self.flash_busy_until {
++                self.periph.spi1.status &= !1;
++            }
+             self.periph.spi1.execute(&mut self.flash, &mut self.psram);
+-            for (m, off, len) in std::mem::take(&mut self.periph.spi1.dirty) { self.note_written(match m { crate::periph::DirtyMem::Flash => SRC_FLASH, crate::periph::DirtyMem::Psram => SRC_PSRAM }, off, len); }
++            use crate::periph::DirtyMem::{Flash, Psram};
++            for (memory, offset, len) in std::mem::take(&mut self.periph.spi1.dirty) {
++                self.note_written(if memory == Flash { SRC_FLASH } else { debug_assert_eq!(memory, Psram); SRC_PSRAM }, offset, len);
++                if memory == Flash {
++                    let delay = match len {
++                        1..=256 => self.flash_first_cycles + (len as u64 - 1) * self.flash_next_cycles,
++                        4096 => self.flash_sector_cycles,
++                        65536 => self.flash_block_cycles,
++                        _ => 0,
++                    };
++                    if delay != 0 {
++                        self.periph.spi1.status |= 1;
++                        self.flash_busy_until = self.cycles + delay;
++                    }
++                }
++                if memory == Flash && len <= 256 {
++                    if let Some(kept) = self.board.flash_power_cut(offset, &self.flash[offset..offset + len]) {
++                        if let Some((address, old)) = &self.periph.spi1.program_original {
++                            debug_assert_eq!(offset, *address);
++                            let kept = kept.min(len);
++                            self.flash[offset + kept..offset + len].copy_from_slice(&old[kept..len]);
++                        }
++                        self.periph.rtc.sw_reset = true;
++                        self.periph.rtc.reset_cause = 1;
++                    }
++                }
++            }
+         }
+     }
+
+@@ -793,6 +867,38 @@ impl Bus for SocBus {
+     fn read16(&mut self, addr: u32) -> Result<u16, Fault> { self.read16_access::<true>(addr) }
+     fn read16_unpriced(&mut self, addr: u32) -> Result<u16, Fault> { self.read16_access::<false>(addr) }
+     #[inline]
++    fn dedicated_inputs(&mut self, core: usize) -> Option<u8> {
++        // ESP-IDF soc/esp32s3/dedic_gpio_periph.c and gpio_sig_map.h.
++        const INPUTS: [[usize; 8]; 2] = [[221, 222, 223, 224, 225, 226, 227, 228],
++                                        [129, 130, 131, 252, 253, 254, 255, 54]];
++        self.flush_ticks();
++        let mut levels = 0;
++        for (bit, &signal) in INPUTS.get(core)?.iter().enumerate() {
++            let route = self.periph.gpio.func_in_sel[signal];
++            if route & 0x80 == 0 { continue; }
++            let pin = (route & 63) as u8;
++            let inverted = route & 0x40 != 0;
++            let level = match pin {
++                0..=48 => {
++                    let mux = self.periph.io_mux.read(4 + 4 * u32::from(pin));
++                    if mux & (1 << 9) == 0 { false } else {
++                        let routes = esp_soc::pins::ChipPins::S3.routes(&self.periph.gpio, &self.periph.io_mux);
++                        let output = (0..4).find(|&ch| routes.matrix_output(pin as usize, RMT_SIG_OUT0 + ch));
++                        if let Some(ch) = output {
++                            self.periph.rmt.output_level(ch as usize) ^ (self.periph.gpio.func_out_sel[pin as usize] & (1 << 9) != 0)
++                        } else {
++                            self.board.pad_input_at(self.cycles, pin, mux & (1 << 7) != 0)
++                                .unwrap_or_else(|| self.periph.gpio.level(pin))
++                        }
++                    }
++                }
++                56 => true,
++                _ => false,
++            };
++            if level ^ inverted { levels |= 1 << bit; }
++        }
++        Some(levels)
++    }
+     fn read32(&mut self, addr: u32) -> Result<u32, Fault> { self.read32_access::<true>(addr) }
+     fn read32_unpriced(&mut self, addr: u32) -> Result<u32, Fault> { self.read32_access::<false>(addr) }
+     #[inline]
+@@ -802,7 +908,17 @@ impl Bus for SocBus {
+     fn write16(&mut self, addr: u32, v: u16) -> Result<(), Fault> { self.write16_access::<true>(addr, v) }
+     fn write16_unpriced(&mut self, addr: u32, v: u16) -> Result<(), Fault> { self.write16_access::<false>(addr, v) }
+     #[inline]
+-    fn write32(&mut self, addr: u32, v: u32) -> Result<(), Fault> { self.write32_access::<true>(addr, v) }
++    fn write32(&mut self, addr: u32, v: u32) -> Result<(), Fault> {
++        let pad = matches!(addr, 0x6000_9018 | 0x6000_4024 | 0x6000_4028);
++        self.pad_write_delay = if pad { self.board.pad_access_cycles(self.cycles, 5) } else { 0 };
++        self.approximate_cache_pending += self.pad_write_delay;
++        if addr == 0x6000_9018 {
++            self.board.pad_pull_at(self.cycles + u64::from(self.pad_write_delay), 5, v & 128 != 0);
++        }
++        let result = self.write32_access::<true>(addr, v);
++        self.pad_write_delay = 0;
++        result
++    }
+     fn write32_unpriced(&mut self, addr: u32, v: u32) -> Result<(), Fault> { self.write32_access::<false>(addr, v) }
+     fn fetch(&mut self, pc: u32) -> Result<[u8; 4], Fault> {
+         let Some(e) = self.lookup(pc) else { self.last_fault = Some((pc, false)); return Err(Fault::Unmapped) };
+@@ -871,6 +987,14 @@ impl Bus for SocBus {
+     /// Returns 1 when interrupt inputs may have changed. Device time can advance
+     /// without requesting a full interrupt-source scan.
+     fn tick(&mut self, cycles: u32) -> u32 {
++        let (numerator, denominator) = self.cpu_clock_ratio();
++        let scaled = u64::from(cycles) * numerator + self.cpu_clock_fraction;
++        let cycles = (scaled / denominator) as u32;
++        self.cpu_clock_fraction = scaled % denominator;
++        if !self.sleeping {
++            let band = if numerator >= 6 * denominator { 0 } else if numerator >= 3 * denominator { 1 } else { 2 };
++            self.active_residency[band] += u64::from(cycles);
++        }
+         self.cycles += cycles as u64;
+         self.tick_pending += cycles;
+         let due = self.ena_latency.tick(cycles as u64);
+@@ -882,6 +1006,36 @@ impl Bus for SocBus {
+ }
+
+ impl SocBus {
++    pub fn sleep_residency(&self) -> u64 {
++        self.sleep_cycles + if self.sleeping { self.cycles - self.sleep_entered } else { 0 }
++    }
++
++    pub fn vdd_spi_off_residency(&self) -> u64 {
++        self.vdd_spi_off_cycles + if self.sleeping && self.sleep_vdd_spi_off {
++            self.cycles - self.sleep_entered
++        } else { 0 }
++    }
++
++    // Device deadlines remain in 240 MHz reference ticks; CCOUNT advances in
++    // CPU clocks. SYSTEM selects XTAL/PLL and the PLL's 80/160/240 MHz divider.
++    pub(crate) fn cpu_clock_ratio(&self) -> (u64, u64) {
++        let config = self.periph.system.read(0x60);
++        match (config >> 10) & 3 {
++            1 => match self.periph.system.read(0x10) & 3 {
++                0 => (3, 1),
++                1 => (3, 2),
++                _ => (1, 1),
++            },
++            2 => (96 * (u64::from(config & 0x3ff) + 1), 7), // RC_FAST, nominal 17.5 MHz
++            _ => (6 * (u64::from(config & 0x3ff) + 1), 1), // 40 MHz crystal
++        }
++    }
++
++    pub(crate) fn reference_to_cpu(&self, cycles: u64) -> u64 {
++        let (numerator, denominator) = self.cpu_clock_ratio();
++        cycles.saturating_mul(denominator).div_ceil(numerator)
++    }
++
+     fn cadence_active(&self) -> bool {
+         let p = &self.periph;
+         p.i2s0.active() || p.i2s1.active()
+@@ -909,6 +1063,10 @@ impl SocBus {
+             let until = u64::from(self.tick_pending).saturating_add(deadline.saturating_sub(self.cycles));
+             budget = budget.min(until.clamp(1, u64::from(MAX_TICK_DEFER)) as u32);
+         }
++        if let Some((deadline, _)) = &self.spi3_scheduled {
++            let until = u64::from(self.tick_pending).saturating_add(deadline.saturating_sub(self.cycles));
++            budget = budget.min(until.clamp(1, u64::from(MAX_TICK_DEFER)) as u32);
++        }
+         if let Some(deadline) = self.board.next_deadline() {
+             let until_deadline = u64::from(self.tick_pending)
+                 .saturating_add(deadline.saturating_sub(self.cycles))
+@@ -959,8 +1117,17 @@ impl SocBus {
+     fn tick_impl(&mut self, cycles: u32) -> u32 {
+         // Board time advances before peripheral callbacks; inputs are delivered after them.
+         if self.board_edges { self.board.advance_to(self.cycles); }
++        if self.board.take_power_reset() {
++            self.periph.rtc.sw_reset = true;
++            self.periph.rtc.reset_cause = 1;
++        }
++        if self.flash_busy_until != 0 && self.cycles >= self.flash_busy_until {
++            self.periph.spi1.status &= !1;
++            self.flash_busy_until = 0;
++        }
+         // Reads may flush before the periodic backstop. Refresh for either edge
+         // of a clocked source, without breaking every block that polls MMIO.
++        self.periph.tick_rtc(cycles, self.sleeping);
+         self.irq_dirty |= self.periph.tick(cycles as u64);
+         if self.periph.uart.iter().any(|u| u.has_queued()) { self.pace_uart_input(cycles); }
+         if self.uart_pins {
+@@ -993,16 +1160,70 @@ impl SocBus {
+         }
+         self.deliver_spi2_transfer();
+         self.deliver_spi3_transfer();
+-        if !self.periph.rmt.done.is_empty() { self.deliver_rmt_frames(); }
++        if self.sleeping { self.update_sleep(); }
++        if !self.periph.rmt.done.is_empty() || !self.periph.rmt.started_symbols.is_empty() { self.deliver_rmt_frames(); }
+         0
+     }
+     /// Every routed pin of a completed transmitter receives its frame (mirrored strips).
+     #[cold]
+     #[inline(never)]
++    // ESP32-S3 rtc_sleep_start(), RTC_CNTL wake sources and GPIO_PINn.
++    pub(crate) fn update_sleep(&mut self) {
++        if !self.sleeping { return; }
++        let rtc = &self.periph.rtc;
++        let minimum = u64::from((rtc.ram.read(0x2c) >> 8) & 255);
++        if rtc.slow_ticks - self.sleep_entered_slow < minimum { return; }
++        let wake = rtc.ram.read(0x3c) >> 15;
++        let high = rtc.ram.read(0x08);
++        let alarm = (u64::from(high & 0xffff) << 32) | u64::from(rtc.ram.read(0x04));
++        let timer = wake & 8 != 0 && high & (1 << 16) != 0 && rtc.slow_ticks >= alarm;
++        let gpio = &self.periph.gpio;
++        let digital = wake & 4 != 0 && (0..gpio.pins).any(|pin| {
++            let config = gpio.pin[usize::from(pin)];
++            config & (1 << 10) != 0 && match (config >> 7) & 7 {
++                4 => !gpio.level(pin), 5 => gpio.level(pin), _ => false,
++            }
++        });
++        let select = rtc.ram.read(0xe0) & 0x3fffff;
++        let active_high = rtc.ram.read(0x64) >> 31 != 0;
++        let ext1 = wake & 2 != 0 && (0..22).any(|pin| {
++            select & (1 << pin) != 0 && gpio.level(pin) == active_high
++        });
++        let cause = (u32::from(timer) << 3) | (u32::from(digital) << 2) | (u32::from(ext1) << 1);
++        if cause == 0 { return; }
++        self.sleeping = false;
++        self.sleep_cycles += self.cycles - self.sleep_entered;
++        if self.sleep_vdd_spi_off {
++            let duration = self.cycles - self.sleep_entered;
++            self.vdd_spi_off_cycles += duration;
++            self.short_flash_sleep |= duration < 2000 * 240;
++        }
++        self.gpio_wakes += u64::from(digital || ext1);
++        let rtc = &mut self.periph.rtc;
++        rtc.ram.write(0x130, cause);
++        let state = (rtc.ram.read(0x18) & !(1 << 31)) | (1 << 29);
++        rtc.ram.write(0x18, state);
++        rtc.ram.write(0x44, rtc.ram.read(0x44) | 1);
++        if rtc.ram.read(0x90) & (1 << 31) != 0 {
++            rtc.sw_reset = true;
++            rtc.reset_cause = 5;
++        }
++    }
++
+     fn deliver_rmt_frames(&mut self) {
++        for (ch, word, tick, elapsed) in std::mem::take(&mut self.periph.rmt.started_symbols) {
++            for pin in esp_soc::pins::ChipPins::S3.routes(&self.periph.gpio, &self.periph.io_mux).output_pins(RMT_SIG_OUT0 + ch as u32) {
++                self.board.rmt_symbol_started(self.cycles.saturating_sub(elapsed), pin, word, tick);
++            }
++        }
+         for (ch, bits) in std::mem::take(&mut self.periph.rmt.done) {
+             for pin in esp_soc::pins::ChipPins::S3.routes(&self.periph.gpio, &self.periph.io_mux).output_pins(RMT_SIG_OUT0 + ch as u32) { self.board.rmt_frame(pin, &bits); }
+         }
++        for (ch, words, tick) in std::mem::take(&mut self.periph.rmt.completed_symbols) {
++            for pin in esp_soc::pins::ChipPins::S3.routes(&self.periph.gpio, &self.periph.io_mux).output_pins(RMT_SIG_OUT0 + ch as u32) {
++                self.board.rmt_symbols(self.cycles, pin, &words, tick);
++            }
++        }
+         self.irq_dirty = true;
+     }
+ }
+diff --git a/esp32s3/src/bus/dma.rs b/esp32s3/src/bus/dma.rs
+index 70ce586..92d513e 100644
+--- a/esp32s3/src/bus/dma.rs
++++ b/esp32s3/src/bus/dma.rs
+@@ -103,10 +103,20 @@ impl SocBus {
+     }
+
+     /// SPI3's DMA data phase, through the GDMA OUT channel of trigger 1
+-    /// (SOC_GDMA_TRIG_PERIPH_SPI3). Always committed at once: the experimental wire timing
+-    /// (`spi2_timing`) is SPI2's only.
++    /// (SOC_GDMA_TRIG_PERIPH_SPI3), including register-derived wire time.
+     #[inline(always)]
+-    pub(super) fn complete_spi3_dma(&mut self) { if self.periph.spi3.dma_tx_pending.is_some() { self.complete_gpspi_dma(3); } }
++    pub(super) fn complete_spi3_dma(&mut self) {
++        if let Some((deadline, _)) = &self.spi3_scheduled {
++            if self.cycles >= *deadline {
++                let (_, completion) = self.spi3_scheduled.take().unwrap();
++                self.commit_spi2_dma(completion);
++            }
++            return;
++        }
++        if self.periph.spi3.dma_tx_pending.is_some() {
++            self.complete_gpspi_dma(3);
++        }
++    }
+
+     #[inline(never)]
+     fn complete_gpspi_dma(&mut self, host: u8) {
+@@ -133,6 +143,11 @@ impl SocBus {
+                     // Collection reads descriptor words through the bus, and one may be another
+                     // device's register (mmio-s1 compares only SPI2/GDMA sources; review blocker).
+                     self.irq_dirty = true;
++                } else if host == 3 {
++                    let wire = self.periph.spi3.wire_source_cycles();
++                    let cycles = wire * (crate::periph::CPU_HZ / 80_000_000);
++                    self.spi3_scheduled = Some((self.cycles.saturating_add(cycles), completion));
++                    self.irq_dirty = true;
+                 } else {
+                     self.commit_spi2_dma(completion);
+                 }
+diff --git a/esp32s3/src/periph.rs b/esp32s3/src/periph.rs
+index b4b2c22..8da9e1e 100644
+--- a/esp32s3/src/periph.rs
++++ b/esp32s3/src/periph.rs
+@@ -343,7 +343,8 @@ pub struct Peripherals {
+     pub misc: Misc,
+     /// experiment hook: ESP_EMU_FAKE_READ=addr:or[:and],... applied to register reads
+     pub fake_reads: HashMap<u32, (u32, u32)>,
+-    clock: ClockTree<4>,
++    clock: ClockTree<3>,
++    rtc_clock_fraction: u64,
+     pub spi_exec: bool,       // SPI1 command pending execution against the flash array
+     last_status: [u32; 4],
+     pub intmatrix_dirty: bool,
+@@ -353,7 +354,7 @@ pub struct Peripherals {
+ 
+ // Every peripheral, where it sits, and its interrupt source numbers. Entries for one block are
+ // tried in order: a range-limited entry goes before the full-block one behind it.
+-device_set! { Peripherals; clock: (clock) CPU_HZ, [(ClockDomain::Systimer, 15), (ClockDomain::Apb, 3), (ClockDomain::RtcSlow, 1600), (ClockDomain::Cpu, 1)];
++device_set! { Peripherals; clock: (clock) CPU_HZ, [(ClockDomain::Systimer, 15), (ClockDomain::Apb, 3), (ClockDomain::Cpu, 1)];
+     0x00 "UART0" (uart[0]) => [SRC_UART0];
+     0x10 "UART1" (uart[1]) => [SRC_UART1];
+     0x2e "UART2" (uart[2]) => [SRC_UART2];
+@@ -418,18 +419,39 @@ impl Peripherals {
+     /// CPU cycles since this peripheral set was built.
+     pub(crate) fn clock_cycles(&self) -> u64 { self.clock.cycles() }
+     pub fn new(mac: [u8; 6]) -> Self {
++        let mut timg = [TimerGroup::new(), TimerGroup::new()];
++        for timer in &mut timg {
++            timer.rtc_calibration_hz = [136_000, 17_500_000 / 256, 32_768, 136_000];
++        }
+         Peripherals {
+             usb: UsbSerialJtag::new(CPU_HZ), uart: [Uart::new(UartLayout::S3), Uart::new(UartLayout::S3), Uart::new(UartLayout::S3)], systimer: Systimer::new(),
+-            timg: [TimerGroup::new(), TimerGroup::new()], intmatrix: IntMatrix::new(), gpio: Gpio::new(), ledc: Ledc::new(LedcLayout::S3), mcpwm: [Mcpwm::new(160, 9), Mcpwm::new(166, 9)], rtc: RtcCntl::new(),
++            timg, intmatrix: IntMatrix::new(), gpio: Gpio::new(), ledc: Ledc::new(LedcLayout::S3), mcpwm: [Mcpwm::new(160, 9), Mcpwm::new(166, 9)], rtc: RtcCntl::new(),
+             efuse: Efuse::new(mac), system: SystemRegs::new(0x30), extmem: Extmem::new(), spi0: SpiMem::new(false), spi1: SpiMem::new(true),
+             i2c: [crate::i2c::I2c::new(), crate::i2c::I2c::new()], lcd_cam: LcdCam::new(), spi2: GpSpi::new(), spi3: GpSpi::with_host(3), pcnt: Pcnt::new(), wifi: WifiMac::new(CPU_HZ), fe: FeIq { word: 0 },
+             aes: Aes::new(), rsa: Rsa::new(), sha: Sha::new(), wdev: Wdev::new(), i2c_mst: I2cMst::new(), gdma: Gdma::new(), i2s0: I2s::new(CPU_HZ), i2s1: I2s::new(CPU_HZ), rmt: Rmt::new(CPU_HZ),
+             io_mux: RegRam::new(), misc: Misc::new(), fake_reads: std::env::var("ESP_EMU_FAKE_READ").ok().map(|v| v.split(',').filter_map(|e| { let mut p = e.split(':'); let a = u32::from_str_radix(p.next()?.trim_start_matches("0x"), 16).ok()?; let o = u32::from_str_radix(p.next().unwrap_or("0").trim_start_matches("0x"), 16).ok()?; let m = u32::from_str_radix(p.next().unwrap_or("ffffffff").trim_start_matches("0x"), 16).ok()?; Some((a, (o, m))) }).collect()).unwrap_or_default(),
+-            clock: Self::new_clock(),
++            clock: Self::new_clock(), rtc_clock_fraction: 0,
+             spi_exec: false, last_status: [0; 4], intmatrix_dirty: false,
+         }
+     }
+ 
++    /// RTC_CNTL.CLK_CONF.ANA_CLK_RTC_SEL selects the timer and watchdog clock.
++    pub(crate) fn tick_rtc(&mut self, cycles: u32, sleeping: bool) {
++        let hz = match self.rtc.ram.read(0x74) >> 30 {
++            1 => 32_768,
++            2 => 17_500_000 / 256,
++            _ => 136_000,
++        };
++        self.rtc_clock_fraction += u64::from(cycles) * hz;
++        let ticks = self.rtc_clock_fraction / CPU_HZ;
++        self.rtc_clock_fraction %= CPU_HZ;
++        self.rtc.slow_ticks += ticks;
++        // The RTC clock keeps running when the watchdog pauses in sleep.
++        if !sleeping || self.rtc.ram.read(0x98) & (1 << 9) == 0 {
++            self.rtc.wdt_tick(ticks);
++        }
++    }
++
+     pub fn block_name_pub(block: u32) -> String { Self::block_name(block).to_string() }
+     fn block_name(block: u32) -> &'static str {
+         match block {
+diff --git a/esp32s3/src/soc.rs b/esp32s3/src/soc.rs
+index 72a3c3a..2c5bbbd 100644
+--- a/esp32s3/src/soc.rs
++++ b/esp32s3/src/soc.rs
+@@ -51,6 +51,7 @@ impl Soc for S3 {
+     /// Core 0 is always running. SYSTEM_CORE_1_CONTROL_0 controls core 1's clock gate, reset,
+     /// and run-stall state.
+     fn core_state(bus: &SocBus, core: usize) -> CoreState {
++        if bus.sleeping { return CoreState::Held; }
+         if core == 0 { return CoreState::Running; }
+         let (clk, reset, stall) = bus.periph.core1_control();
+         if reset { CoreState::Reset } else if clk && !stall { CoreState::Running } else { CoreState::Held }
+@@ -85,7 +86,8 @@ impl esp_soc::SocBus for SocBus {
+         self.periph.wifi.link.receive_relay_frame(frame)
+     }
+     fn cycles(&self) -> u64 { self.cycles }
+-    fn next_deadline(&self) -> Option<u64> { Some(SocBus::next_deadline(self)) }
++    fn cpu_cycles_for_bus(&self, cycles: u64) -> u64 { self.reference_to_cpu(cycles) }
++    fn next_deadline(&self) -> Option<u64> { Some(self.reference_to_cpu(SocBus::next_deadline(self))) }
+     fn irq_dirty(&mut self) -> &mut bool { &mut self.irq_dirty }
+     // Only the WASM JIT helpers currently stop before deferred device accesses.
+     // `ESP32SIM_VQ_NATIVE` opts a native run in; it is only sound with `--no-jit`.
+@@ -153,6 +155,8 @@ impl esp_soc::SocBus for SocBus {
+         self.flush_ticks();
+         self.cancel_spi2_timing();
+         let cause = self.periph.rtc.reset_cause;
++        self.sleeping = false;
++        self.flash_busy_until = 0;
+         let mut old = std::mem::replace(&mut self.periph, periph::Peripherals::new(mac));
+         let p = &mut self.periph;
+         // The host AP and network survive a guest reboot; only the MAC and relay queues reset.
+@@ -172,6 +176,16 @@ impl esp_soc::SocBus for SocBus {
+         p.spi0.octal_flash = old.spi0.octal_flash; p.spi1.octal_flash = old.spi1.octal_flash; p.spi1.flash_cr2 = old.spi1.flash_cr2;
+         p.spi0.psram_mr[2] = old.spi0.psram_mr[2]; p.spi1.psram_mr[2] = old.spi1.psram_mr[2];
+         p.rtc.ram = old.rtc.ram; p.rtc.slow_ticks = old.rtc.slow_ticks; p.rtc.reset_cause = cause;
++        if matches!(cause, 1 | 16) {
++            // Chip power-on or a reset of the RTC domain re-samples GPIO0.
++            let boot_high = self.board.input_levels().into_iter()
++                .find(|&(pin, _)| pin == 0).is_none_or(|(_, high)| high);
++            p.rtc.ram.write(0x12c, 0);
++            p.gpio.strap = if boot_high { 0x0f } else { 0x03 };
++        } else if p.rtc.ram.read(0x12c) & 1 != 0 {
++            // Force download on a core reset, in the download-enabled eFuse configuration.
++            p.gpio.strap &= !0x0c;
++        }
+         p.usb.connected = old.usb.connected;            // the host side of the USB cable is not reset
+         p.rtc.ram.write(0x38, cause | (cause << 6));
+         p.rtc.ram.write(0x98, 0);                       // watchdog disarmed by the reset; the ROM re-arms it
+diff --git a/xtensa-lx7/src/pie.rs b/xtensa-lx7/src/pie.rs
+index 66e7beb..c15d2a5 100644
+--- a/xtensa-lx7/src/pie.rs
++++ b/xtensa-lx7/src/pie.rs
+@@ -153,6 +153,14 @@ fn st<B: Bus>(cpu: &mut Cpu, bus: &mut B, a: u32, bytes: u32, v: u128) -> Result
+ }
+ 
+ pub fn exec<B: Bus>(cpu: &mut Cpu, bus: &mut B, i: &Insn) -> Result<(), Trap> {
++    // Dedicated GPIO uses the integer register file and is independent of CP3.
++    let op = &OPS[i.imm as usize];
++    if i.raw & 0xffff0f == 0x650804 {
++        let inputs = bus.dedicated_inputs(usize::from(cpu.prid == 0xabab))
++            .ok_or(Trap::Unimplemented(cpu.pc, i.raw))?;
++        cpu.set_ar(extract(i.raw, op).get(Role::Au) as u8, u32::from(inputs));
++        return Ok(());
++    }
+     if cpu.cpenable & (1 << 3) == 0 { return Err(cpu.raise(exc::COPROCESSOR0_DISABLED + 3)); }
+     // The optional PIE cost hypotheses are charged in the table executor only.
+     if i.r & PACKED != 0 && cpu.approximate_pie_mode == 0 { return exec_packed(cpu, bus, i); }

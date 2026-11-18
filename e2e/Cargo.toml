@@ -1,0 +1,13 @@
+[package]
+name = "stickwalker-e2e"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+esp32s3 = { path = "../build/esp32sim/esp32s3" }
+esp-soc = { path = "../build/esp32sim/esp-soc" }
+esp-periph = { path = "../build/esp32sim/esp-periph" }
+emu-core = { path = "../build/esp32sim/emu-core" }
+host = { package = "sw-host", path = "../crates/sw-host" }
+
+crc32fast = "1"

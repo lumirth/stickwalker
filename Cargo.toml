@@ -1,0 +1,12 @@
+[workspace]
+members = ["crates/sw-host", "crates/sw-desktop"]
+exclude = ["e2e", "build/esp32sim", "build/esp32sim/*"]
+resolver = "2"
+
+[patch.crates-io]
+# GPUI's AppKit teardown must preserve accessibility KVO subclasses.
+accesskit_macos = { git = "https://github.com/lumirth/accesskit", rev = "e09cf84b8e0af7659423e5b91eed41c5ac2dd693" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

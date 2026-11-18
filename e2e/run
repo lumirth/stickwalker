@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+simulator=build/esp32sim
+revision=088308a5b7723eebfb3381d1888e0e920d1a44b9
+if [[ ! -e "$simulator/.git" ]]; then
+    mkdir -p build
+    checkout=$(mktemp -d "$root/build/esp32sim.XXXXXX")
+    trap 'rm -rf "$checkout"' EXIT
+    git -C "$checkout" init -q
+    git -C "$checkout" fetch -q --depth 1 https://github.com/mikroverk/esp32sim.git "$revision"
+    git -C "$checkout" checkout -q --detach FETCH_HEAD
+    git -C "$checkout" apply "$root/e2e/esp32s3.patch"
+    mv "$checkout" "$simulator"
+    trap - EXIT
+elif [[ "$(git -C "$simulator" rev-parse HEAD)" != "$revision" ]]; then
+    echo "Unexpected esp32sim revision in $simulator" >&2
+    exit 1
+elif git -C "$simulator" apply --check "$root/e2e/esp32s3.patch" 2>/dev/null; then
+    git -C "$simulator" apply "$root/e2e/esp32s3.patch"
+fi
+if ! git -C "$simulator" apply --reverse --check "$root/e2e/esp32s3.patch"; then
+    echo "The StickS3 emulator patch does not match $simulator" >&2
+    exit 1
+fi
+cargo run --quiet --release --locked --manifest-path e2e/Cargo.toml -- "$@"

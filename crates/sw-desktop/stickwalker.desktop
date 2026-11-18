@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Stickwalker
+Comment=Manage your Stickwalker
+Exec=stickwalker
+Icon=stickwalker
+Categories=Utility;
+Terminal=false

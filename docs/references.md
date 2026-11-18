@@ -10,4 +10,4 @@ Thanks to the [Pokéwalker Hacking community](https://discord.gg/ymbTMsS), inclu
 
 The port uses [M5Stack's Stick S3 hardware and libraries](https://docs.m5stack.com/en/core/StickS3). Firmware tests use [esp32sim](https://github.com/mikroverk/esp32sim), by Joakim Eriksson and Alice.
 
-[Third-party licenses](third-party.md).
+[Third-party notices](../NOTICE.md).

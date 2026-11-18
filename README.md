@@ -1,31 +1,22 @@
-<p align="center">
-  <img src="docs/images/stickwalker-logo.svg" alt="Stickwalker" width="480">
-</p>
+# ![Stickwalker](crates/sw-desktop/assets/wordmark.svg)
 
-# Stickwalker
-
-Stickwalker ports my [matching Pokéwalker firmware reconstruction](https://github.com/lumirth/pw) to the M5Stack Stick S3.
-
-For the full write-up and user guide, visit [my website](https://kukas.me/stickwalker/).
+Stickwalker runs the [Pokéwalker firmware reconstruction](https://github.com/lumirth/pw) on the M5Stack StickS3. [Website and user guide](https://kukas.me/stickwalker/)
 
 ## Install
 
-You need a Stick S3, a BPV10NF photodiode and a USB-C data cable. Connect the photodiode's anode to GND and cathode to G5.
+1. Connect a BPV10NF photodiode to the StickS3 with its anode on GND and its cathode on G5.
+2. Download [Stickwalker Desktop](https://github.com/lumirth/stickwalker/releases/latest) for your computer.
+3. Connect the Stick with a USB-C data cable. Open Stickwalker Desktop and choose **Install Stickwalker**. Updates from earlier public releases keep your save and settings.
 
-Download the firmware ZIP from [Releases](https://github.com/lumirth/stickwalker/releases) and follow the [installation guide](stick/docs/install.md).
-
-Downloads use placeholder built-in artwork. For the original graphics, [build with artwork from your own ROM](docs/build.md#artwork).
+Downloads use placeholder built-in artwork. You can [build with the original artwork](docs/building.md#original-artwork) from your own ROM.
 
 ## Controls
 
-L is Left, M is Center and R is Right. The default orientation is left-side-down.
-
-Hold M for about half a second to wake the screen. Hold L+R for one second to open Stick Settings. See [controls](stick/docs/controls.md) for the other layouts and margin indicators.
-
-For connection problems, see [troubleshooting](stick/docs/troubleshooting.md).
+On a new Stick, Power is Left, Front is Center, and Side is Right. Press Front or Side to wake the screen.
+Hold Power for 1.5 seconds to open **Stick Settings**. [Button layouts](docs/controls.md) · [Troubleshooting](docs/troubleshooting.md)
 
 ## Development
 
-[Build instructions](docs/build.md) · [Contributing](CONTRIBUTING.md) · [Issues](https://github.com/lumirth/stickwalker/issues)
+[Build and test](docs/building.md) · [Architecture](docs/architecture.md) · [USB recovery](docs/recovery.md) · [Contributing](CONTRIBUTING.md)
 
-By [lumirth](https://github.com/lumirth), under [MIT](LICENSE). [Credits](docs/references.md) and [third-party licenses](docs/third-party.md).
+By [lumirth](https://github.com/lumirth). [MIT license](LICENSE) · [Credits](docs/references.md)

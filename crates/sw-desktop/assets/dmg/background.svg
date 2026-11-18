@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="640" height="420" viewBox="0 0 640 420">
+  <defs>
+    <linearGradient id="paper" x2="0" y2="1">
+      <stop stop-color="#F5FAFF"/>
+      <stop offset="1" stop-color="#DCEAF5"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="420" fill="url(#paper)"/>
+  <image x="192" y="32" width="256" height="42" xlink:href="../wordmark.svg"/>
+  <text x="320" y="113" text-anchor="middle" font-family="IBM Plex Sans" font-size="17" fill="#36536B">Drag Stickwalker to Applications</text>
+  <path d="M288 220h64m-12-12 12 12-12 12" fill="none" stroke="#157BCB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

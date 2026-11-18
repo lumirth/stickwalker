@@ -1,0 +1,2 @@
+# Install as /etc/udev/rules.d/60-stickwalker.rules, then reconnect the device.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", MODE="0660", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"

@@ -1,9 +1,9 @@
 # Contributing
 
-Use [Issues](https://github.com/lumirth/stickwalker/issues) for bugs and feature requests. Run the [firmware and formatting checks](docs/build.md#checks) for code changes.
+Report bugs and propose changes in [Issues](https://github.com/lumirth/stickwalker/issues). For a device problem, include the firmware version and the steps that reproduce it.
 
-Test through compiled-firmware workflows with physical or simulated inputs and independent expected results. Extend an existing workflow where possible. Do not add unit tests, integration tests or tests that mirror the implementation.
+Run the [build checks](docs/building.md#checks) for the code you change. For firmware behavior, extend an existing [simulator journey](e2e/README.md) or describe how you tested on a Stick.
 
-Changes to shared Pokéwalker code must still match the original H8 binary under both supported compilers.
+Keep the pinned game sources in `pokewalker/upstream/` intact. StickS3 adaptations belong in `pokewalker/port/`. Keep ROMs, retail artwork, and personal saves out of commits.
 
-Contributions use the [MIT license](LICENSE). Retain third-party notices. Do not commit ROMs, extracted retail artwork or proprietary compilers.
+Contributions use the [MIT license](LICENSE). Retain [third-party notices](NOTICE.md).

@@ -1,0 +1,26 @@
+[package]
+name = "sw-host"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = "4.9"
+espflash = { version = "=4.7.0", default-features = false, features = ["serialport"] }
+crc32fast = "1"
+sha2 = "0.10"
+directories = "6"
+ureq = { version = "3", features = ["json"] }
+semver = "1"
+littlefs2 = { version = "=0.8.1", default-features = false }
+tempfile = "3"
+
+[dev-dependencies]
+flate2 = "1"
+
+[lib]
+name = "host"
