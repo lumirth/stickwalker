@@ -74,6 +74,9 @@ jobs:
       STICKWALKER_UPDATE_KEY: ${{ vars.STICKWALKER_UPDATE_KEY }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           name: bundled-firmware
@@ -82,13 +85,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libudev-dev libvulkan1 zlib1g-dev
       - name: Check tag and signing configuration
         shell: bash
+        env:
+          STICKWALKER_SIGN_IDENTITY: ${{ vars.STICKWALKER_SIGN_IDENTITY }}
         run: |
-          test -n "$STICKWALKER_UPDATE_KEY"
-          python3 -c 'import os,tomllib; assert os.environ["GITHUB_REF_NAME"] == "desktop-v" + tomllib.load(open("crates/sw-desktop/Cargo.toml","rb"))["package"]["version"]'
+          python tools/package.py check-desktop-release "$GITHUB_REF_NAME"
           rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
       - if: runner.os == 'Linux'
-        run: python3 e2e/storage.py
+        run: python e2e/storage.py
       - run: cargo test --locked --workspace
       - if: runner.os == 'macOS'
         name: Import Developer ID and notarization credentials
@@ -98,7 +102,7 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-        run: python3 tools/release.py credentials
+        run: python tools/release.py credentials
       - if: runner.os == 'macOS'
         run: cargo install gpui-updater-release --version 0.4.4 --features cli --locked
       - name: Package
@@ -108,11 +112,11 @@ jobs:
           STICKWALKER_NOTARY_PROFILE: stickwalker-release
         run: |
           if [ "$RUNNER_OS" = macOS ]; then
-            python3 -m venv "$RUNNER_TEMP/dmg-tools"
+            python -m venv "$RUNNER_TEMP/dmg-tools"
             "$RUNNER_TEMP/dmg-tools/bin/pip" install -r tools/requirements-macos.txt
             "$RUNNER_TEMP/dmg-tools/bin/python" tools/package.py desktop --sign
           else
-            python3 tools/package.py desktop
+            python tools/package.py desktop
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -144,4 +148,9 @@ jobs:
         run: |
           notes="docs/releases/$TAG.md"
           [[ -f "$notes" ]] || notes=/dev/null
-          gh release create "$TAG" artifacts/* --verify-tag --draft --title "Stickwalker $TAG" --notes-file "$notes"
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
+            [[ "$draft" == true ]] || { echo "This release is already published."; exit 1; }
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" artifacts/* --verify-tag --draft --title "Stickwalker $TAG" --notes-file "$notes"
+          fi

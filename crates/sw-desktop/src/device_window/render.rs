@@ -1,10 +1,11 @@
 use crate::{
-    device_window::{FileAction, StickView},
+    device_window::{FileAction, PendingExit, StickView},
     updater::AppUpdate,
     *,
 };
 use gpui_kit::component::{progress::Progress, tooltip::Tooltip};
 use host::worker::{Command, ConnectionState};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(no_json)]
@@ -398,9 +399,7 @@ impl Render for StickView {
             .track_focus(&self.focus)
             .key_context("Stickwalker")
             .on_action(cx.listener(|v, _: &CloseWindow, _w, cx| {
-                if v.prepare_close(cx) {
-                    cx.quit();
-                }
+                v.request_exit(PendingExit::Quit, cx);
             }))
             .on_action(
                 cx.listener(|v, action: &SelectStick, w, cx| v.select(action.0.clone(), w, cx)),
@@ -592,6 +591,68 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    #[gpui_kit::test]
+    fn the_editor_survives_unplugging_its_stick(cx: &mut TestAppContext) {
+        use host::worker::ConnectionState;
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::open_window(WindowOptions::default(), cx, |w, cx| {
+                cx.new(|cx| StickView::new(w, cx))
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, w, cx| {
+            view.update(cx, |v, cx| {
+                v.show_state(4, w, cx);
+                v.open_palette(false, cx);
+                let original = v.editor.as_ref().unwrap().0;
+                let mut snapshot = v.state.clone();
+                let ready = snapshot.connection.clone();
+                snapshot.connection = ConnectionState::Disconnected;
+                v.present(snapshot.clone(), w, cx);
+                assert_eq!(v.editor.as_ref().unwrap().0, original);
+                snapshot.connection = ready;
+                v.present(snapshot.clone(), w, cx);
+                assert_eq!(v.editor.as_ref().unwrap().0, original);
+                snapshot.connection.info_mut().unwrap().mac = "0A:00:01:02:03:04".into();
+                v.present(snapshot, w, cx);
+                assert!(v.editor.is_none());
+            });
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn an_invalid_save_is_rejected_before_asking_to_replace_the_walk(cx: &mut TestAppContext) {
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::open_window(WindowOptions::default(), cx, |w, cx| {
+                cx.new(|cx| StickView::new(w, cx))
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, w, cx| {
+            view.update(cx, |v, cx| v.show_state(4, w, cx));
+            w.dispatch_action(Box::new(crate::ImportEeprom), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        cx.simulate_path_prompt_response(|_| Some(vec![file.path().to_owned()]));
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        cx.update(|cx| {
+            assert!(
+                view.read(cx)
+                    .state
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("Pokéwalker save")
+            )
+        });
     }
 
     #[gpui_kit::test]

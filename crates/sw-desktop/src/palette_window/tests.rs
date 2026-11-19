@@ -50,7 +50,7 @@ fn switching_palettes_commits_the_draft_to_the_previous_palette(cx: &mut TestApp
     visual.simulate_click(target, Modifiers::default());
     cx.update_window(handle, |_, _, cx| {
         let settings = editor.read(cx).settings;
-        assert_eq!(settings.active_palette, 1);
+        assert_eq!(settings.active_palette.index(), 1);
         assert_eq!(settings.slots[0].name.as_str(), "Desk Palette");
         assert_eq!(settings.slots[0].colors[0], 0xf800);
         assert_eq!(settings.slots[1], PaletteSlot::default_at(1));
@@ -132,4 +132,28 @@ fn leaving_an_invalid_hex_draft_restores_the_target_shade(cx: &mut TestAppContex
             format!("#{:06X}", host::rgb888(v.settings.colors()[1]))
         );
     });
+}
+
+#[gpui_kit::test]
+fn closing_pulls_draft_colors_without_emitting_an_edit(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+    let (handle, editor) = open_editor(cx);
+    let events = Rc::new(Cell::new(0));
+    let count = events.clone();
+    let _sub = cx.update(|cx| {
+        cx.subscribe(&editor, move |_, _: &super::PaletteChanged, _| {
+            count.set(count.get() + 1)
+        })
+    });
+    cx.update_window(handle, |_, w, cx| {
+        editor.update(cx, |e, cx| {
+            e.hex
+                .update(cx, |input, cx| input.set_value("#FF0000", w, cx));
+            let settings = e.take_committed_settings(w, cx);
+            assert_eq!(settings.colors()[0], 0xf800);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(events.get(), 0);
 }

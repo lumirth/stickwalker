@@ -16,7 +16,7 @@ sha2 = "0.10"
 directories = "6"
 ureq = { version = "3", features = ["json"] }
 semver = "1"
-littlefs2 = { version = "=0.8.1", default-features = false }
+littlefs2-sys = { version = "=0.4.1", features = ["malloc"] }
 tempfile = "3"
 
 [dev-dependencies]

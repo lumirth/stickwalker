@@ -305,9 +305,8 @@ void board_power_tick(bool linking, bool screen_asleep)
         power.next_retry = now + 1000000;
     }
     if (power.sleeping && !screen_asleep) power.next_source = power.next_read = 0;
-    // Entering the pocket, feed early with the next battery check. Both then
-    // share a 30-second wake instead of carrying separate interactive phases.
-    if (!power.sleeping && screen_asleep) power.next_watchdog = power.next_source;
+    // Align the battery sample and watchdog when entering pocket sleep.
+    if (!power.sleeping && screen_asleep) power.next_watchdog = power.next_read = now;
     power.sleeping = screen_asleep;
     Battery *battery = &power.battery;
     bool usb_attached = usb_serial_jtag_is_connected();
@@ -321,9 +320,9 @@ void board_power_tick(bool linking, bool screen_asleep)
         } else {
             battery->known = false;
         }
-        // Idle cable detection shares the battery cadence. A direct-button
-        // wake or an enumerated USB connection refreshes the source immediately.
-        power.next_source = now + (screen_asleep && !battery->low ? 30000000 : 1000000);
+        // In the pocket, sample VBUS on a game wake: every other stationary
+        // tick, or at the next FIFO drain while walking.
+        power.next_source = now + (screen_asleep ? 1500000 : 1000000);
     }
     if (!linking && now >= power.next_read) {
         uint8_t voltage[2];
@@ -632,7 +631,7 @@ void board_park(uint64_t mask)
 void board_wait(uint64_t deadline, bool screen_asleep)
 {
     uint64_t now = now_us();
-    if (power.next_source > now && power.next_source < deadline) {
+    if (!screen_asleep && power.next_source > now && power.next_source < deadline) {
         deadline = power.next_source;
     }
     if (power.next_read > now && power.next_read < deadline) {

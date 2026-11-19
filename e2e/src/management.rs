@@ -93,9 +93,15 @@ pub fn check(rig: &mut Rig, output: &Path) -> Result<()> {
     assert!(request(rig, protocol::WRITE, &wrong).is_err());
     let mut partial = 0u32.to_le_bytes().to_vec();
     partial.extend(&incoming[..4080]);
+    partial[4 + 0x400] ^= 0x5a;
     request(rig, protocol::WRITE, &partial)?;
+    for (op, payload) in [(protocol::IDENTIFY, &[][..]), (protocol::SETTINGS, prefs.as_slice()), (protocol::PREPARE, &[][..])] {
+        assert_eq!(request(rig, op, payload).unwrap_err().to_string(),
+                   format!("Management {op} failed: 1"));
+    }
     rig.run(2200)?;
     let after_partial = snapshot(rig)?;
+    assert_eq!(after_partial[0x400], later[0x400]);
     assert_eq!(
         after_partial[0x7000], later[0x7000],
         "Incomplete import changed the walk"
@@ -286,6 +292,30 @@ pub fn check(rig: &mut Rig, output: &Path) -> Result<()> {
     request(rig, protocol::SETTINGS, &prefs)?;
     rig.open_settings()?;
     rig.snapshot(output, "palette-name")?;
+    // The host cannot enumerate a stationary sleeping Stick until VBUS keeps it awake.
+    rig.usb_power(false, 3910);
+    rig.imu.borrow_mut().sample = [0, 0, 16384];
+    // Let the settings menu time out and the game finish its last active FIFO batch.
+    for _ in 0..240 {
+        rig.run(1000)?;
+        if !rig.pm.borrow().rail() && !rig.imu.borrow().fifo_enabled && rig.machine.bus.sleeping {
+            break;
+        }
+    }
+    assert!(!rig.pm.borrow().rail() && !rig.imu.borrow().fifo_enabled && rig.machine.bus.sleeping,
+            "Walker did not reach stationary sleep");
+    let previous = rig.pm.borrow().source_reads;
+    for _ in 0..220 {
+        rig.run(10)?;
+        if rig.pm.borrow().source_reads > previous && rig.machine.bus.sleeping { break; }
+    }
+    assert!(rig.pm.borrow().source_reads > previous);
+    rig.usb_power(true, 3910);
+    rig.machine.bus.periph.usb.connected = false;
+    rig.run(2100)?;
+    assert!(!rig.machine.bus.sleeping, "Stationary walker missed cable insertion");
+    rig.machine.bus.periph.usb.connected = true;
+    assert_eq!(request(rig, protocol::STATUS, &[])?[73], 1);
     println!(
         "USB management: coherent EEPROM export, abandoned-transfer recovery, durable palettes, live import, save-fault repair, reset and pocket catch-up"
     );

@@ -39,6 +39,7 @@ pub struct Updates {
 }
 fn engine() -> anyhow::Result<UpdateEngine<StaticManifestSource>> {
     let key = option_env!("STICKWALKER_UPDATE_KEY")
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("This development build has no signed app update feed."))?;
     let source = StaticManifestSource::new(option_env!("STICKWALKER_APP_FEED").unwrap_or(FEED))
@@ -47,15 +48,40 @@ fn engine() -> anyhow::Result<UpdateEngine<StaticManifestSource>> {
     let config = EngineConfig::new(env!("CARGO_PKG_VERSION").parse()?)
         .ed25519_public_key(key)
         .verification(Verification::Strict);
-    let engine = UpdateEngine::new(source, config);
-    let ownership = engine.ownership(&OwnershipHints::new());
+    let exe = gpui_updater_core::install::current_install_root()?;
+    let ownership = gpui_updater_core::install::ownership(&exe, &OwnershipHints::new());
     anyhow::ensure!(
         ownership.is_self_update(),
-        "Update this installation with its package manager. {}",
+        "Update with your package manager. {}",
         ownership.update_command().unwrap_or_default()
     );
+    #[cfg(target_os = "linux")]
+    let config = config.install_root(linux_bundle_root(&exe)?);
+    let engine = UpdateEngine::new(source, config);
     Ok(engine)
 }
+#[cfg(any(target_os = "linux", test))]
+fn linux_bundle_root(exe: &std::path::Path) -> anyhow::Result<&std::path::Path> {
+    let root = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Cannot locate Stickwalker."))?;
+    let expected = [
+        "stickwalker",
+        "icon.png",
+        "60-stickwalker.rules",
+        "install-launcher.py",
+        concat!(env!("STICKWALKER_APP_ID"), ".desktop"),
+    ];
+    // The Linux installer atomically replaces this entire directory.
+    anyhow::ensure!(
+        expected.iter().all(|name| root.join(name).is_file())
+            && std::fs::read_dir(root)?.all(|entry| entry
+                .is_ok_and(|entry| expected.iter().any(|name| entry.file_name() == *name))),
+        "Extract Stickwalker into its own folder to update."
+    );
+    Ok(root)
+}
+
 impl Updates {
     pub fn new() -> Self {
         let (native_tx, events) = async_channel::unbounded();
@@ -68,20 +94,25 @@ impl Updates {
                     let _ = tx.try_send(UpdateEvent::Driver(Box::new(event)));
                 }));
                 driver.set_automatically_checks_for_updates(false);
+                driver.set_automatically_downloads_updates(false);
                 (Some(driver), AppUpdate::Idle)
             }
             Ok(None)
                 if !cfg!(target_os = "macos")
-                    && option_env!("STICKWALKER_UPDATE_KEY").is_some() =>
+                    && option_env!("STICKWALKER_UPDATE_KEY")
+                        .is_some_and(|key| !key.trim().is_empty()) =>
             {
                 (None, AppUpdate::Idle)
             }
             Ok(None) => (None, AppUpdate::Unsupported),
             Err(error) => (None, AppUpdate::Failed(error.to_string())),
         };
-        if let Ok(root) = gpui_updater_core::install::current_install_root() {
-            gpui_updater_core::install::remove_leftovers(&root);
-        }
+        #[cfg(target_os = "windows")]
+        std::thread::spawn(|| {
+            if let Ok(root) = gpui_updater_core::install::current_install_root() {
+                gpui_updater_core::install::remove_leftovers(&root);
+            }
+        });
         Self {
             driver,
             events,
@@ -99,8 +130,9 @@ impl Updates {
                 | AppUpdate::ReadyToRestart { .. }
         )
     }
-    pub fn is_installing(&self) -> bool {
+    pub fn blocks_hardware(&self) -> bool {
         matches!(self.state, AppUpdate::Installing)
+            || (self.driver.is_some() && matches!(self.state, AppUpdate::Downloading { .. }))
     }
     pub fn action_label(&self) -> String {
         match &self.state {
@@ -120,18 +152,20 @@ impl Updates {
         }
         self.state = AppUpdate::Checking { background };
         if let Some(driver) = &mut self.driver {
-            if background {
-                driver.check_in_background();
-            } else {
-                driver.check();
-            }
+            driver.check_for_update_information();
         } else {
             let tx = self.native_tx.clone();
             std::thread::spawn(move || {
-                let state = match engine().and_then(|engine| Ok(engine.check()?)) {
-                    Ok(Some(release)) => AppUpdate::Available(Box::new(release)),
-                    Ok(None) => AppUpdate::Idle,
+                let state = match engine() {
                     Err(error) => AppUpdate::Failed(error.to_string()),
+                    Ok(engine) => match engine.check() {
+                        Ok(Some(release)) => AppUpdate::Available(Box::new(release)),
+                        Ok(None) => AppUpdate::Idle,
+                        Err(error) => {
+                            eprintln!("Desktop update check failed: {error}");
+                            AppUpdate::Failed("Couldn’t check for updates.".into())
+                        }
+                    },
                 };
                 let _ = tx.try_send(UpdateEvent::Native(state));
             });
@@ -207,7 +241,7 @@ impl Updates {
         let UpdateEvent::Driver(event) = event else {
             if let UpdateEvent::Native(state) = event {
                 self.state = match state {
-                    AppUpdate::Failed(_) if checking => check_failed(),
+                    AppUpdate::Failed(_) if background => AppUpdate::Idle,
                     AppUpdate::Idle if checking => current(),
                     state => state,
                 };
@@ -215,6 +249,15 @@ impl Updates {
             return;
         };
         self.state = match *event {
+            // Sparkle repeats discovery when the user accepts an offered update.
+            DriverEvent::Checking | DriverEvent::Found(_)
+                if matches!(
+                    self.state,
+                    AppUpdate::Downloading { .. } | AppUpdate::Installing
+                ) =>
+            {
+                return;
+            }
             DriverEvent::Checking => AppUpdate::Checking {
                 background: background || !checking,
             },
@@ -262,5 +305,28 @@ impl Updates {
             }
             cx.restart();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::linux_bundle_root;
+    #[test]
+    fn linux_updates_replace_only_the_extracted_application() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("stickwalker");
+        std::fs::write(&exe, []).unwrap();
+        assert!(linux_bundle_root(&exe).is_err());
+        for name in [
+            "icon.png",
+            "60-stickwalker.rules",
+            "install-launcher.py",
+            concat!(env!("STICKWALKER_APP_ID"), ".desktop"),
+        ] {
+            std::fs::write(dir.path().join(name), []).unwrap();
+        }
+        assert_eq!(linux_bundle_root(&exe).unwrap(), dir.path());
+        std::fs::write(dir.path().join("my-save.eeprom"), []).unwrap();
+        assert!(linux_bundle_root(&exe).is_err());
     }
 }

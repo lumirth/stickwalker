@@ -10,6 +10,14 @@ Copy or paste a palette in Hachistep's `Name|BG|INK` or `Name|BG|LIGHT|DARK|INK`
 
 **File → Export EEPROM** writes a standard 64 KiB `.eeprom` file. **File → Import EEPROM** replaces the current save with the file you choose.
 
+## Windows
+
+Run the downloaded `.exe` directly. The Windows build is unsigned, so SmartScreen may ask you to confirm the publisher. Check that your download came from the [Stickwalker release page](https://github.com/lumirth/stickwalker/releases/latest).
+
+## Linux
+
+The x86-64 tarball targets Ubuntu 24.04 (glibc 2.39) and newer compatible distributions. The display needs the Vulkan loader (`libvulkan1` on Ubuntu) and a Vulkan driver for your GPU. Extract the entire `Stickwalker` folder, keep it together, and run `./stickwalker` from that folder. For an application menu entry, run `python3 install-launcher.py` there. Run it again if you move the folder.
+
 ## Linux USB permissions
 
 If Desktop reports a port permission error, run these commands from the extracted download and reconnect the Stick.

@@ -131,12 +131,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
-
-[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -375,15 +369,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "delog"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed991f9823b19e8a0380e198dcbb6aa6ac82727b40bfecd2c6cc634f46b7e01c"
-dependencies = [
- "log",
 ]
 
 [[package]]
@@ -680,29 +665,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
-name = "hash32"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-
-[[package]]
-name = "heapless"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
-dependencies = [
- "hash32",
- "stable_deref_trait",
-]
 
 [[package]]
 name = "heck"
@@ -942,29 +908,6 @@ name = "litrs"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
-
-[[package]]
-name = "littlefs2"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "162d215700412b0173e3c8cfde130176fb799beccdd3d8db7cee57be3fb72ada"
-dependencies = [
- "bitflags 2.13.2",
- "delog",
- "generic-array",
- "heapless",
- "littlefs2-core",
- "littlefs2-sys",
-]
-
-[[package]]
-name = "littlefs2-core"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c0f7acafcb6c9dfcbc3c7c54aa7b8e04367d535daeb4be0e7131f93e4587dd2"
-dependencies = [
- "bitflags 2.13.2",
-]
 
 [[package]]
 name = "littlefs2-sys"
@@ -1496,25 +1439,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "sw-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-channel",
- "crc32fast",
- "directories",
- "espflash",
- "littlefs2",
- "semver",
- "serde",
- "serde_json",
- "serialport",
- "sha2 0.10.9",
- "tempfile",
- "ureq",
-]
-
-[[package]]
 name = "stickwalker-e2e"
 version = "0.1.0"
 dependencies = [
@@ -1579,6 +1503,25 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "sw-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "crc32fast",
+ "directories",
+ "espflash",
+ "littlefs2-sys",
+ "semver",
+ "serde",
+ "serde_json",
+ "serialport",
+ "sha2 0.10.9",
+ "tempfile",
+ "ureq",
+]
 
 [[package]]
 name = "syn"

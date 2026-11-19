@@ -93,3 +93,5 @@ using the public partition's 4096-byte blocks and 384-block geometry. It checks
 that a factory/foreign filesystem is installable without being called a damaged walk.
 
 `public-nvs.bin.zlib` contains the 20 KiB Arduino NVS partition from the physical 2026-11-14 preflight flash capture. It includes superseded control entries and the final display preference.
+
+`public-littlefs-pair.bin.zlib` is a synthetic LittleFS 2.1 volume made with littlefs-python 0.19. Its two PWE1 checkpoints have sequences 7 and 8 and carry their sequence at EEPROM offset 0x100. Migration tests damage each payload in turn.

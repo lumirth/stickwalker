@@ -41,13 +41,22 @@ pub fn ramp(panel: u16, ink: u16) -> [u16; 4] {
 pub fn is_ramp(colors: [u16; 4]) -> bool {
     colors == ramp(colors[0], colors[3])
 }
-fn hex(value: &str) -> Result<u32> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rgb24(u32);
+
+impl Rgb24 {
+    pub fn rgb565(self) -> u16 {
+        rgb565(self.0)
+    }
+}
+
+pub fn parse_hex(value: &str) -> Result<Rgb24> {
     let value = value.strip_prefix('#').unwrap_or(value);
     ensure!(
         value.len() == 6 && value.bytes().all(|b| b.is_ascii_hexdigit()),
         "Use six hexadecimal digits for each color."
     );
-    Ok(u32::from_str_radix(value, 16)?)
+    Ok(Rgb24(u32::from_str_radix(value, 16)?))
 }
 pub fn parse(text: &str) -> Result<ParsedPalette> {
     let fields: Vec<_> = if text.contains('|') {
@@ -62,14 +71,17 @@ pub fn parse(text: &str) -> Result<ParsedPalette> {
         [_, _, _, _] => (None, fields.as_slice()),
         _ => anyhow::bail!("Clipboard does not contain a palette."),
     };
-    let values = colors.iter().map(|s| hex(s)).collect::<Result<Vec<_>>>()?;
+    let values = colors
+        .iter()
+        .map(|s| parse_hex(s))
+        .collect::<Result<Vec<_>>>()?;
     let two_color = values.len() == 2;
     let colors = if two_color {
-        ramp(rgb565(values[0]), rgb565(values[1]))
+        ramp(values[0].rgb565(), values[1].rgb565())
     } else {
         values
             .into_iter()
-            .map(rgb565)
+            .map(Rgb24::rgb565)
             .collect::<Vec<_>>()
             .try_into()
             .unwrap()

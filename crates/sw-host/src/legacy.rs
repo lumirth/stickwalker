@@ -1,92 +1,74 @@
 //! Readers for the five public candidate releases. No private r1–r6 formats.
-use crate::save::{EEPROM, apply_spans, validate_eeprom};
+use crate::save::{EEPROM, EepromImage, PublicPartition, apply_spans, validate_eeprom};
 use anyhow::{Context, Result, ensure};
-use littlefs2::{
-    consts::{U16, U512},
-    driver::Storage,
-    fs::Filesystem,
-    io::{Error, Result as FsResult},
-    path::Path,
-};
-struct Flash<'a>(&'a [u8]);
-impl Storage for Flash<'_> {
-    type CACHE_SIZE = U512;
-    type LOOKAHEAD_SIZE = U16;
-    const READ_SIZE: usize = 16;
-    const WRITE_SIZE: usize = 256;
-    const BLOCK_SIZE: usize = 4096;
-    const BLOCK_COUNT: usize = 384;
-    fn read(&mut self, at: usize, out: &mut [u8]) -> FsResult<usize> {
-        let bytes = self.0.get(at..at + out.len()).ok_or(Error::IO)?;
-        out.copy_from_slice(bytes);
-        Ok(out.len())
-    }
-    fn write(&mut self, _: usize, _: &[u8]) -> FsResult<usize> {
-        Err(Error::IO)
-    }
-    fn erase(&mut self, _: usize, _: usize) -> FsResult<usize> {
-        Err(Error::IO)
-    }
-}
+mod filesystem;
 fn word(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
-pub fn littlefs(data: &[u8]) -> Result<Option<Vec<u8>>> {
-    ensure!(data.len() >= 0x180000, "Incomplete legacy filesystem");
-    let mut flash = Flash(&data[..0x180000]);
-    let mut allocation = Filesystem::allocate();
-    let Ok(fs) = Filesystem::mount(&mut allocation, &mut flash) else {
-        return Ok(None);
-    };
-    if !["/pw-a.bin\0", "/pw-b.bin\0", "/pw-journal.bin\0"]
-        .iter()
-        .any(|name| fs.exists(Path::from_str_with_nul(name).unwrap()))
-    {
-        return Ok(None);
+pub(super) fn classify_littlefs(data: &[u8]) -> PublicPartition {
+    match scan_littlefs(data) {
+        Ok(outcome) => outcome,
+        Err(error) => PublicPartition::DamagedSave(error),
     }
-    let read = |name: &str| -> Result<Vec<u8>> {
-        let path = Path::from_str_with_nul(name)
-            .map_err(|_| anyhow::anyhow!("Invalid legacy filename"))?;
-        let length = fs
-            .metadata(path)
-            .map_err(|e| anyhow::anyhow!("{name}: {e:?}"))?
-            .len();
-        ensure!(length <= EEPROM + 4096, "Oversized legacy save file");
-        let mut bytes = vec![0; length];
-        fs.open_file_and_then(path, |f| {
-            let mut at = 0;
-            while at < bytes.len() {
-                let n = f.read(&mut bytes[at..])?;
-                if n == 0 {
-                    return Err(Error::IO);
+}
+
+fn scan_littlefs(data: &[u8]) -> Result<PublicPartition> {
+    ensure!(data.len() == 0x180000, "Incomplete legacy filesystem");
+    if let Some(scan) = filesystem::mounted(data, scan_files) {
+        return scan;
+    }
+    let markers: &[&[u8]] = &[
+        b"littlefs",
+        b"pw-a.bin",
+        b"pw-b.bin",
+        b"pw-journal.bin",
+        &0x50574531u32.to_le_bytes(),
+        &0x50574a31u32.to_le_bytes(),
+    ];
+    ensure!(
+        !markers
+            .iter()
+            .any(|m| data.windows(m.len()).any(|w| w == *m)),
+        "The older filesystem could not be opened"
+    );
+    Ok(PublicPartition::EmptyOrForeign)
+}
+
+fn scan_files(fs: &mut filesystem::Volume<'_>) -> Result<PublicPartition> {
+    let mut newest = None;
+    let mut damaged_sequence = None;
+    let mut found = false;
+    for name in [c"/pw-a.bin", c"/pw-b.bin"] {
+        match fs.read(name, 0x180000) {
+            Ok(None) => continue,
+            Ok(Some(bytes)) if bytes.len() >= 8 && word(&bytes, 0) == 0x50574531 => {
+                let sequence = word(&bytes, 4);
+                if bytes.len() == EEPROM + 12
+                    && word(&bytes, 8) == crc32fast::hash(&bytes[12..])
+                    && validate_eeprom(&bytes[12..]).is_ok()
+                {
+                    if newest.as_ref().is_none_or(|(n, _)| sequence > *n) {
+                        newest = Some((sequence, bytes[12..].to_vec()));
+                    }
+                } else {
+                    damaged_sequence = damaged_sequence.max(Some(sequence));
                 }
-                at += n;
             }
-            Ok(())
-        })
-        .map_err(|e| anyhow::anyhow!("Cannot read legacy save: {e:?}"))?;
-        Ok(bytes)
-    };
-    let mut slots = Vec::new();
-    for name in ["/pw-a.bin\0", "/pw-b.bin\0"] {
-        if fs.exists(Path::from_str_with_nul(name).unwrap()) {
-            let b = read(name)?;
-            ensure!(
-                b.len() == EEPROM + 12
-                    && word(&b, 0) == 0x50574531
-                    && word(&b, 8) == crc32fast::hash(&b[12..]),
-                "Damaged legacy checkpoint"
-            );
-            slots.push((word(&b, 4), b[12..].to_vec()));
+            // A torn file may lack even its header. Its intact partner is usable.
+            _ => {}
         }
+        found = true;
     }
-    let (_, mut image) = slots
-        .into_iter()
-        .max_by_key(|v| v.0)
-        .context("No committed save in the older filesystem")?;
-    let journal_path = Path::from_str_with_nul("/pw-journal.bin\0").unwrap();
-    if fs.exists(journal_path) {
-        let b = read("/pw-journal.bin\0")?;
+    let journal = fs.read(c"/pw-journal.bin", 0x180000)?;
+    if !found && journal.is_none() {
+        return Ok(PublicPartition::EmptyOrForeign);
+    }
+    let (sequence, mut image) = newest.context("No intact checkpoint in the older filesystem")?;
+    ensure!(
+        damaged_sequence.is_none_or(|n| n <= sequence),
+        "The newer legacy checkpoint is damaged"
+    );
+    if let Some(b) = journal {
         let mut at = 0;
         while at + 12 <= b.len() {
             let size = word(&b, at + 4) as usize;
@@ -106,8 +88,7 @@ pub fn littlefs(data: &[u8]) -> Result<Option<Vec<u8>>> {
             at += 12 + size;
         }
     }
-    validate_eeprom(&image)?;
-    Ok(Some(image))
+    Ok(PublicPartition::StickwalkerSave(EepromImage::parse(image)?))
 }
 
 // Only the U8 preferences used by public firmware are interpreted.
@@ -145,7 +126,17 @@ fn entries(nvs: &[u8]) -> Vec<(u8, String, u8)> {
     entries
 }
 pub fn preferences(nvs: &[u8]) -> crate::DeviceSettings {
+    translate(&entries(nvs))
+}
+
+pub(super) fn migrated_preferences(nvs: &[u8]) -> Option<crate::DeviceSettings> {
     let entries = entries(nvs);
+    let has_namespace = |name: &str| entries.iter().any(|(ns, key, _)| *ns == 0 && key == name);
+    (!has_namespace("stick") && (has_namespace("pw-controls") || has_namespace("pw-display")))
+        .then(|| translate(&entries))
+}
+
+fn translate(entries: &[(u8, String, u8)]) -> crate::DeviceSettings {
     let value = |namespace: &str, key: &str| -> Option<u8> {
         let id = entries
             .iter()
@@ -162,7 +153,7 @@ pub fn preferences(nvs: &[u8]) -> crate::DeviceSettings {
     let layout = control & 3;
     let reverse = 1 - ((control >> 2) & 1);
     let mut prefs = crate::DeviceSettings {
-        active_palette: 2,
+        active_palette: crate::PaletteIndex::GREYSCALE,
         reverse: reverse != 0,
         layout: if layout < 2 { 2 } else { 1 },
         mappings: [

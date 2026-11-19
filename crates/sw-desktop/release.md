@@ -63,7 +63,8 @@ Write the player-facing notes in `docs/releases/<tag>.md` before tagging, or edi
 After reviewing the draft artifacts, check out that release tag and run:
 
 ```sh
-# Desktop only: the private half corresponding to STICKWALKER_UPDATE_KEY.
+# Desktop updates use the same key pair used to sign the app feed.
+export STICKWALKER_UPDATE_KEY='<public half>'
 export SPARKLE_PRIVATE_KEY='<release signing key>'
 python3 tools/release.py publish desktop-v0.1.0
 # Or independently:

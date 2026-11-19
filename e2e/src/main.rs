@@ -51,6 +51,7 @@ struct Pm {
     codec_unpowered_accesses: u32,
     led_flashes: u32,
     key_reads: u64,
+    source_reads: u64,
     i2c_transactions: u64,
     last_key_read: u64,
     longest_key_gap: u64,
@@ -95,6 +96,7 @@ impl Pm {
             codec_unpowered_accesses: 0,
             led_flashes: 0,
             key_reads: 0,
+            source_reads: 0,
             i2c_transactions: 0,
             last_key_read: 0,
             longest_key_gap: 0,
@@ -112,7 +114,10 @@ impl Pm {
 
     fn read(&mut self, register: u8) -> u8 {
         match register {
-            4 => 4 | u8::from(self.usb) | (u8::from(self.external_5v && !self.boost_on()) << 1),
+            4 => {
+                self.source_reads += 1;
+                4 | u8::from(self.usb) | (u8::from(self.external_5v && !self.boost_on()) << 1)
+            }
             0x22..=0x23 => self.battery_sample_mv.to_le_bytes()[usize::from(register - 0x22)],
             0x24..=0x25 => {
                 if self.usb {
@@ -1479,7 +1484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if journey == "connect-noise" {
             let link = *rig.machine.symbols.iter()
-                .find(|(_, name)| name.as_str() == "in_link")
+                .find(|(_, name)| name.as_str() == "eeprom_owner")
                 .ok_or("Missing link state")?.0;
             rig.center()?;
             rig.run(1000)?;
@@ -1683,6 +1688,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let walk_budget = energy::Sample::take(&rig);
             let key_reads = rig.pm.borrow().key_reads;
             let pm_transactions = rig.pm.borrow().i2c_transactions;
+            let source_reads = rig.pm.borrow().source_reads;
             let state = *rig
                 .machine
                 .symbols
@@ -1777,9 +1783,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "Pocket workload exceeded its wake or CPU budget; see residency.csv".into(),
                 );
             }
-            // 180 seconds permits six 30-second housekeeping rounds. Each
-            // source/voltage read pair plus feed costs five STARTs; allow two extra rounds.
-            if rig.pm.borrow().i2c_transactions - pm_transactions > 40 {
+            // Each VBUS read uses two STARTs and is spaced at least 1.5 s apart.
+            // Voltage and watchdog still get only eight three-START rounds in 180 s.
+            let cable_checks = rig.pm.borrow().source_reads - source_reads;
+            if cable_checks > 121 ||
+                rig.pm.borrow().i2c_transactions - pm_transactions > 2 * cable_checks + 24 {
                 return Err(
                     "Pocket walk/rest performed excessive total PM1 I2C transactions".into(),
                 );
@@ -1895,7 +1903,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .machine
                 .symbols
                 .iter()
-                .find(|(_, n)| n.as_str() == "in_link")
+                .find(|(_, n)| n.as_str() == "eeprom_owner")
                 .ok_or("Missing link state")?
                 .0;
             if story == "retry" || story == "glitch" {
@@ -1971,7 +1979,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     o.drop_frame_pulse = None;
                     o.missed = None;
                 }
-                rig.press("side")?;
+                gameplay::dismiss_ir_result(&mut rig)?;
             }
             if story == "delayed" {
                 rig.optics.borrow_mut().lose_shutdown = true;
@@ -2067,8 +2075,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .machine
                 .symbols
                 .iter()
-                .find(|(_, name)| name.as_str() == "in_link")
-                .ok_or("Missing firmware in_link symbol")?
+                .find(|(_, name)| name.as_str() == "eeprom_owner")
+                .ok_or("Missing firmware EEPROM owner")?
                 .0;
             for _ in 0..if story.is_empty() { 1200 } else { 200 } {
                 if rig.optics.borrow().power_cut

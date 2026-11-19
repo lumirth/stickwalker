@@ -1,5 +1,9 @@
 use anyhow::{Context, Result, bail, ensure};
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::Path,
+};
 
 pub const EEPROM: usize = 65536;
 pub const WALKER: usize = 0x610000;
@@ -15,10 +19,42 @@ fn crc(a: &[u8], b: &[u8]) -> u32 {
     h.finalize()
 }
 
-pub fn read_eeprom(path: &Path) -> Result<Vec<u8>> {
-    let bytes = fs::read(path)?;
-    validate_eeprom(&bytes)?;
+/// Bound both allocation and the actual read if the file grows after opening.
+pub fn read_limited(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    ensure!(fs::metadata(path)?.is_file(), "Choose a regular file.");
+    let file = fs::File::open(path)?;
+    let meta = file.metadata()?;
+    ensure!(
+        meta.is_file() && meta.len() <= limit as u64,
+        "The selected file is too large."
+    );
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= limit, "The selected file is too large.");
     Ok(bytes)
+}
+
+#[derive(Debug)]
+pub struct EepromImage(Box<[u8; EEPROM]>);
+
+impl EepromImage {
+    pub fn load(path: &Path) -> Result<Self> {
+        Self::parse(read_limited(path, EEPROM)?)
+    }
+
+    pub fn parse(bytes: Vec<u8>) -> Result<Self> {
+        validate_eeprom(&bytes)?;
+        Ok(Self(
+            bytes
+                .into_boxed_slice()
+                .try_into()
+                .expect("validated EEPROM size"),
+        ))
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        self.0.as_slice()
+    }
 }
 pub fn validate_eeprom(bytes: &[u8]) -> Result<()> {
     ensure!(
@@ -28,7 +64,10 @@ pub fn validate_eeprom(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("File has no parent directory")?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     temp.write_all(bytes)?;
@@ -164,7 +203,7 @@ pub fn decode_public(data: &[u8]) -> Result<Vec<u8>> {
 
 #[derive(Debug)]
 pub enum PublicPartition {
-    StickwalkerSave(Vec<u8>),
+    StickwalkerSave(EepromImage),
     EmptyOrForeign,
     DamagedSave(anyhow::Error),
 }
@@ -173,14 +212,11 @@ pub fn classify_public_partition(data: &[u8]) -> PublicPartition {
         data.get(at..at + 4) == Some(&0x53574531u32.to_le_bytes())
             || data.get(at + 24..at + 28) == Some(&0x54494d43u32.to_le_bytes())
     }) || data.get(0x22000..0x22004) == Some(&0x53574a31u32.to_le_bytes());
-    let result = if raw {
-        decode_public(data).map(Some)
-    } else {
-        crate::legacy::littlefs(data)
-    };
-    match result {
-        Ok(Some(image)) => PublicPartition::StickwalkerSave(image),
-        Ok(None) => PublicPartition::EmptyOrForeign,
-        Err(error) => PublicPartition::DamagedSave(error),
+    if !raw {
+        return crate::legacy::classify_littlefs(data);
+    }
+    match decode_public(data).and_then(EepromImage::parse) {
+        Ok(image) => PublicPartition::StickwalkerSave(image),
+        Err(e) => PublicPartition::DamagedSave(e),
     }
 }

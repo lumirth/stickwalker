@@ -1,8 +1,8 @@
 use super::*;
 pub(crate) fn refresh_menus(cx: &mut App) {
-    let appearance = preferences::Preferences::load().dark;
+    let appearance = preferences::current(cx).dark;
     let state = cx.global::<AppState>();
-    let locked = state.menu.hardware_busy || state.locked();
+    let locked = state.menu.locked;
     let state = &state.menu;
     cx.set_menus(vec![
         Menu {
@@ -29,19 +29,23 @@ pub(crate) fn refresh_menus(cx: &mut App) {
             name: "File".into(),
             items: vec![
                 MenuItem::action("Import EEPROM…", ImportEeprom)
-                    .disabled(!state.managed || state.linking || locked),
-                MenuItem::action("Export EEPROM…", ExportEeprom).disabled(!state.ready || locked),
+                    .disabled(!state.access.can_write_save() || locked),
+                MenuItem::action("Export EEPROM…", ExportEeprom)
+                    .disabled(state.access != DeviceAccess::Ready || locked),
                 MenuItem::separator(),
                 MenuItem::action("Import Palettes…", ImportPalettes)
-                    .disabled(!state.ready || locked),
+                    .disabled(state.access != DeviceAccess::Ready || locked),
                 MenuItem::action("Export Palettes…", ExportPalettes)
-                    .disabled(!state.ready || locked),
+                    .disabled(state.access != DeviceAccess::Ready || locked),
             ],
         },
         Menu::new("Edit").items([
-            MenuItem::action("Copy Palette", CopyPalette).disabled(!state.ready),
-            MenuItem::action("Paste Palette", PastePalette).disabled(!state.ready || locked),
-            MenuItem::action("Edit Palettes", EditPalette).disabled(!state.ready || locked),
+            MenuItem::action("Copy Palette", CopyPalette)
+                .disabled(state.access != DeviceAccess::Ready),
+            MenuItem::action("Paste Palette", PastePalette)
+                .disabled(state.access != DeviceAccess::Ready || locked),
+            MenuItem::action("Edit Palettes", EditPalette)
+                .disabled(state.access != DeviceAccess::Ready || locked),
         ]),
         Menu {
             disabled: false,
@@ -50,13 +54,13 @@ pub(crate) fn refresh_menus(cx: &mut App) {
                 MenuItem::action("Check for Firmware Updates", CheckFirmware)
                     .disabled(locked || state.checking_firmware),
                 MenuItem::action("Load Firmware File…", OpenPackage)
-                    .disabled(locked || !state.selected),
+                    .disabled(locked || !state.access.can_install()),
                 MenuItem::action(state.install_label.clone(), Install).disabled(!state.can_install),
                 MenuItem::separator(),
                 MenuItem::action("Reset Walker…", ResetWalker)
-                    .disabled(!state.managed || state.linking || locked),
+                    .disabled(!state.access.can_write_save() || locked),
                 MenuItem::action("Erase and Install…", EraseInstall)
-                    .disabled(!state.selected || locked),
+                    .disabled(!state.access.can_install() || locked),
             ],
         },
     ]);
@@ -116,6 +120,7 @@ pub fn open_about(cx: &mut App) {
             size(px(284.), px(222.)),
             cx,
         ))),
+        app_id: Some(APP_ID.into()),
         is_resizable: false,
         titlebar: Some(TitlebarOptions {
             title: Some("About Stickwalker".into()),

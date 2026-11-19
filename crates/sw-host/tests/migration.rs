@@ -24,7 +24,7 @@ fn shipped_storage_formats_recover_the_last_committed_edits() {
         else {
             panic!("Historical fixture was not recognized");
         };
-        assert_eq!(image, fixture(expected));
+        assert_eq!(image.bytes(), fixture(expected));
     }
     let (image, _) = save::decode_current(&fixture("current.bin.zlib")).unwrap();
     assert_eq!(image, fixture("current-expected.eeprom.zlib"));
@@ -66,6 +66,12 @@ fn public_layout_distinguishes_factory_data_from_damaged_walks() {
         save::classify_public_partition(&fixture("empty-littlefs.bin.zlib")),
         EmptyOrForeign
     ));
+    let mut unreadable = fixture("public-littlefs.bin.zlib");
+    unreadable[..8192].fill(0xff);
+    assert!(matches!(
+        save::classify_public_partition(&unreadable),
+        DamagedSave(_)
+    ));
     for (name, marker, header) in [
         ("public-raw.bin.zlib", 0x53574531u32, 28),
         ("public-littlefs.bin.zlib", 0x50574531u32, 12),
@@ -92,7 +98,11 @@ fn legacy_preferences_keep_controls_and_acquire_named_slots() {
     use host::{DeviceSettings, PALETTE_NAMES, legacy};
     let defaults = legacy::preferences(&vec![0xff; 0x5000]);
     assert_eq!(
-        (defaults.active_palette, defaults.reverse, defaults.layout),
+        (
+            defaults.active_palette.index(),
+            defaults.reverse,
+            defaults.layout
+        ),
         (2, false, 1)
     );
     assert_eq!(defaults.mappings, [1, 0, 1, 1]);
@@ -114,4 +124,39 @@ fn legacy_preferences_keep_controls_and_acquire_named_slots() {
     assert_eq!(settings.layout, 1);
     assert_eq!(settings.mappings, [1, 0, 1, 1]);
     assert_eq!(settings.slots[2].colors, [0, 0x528a, 0xad75, 0xffff]);
+}
+
+#[test]
+fn a_damaged_littlefs_checkpoint_only_blocks_a_newer_save() {
+    let original = fixture("public-littlefs-pair.bin.zlib");
+    for sequence in [7u32, 8] {
+        let mut bytes = original.clone();
+        let header = [0x50574531u32.to_le_bytes(), sequence.to_le_bytes()].concat();
+        let at = bytes
+            .windows(header.len())
+            .position(|w| w == header)
+            .unwrap();
+        bytes[at + 12 + 128] ^= 1;
+        let result = save::classify_public_partition(&bytes);
+        if sequence == 7 {
+            let save::PublicPartition::StickwalkerSave(latest) = result else {
+                panic!("Lost the intact newer checkpoint")
+            };
+            assert_eq!(latest.bytes()[0x100], 8);
+        } else {
+            assert!(matches!(result, save::PublicPartition::DamagedSave(_)));
+        }
+    }
+}
+
+#[test]
+fn eeprom_import_rejects_oversized_files_and_invalid_headers() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    file.as_file().set_len(1 << 30).unwrap();
+    assert!(save::EepromImage::load(file.path()).is_err());
+    file.as_file().set_len(save::EEPROM as u64).unwrap();
+    assert!(save::EepromImage::load(file.path()).is_err());
+    let bytes = fixture("current-expected.eeprom.zlib");
+    fs::write(file.path(), &bytes).unwrap();
+    assert_eq!(save::EepromImage::load(file.path()).unwrap().bytes(), bytes);
 }

@@ -165,9 +165,8 @@ pub fn read_eeprom(session: &mut Session) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub fn write_eeprom(session: &mut Session, bytes: &[u8]) -> Result<()> {
-    save::validate_eeprom(bytes)?;
-    for (index, chunk) in bytes.chunks(protocol::CHUNK).enumerate() {
+pub fn write_eeprom(session: &mut Session, image: &save::EepromImage) -> Result<()> {
+    for (index, chunk) in image.bytes().chunks(protocol::CHUNK).enumerate() {
         let mut page = ((index * protocol::CHUNK) as u32).to_le_bytes().to_vec();
         page.extend(chunk);
         session.request(protocol::WRITE, &page)?;

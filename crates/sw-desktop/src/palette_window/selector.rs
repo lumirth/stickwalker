@@ -3,7 +3,7 @@ use crate::*;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use host::DeviceSettings;
 
-pub struct PaletteSelected(pub u8);
+pub struct PaletteSelected(pub host::PaletteIndex);
 pub struct PaletteSelector {
     choices: Entity<SelectState<Vec<Choice>>>,
     enabled: bool,
@@ -17,8 +17,9 @@ impl PaletteSelector {
         let subscription = cx.subscribe(&choices, |v: &mut Self, _, event, cx| {
             if v.enabled
                 && let SelectEvent::Confirm(Some(slot)) = event
+                && let Ok(index) = host::PaletteIndex::new(*slot)
             {
-                cx.emit(PaletteSelected(*slot as u8));
+                cx.emit(PaletteSelected(index));
             }
         });
         Self {
@@ -54,7 +55,7 @@ impl PaletteSelector {
                 .collect();
             self.choices.update(cx, |state, cx| {
                 state.set_items(choices, w, cx);
-                state.set_selected_value(&(self.settings.active_palette as usize), w, cx);
+                state.set_selected_value(&(self.settings.active_palette.index()), w, cx);
             });
             cx.notify();
         }

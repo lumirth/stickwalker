@@ -2,16 +2,45 @@ use crate::save::FLASH;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{borrow::Cow, collections::BTreeMap, fs, path::Path};
+use std::{borrow::Cow, collections::BTreeMap, path::Path, sync::LazyLock, time::Duration};
 
 pub use semver::Version;
 pub const FEED: &str =
     "https://github.com/lumirth/stickwalker/releases/download/firmware-feed/firmware.json";
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct AssetName(String);
+
+impl TryFrom<String> for AssetName {
+    type Error = &'static str;
+    fn try_from(name: String) -> std::result::Result<Self, Self::Error> {
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+                && stem.len() == 4
+                && stem.as_bytes()[3].is_ascii_digit());
+        if name.is_empty()
+            || name.ends_with('.')
+            || reserved
+            || !name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        {
+            return Err("Invalid firmware asset name");
+        }
+        Ok(Self(name))
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Image {
     pub kind: String,
     pub offset: usize,
-    pub file: String,
+    pub file: AssetName,
     pub sha256: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -37,34 +66,60 @@ pub struct Package {
 pub fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-pub fn get(url: &str) -> Result<Vec<u8>> {
-    ensure!(
-        url.starts_with("https://"),
-        "Release downloads require HTTPS"
-    );
-    Ok(ureq::get(url)
+const MANIFEST_LIMIT: usize = 64 * 1024;
+static HTTP: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    ureq::Agent::config_builder()
+        .https_only(true)
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_global(Some(Duration::from_secs(60)))
+        .build()
+        .new_agent()
+});
+
+fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
+    Ok(HTTP
+        .get(url)
         .header("User-Agent", "Stickwalker Desktop")
         .call()?
         .body_mut()
         .with_config()
-        .limit(32 << 20)
+        .limit(limit as u64)
         .read_to_vec()?)
+}
+
+impl Manifest {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        let manifest: Self = serde_json::from_slice(bytes)
+            .context("Choose the firmware.json file from a Stickwalker release.")?;
+        ensure!(
+            manifest.schema == 1 && manifest.product == "StickS3",
+            "This firmware package was not built for Stickwalker."
+        );
+        Version::parse(&manifest.version)?;
+        ensure!(
+            manifest.images.len() == 3
+                && ["application", "bootloader", "partitions"]
+                    .iter()
+                    .all(|kind| manifest.images.iter().any(|i| i.kind == *kind)),
+            "Missing firmware components"
+        );
+        Ok(manifest)
+    }
 }
 impl Package {
     pub fn open(path: &Path) -> Result<Self> {
-        let manifest: Manifest = serde_json::from_slice(
-            &fs::read(path).context("The firmware manifest couldn’t be opened.")?,
-        )
-        .context("Choose the firmware.json file from a Stickwalker release.")?;
+        let manifest = Manifest::parse(
+            &crate::save::read_limited(path, MANIFEST_LIMIT)
+                .context("The firmware manifest couldn’t be opened.")?,
+        )?;
         let root = path.parent().context("Package directory missing")?;
         let images = manifest
             .images
             .iter()
             .map(|image| {
-                valid_filename(&image.file)?;
                 Ok((
-                    image.file.clone(),
-                    Cow::Owned(fs::read(root.join(&image.file))?),
+                    image.file.0.clone(),
+                    Cow::Owned(crate::save::read_limited(&root.join(&image.file.0), FLASH)?),
                 ))
             })
             .collect::<Result<_>>()?;
@@ -72,11 +127,6 @@ impl Package {
     }
     fn validate(self) -> Result<Self> {
         let p = self;
-        ensure!(
-            p.manifest.schema == 1 && p.manifest.product == "StickS3",
-            "This firmware package was not built for Stickwalker."
-        );
-        semver::Version::parse(&p.manifest.version)?;
         let m = &p.manifest;
         let mut ranges = Vec::new();
         for region in [&m.state, &m.settings] {
@@ -93,12 +143,11 @@ impl Package {
             ranges.push((region.offset, region.offset + region.size));
         }
         for image in &m.images {
-            valid_filename(&image.file)?;
             let bytes = p.image(image)?;
             ensure!(
-                hash(bytes) == image.sha256,
+                hash(bytes).eq_ignore_ascii_case(&image.sha256),
                 "Firmware download is incomplete: {}",
-                image.file
+                image.file.0
             );
             let end = image
                 .offset
@@ -122,9 +171,16 @@ impl Package {
                 );
             }
         }
+        let table = m.images.iter().find(|i| i.kind == "partitions").unwrap();
+        let table = p.image(table)?;
+        let app = m.images.iter().find(|i| i.kind == "application").unwrap();
+        let app_size = p.image(app)?.len();
         ensure!(
-            m.images.iter().filter(|i| i.kind == "application").count() == 1,
-            "Package needs one application image"
+            partition(table, "nvs") == Some((m.settings.offset, m.settings.size))
+                && partition(table, "walker2") == Some((m.state.offset, m.state.size))
+                && partition(table, "factory")
+                    .is_some_and(|(at, capacity)| at == app.offset && app_size <= capacity),
+            "Firmware images do not match the packaged partition table"
         );
         ranges.sort_unstable();
         ensure!(
@@ -135,7 +191,7 @@ impl Package {
     }
     pub fn image(&self, image: &Image) -> Result<&[u8]> {
         self.images
-            .get(&image.file)
+            .get(&image.file.0)
             .map(|bytes| bytes.as_ref())
             .context("Firmware image missing")
     }
@@ -152,39 +208,29 @@ impl Package {
             .map(|(name, bytes)| (name.to_string(), Cow::Borrowed(*bytes)))
             .collect();
         Self {
-            manifest: serde_json::from_slice(manifest)?,
+            manifest: Manifest::parse(manifest)?,
             images,
         }
         .validate()
     }
     pub fn latest() -> Result<Self> {
-        let bytes = get(FEED).context(
+        let bytes = get(FEED, MANIFEST_LIMIT).context(
             "Could not check firmware updates. The bundled firmware is available offline.",
         )?;
-        let manifest: Manifest = serde_json::from_slice(&bytes)?;
-        Version::parse(&manifest.version)?;
+        let manifest = Manifest::parse(&bytes)?;
         let images = manifest
             .images
             .iter()
             .map(|image| {
-                valid_filename(&image.file)?;
                 let url = format!(
                     "https://github.com/lumirth/stickwalker/releases/download/firmware-v{}/{}",
-                    manifest.version, image.file
+                    manifest.version, image.file.0
                 );
-                Ok((image.file.clone(), Cow::Owned(get(&url)?)))
+                Ok((image.file.0.clone(), Cow::Owned(get(&url, FLASH)?)))
             })
             .collect::<Result<_>>()?;
         Self { manifest, images }.validate()
     }
-}
-
-fn valid_filename(name: &str) -> Result<()> {
-    ensure!(
-        !name.is_empty() && !name.contains(['/', '\\']) && name != "..",
-        "Invalid package filename"
-    );
-    Ok(())
 }
 
 pub fn partition(table: &[u8], name: &str) -> Option<(usize, usize)> {
@@ -203,4 +249,27 @@ pub fn partition(table: &[u8], name: &str) -> Option<(usize, usize)> {
                 )
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AssetName;
+    #[test]
+    fn asset_names_are_single_portable_url_segments() {
+        for name in [
+            "C:foo",
+            "../bin",
+            "sub\\x",
+            "x?file",
+            "x#fragment",
+            "CON.bin",
+            ".",
+            "..",
+            "image.",
+            "%2f",
+        ] {
+            assert!(AssetName::try_from(name.to_owned()).is_err(), "{name}");
+        }
+        assert!(AssetName::try_from("partition-table_1.bin".to_owned()).is_ok());
+    }
 }

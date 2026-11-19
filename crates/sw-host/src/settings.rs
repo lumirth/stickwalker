@@ -48,9 +48,23 @@ impl PaletteSlot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaletteIndex(u8);
+
+impl PaletteIndex {
+    pub fn new(index: usize) -> Result<Self> {
+        ensure!(index < SLOT_COUNT, "Choose one of the six palettes.");
+        Ok(Self(index as u8))
+    }
+    pub fn index(self) -> usize {
+        usize::from(self.0)
+    }
+    pub const GREYSCALE: Self = Self(2);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceSettings {
-    pub active_palette: u8,
+    pub active_palette: PaletteIndex,
     pub reverse: bool,
     pub layout: u8,
     pub mappings: [u8; 4],
@@ -59,7 +73,7 @@ pub struct DeviceSettings {
 impl Default for DeviceSettings {
     fn default() -> Self {
         Self {
-            active_palette: 0,
+            active_palette: PaletteIndex::default(),
             reverse: false,
             layout: 1,
             mappings: [1, 0, 4, 1],
@@ -71,7 +85,6 @@ impl DeviceSettings {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         ensure!(
             bytes.len() == SETTINGS_SIZE
-                && bytes[0] < 6
                 && bytes[1] < 2
                 && bytes[2] < 4
                 && bytes[3..7].iter().all(|b| *b < 6),
@@ -91,7 +104,7 @@ impl DeviceSettings {
             }
         }
         Ok(Self {
-            active_palette: bytes[0],
+            active_palette: PaletteIndex::new(usize::from(bytes[0]))?,
             reverse: bytes[1] != 0,
             layout: bytes[2],
             mappings: bytes[3..7].try_into().unwrap(),
@@ -100,7 +113,7 @@ impl DeviceSettings {
     }
     pub fn to_bytes(self) -> [u8; SETTINGS_SIZE] {
         let mut bytes = [0; SETTINGS_SIZE];
-        bytes[..3].copy_from_slice(&[self.active_palette, self.reverse as u8, self.layout]);
+        bytes[..3].copy_from_slice(&[self.active_palette.0, self.reverse as u8, self.layout]);
         bytes[3..7].copy_from_slice(&self.mappings);
         for (index, slot) in self.slots.iter().enumerate() {
             for (shade, color) in slot.colors.iter().enumerate() {
@@ -117,6 +130,6 @@ impl DeviceSettings {
         bytes
     }
     pub fn colors(&self) -> [u16; 4] {
-        self.slots[self.active_palette as usize].colors
+        self.slots[self.active_palette.index()].colors
     }
 }

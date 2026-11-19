@@ -20,7 +20,7 @@ The port timestamps the buffered samples using the sensor clock, interpolates th
 
 The board can idle at 10 MHz and raises the CPU clock for infrared. Audio powers down 50 ms after a score. The game's ten Shade levels map to backlight PWM values of 2, 5, 10, 18, 28, 42, 64, 96, 155, and 255. The BMI270 shares a 400 kHz I²C bus with the power chip and codec.
 
-When USB is active, the controller stays awake even if the LCD sleeps. The firmware checks for external power once per second and feeds the PM1 watchdog while awake and asleep. At low battery it attempts one save before shutting down.
+When USB is active, the controller stays awake even if the LCD sleeps. On battery, the firmware checks for a cable during scheduled motion wakes, about every two seconds at rest. Voltage sampling and the watchdog share a 30-second interval in the pocket. At low battery it attempts one save before shutting down.
 
 ### Pocket power budget
 

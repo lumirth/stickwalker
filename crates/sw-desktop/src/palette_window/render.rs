@@ -1,7 +1,7 @@
 use super::*;
 impl PaletteEditor {
     fn rail(&self, cx: &Context<Self>) -> impl IntoElement {
-        let active = self.settings.active_palette as usize;
+        let active = self.settings.active_palette.index();
         div()
             .v_flex()
             .w(rems(10.5))
@@ -36,7 +36,8 @@ impl PaletteEditor {
                                     return;
                                 }
                                 v.commit_inputs(w, cx);
-                                v.settings.active_palette = i as u8;
+                                v.settings.active_palette =
+                                    host::PaletteIndex::new(i).expect("displayed slot");
                                 v.sync_name(w, cx);
                                 v.changed(w, cx);
                             }))
@@ -46,7 +47,7 @@ impl PaletteEditor {
             .child(self.more(cx))
     }
     fn render_slot(&self, cx: &Context<Self>) -> impl IntoElement {
-        let i = self.settings.active_palette as usize;
+        let i = self.settings.active_palette.index();
         div()
             .h_flex()
             .gap_1()
@@ -71,7 +72,7 @@ impl PaletteEditor {
             )
     }
     fn render_shades(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let two_color = self.midtones[self.settings.active_palette as usize].automatic();
+        let two_color = self.midtones[self.settings.active_palette.index()].automatic();
         let mode = ButtonGroup::new("color-mode")
             .small()
             .disabled(!self.enabled)
@@ -212,7 +213,9 @@ impl PaletteEditor {
         cx: &mut Context<Self>,
     ) {
         let old = self.settings.colors()[self.shade];
-        let new = self.picker.pick(surface, at);
+        let Some(new) = self.picker.pick(surface, at) else {
+            return;
+        };
         if old != new {
             self.set_color(new, w, cx);
         } else {

@@ -72,11 +72,14 @@ impl Picker {
         }
         self.color = Some(color);
     }
-    pub fn pick(&mut self, surface: Surface, cursor: Point<Pixels>) -> u16 {
+    pub fn pick(&mut self, surface: Surface, cursor: Point<Pixels>) -> Option<u16> {
         let bounds = match surface {
             Surface::Plane => self.plane_bounds.get(),
             Surface::Hue => self.hue_bounds.get(),
         };
+        if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+            return None;
+        }
         let y = ((cursor.y - bounds.top()) / bounds.size.height).clamp(0., 1.);
         match surface {
             Surface::Plane => {
@@ -89,7 +92,7 @@ impl Picker {
         let row = ((self.position.y * ROWS as f32) as usize).min(ROWS - 1);
         let color = self.plane[row * COLS + col];
         self.color = Some(color);
-        color
+        Some(color)
     }
     pub fn marker(&self, surface: Surface) -> Point<f32> {
         match surface {
@@ -147,5 +150,18 @@ impl Picker {
             },
         )
         .size_full()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Picker, Surface};
+    use gpui_kit::Point;
+    #[test]
+    fn an_unpainted_picker_ignores_input() {
+        let mut picker = Picker::new();
+        for surface in [Surface::Plane, Surface::Hue] {
+            assert!(picker.pick(surface, Point::default()).is_none());
+        }
     }
 }

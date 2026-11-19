@@ -47,7 +47,7 @@ fn main() -> Result<()> {
                 let session = protocol::Session::open(&p.path)
                     .ok()
                     .and_then(|mut s| usb::Info::read(&mut s).ok().map(|_| s));
-                let (_, i) =
+                let (_, _session, i) =
                     host::flash::install(&p, session, &package, false, &mut |s, p| match p {
                         Some(v) => println!("{s} · {v}%"),
                         None => println!("{s}"),
@@ -70,14 +70,14 @@ fn main() -> Result<()> {
                         fs::write(&a[3], usb::read_eeprom(&mut s)?)?;
                     }
                     "import" => {
-                        let bytes = save::read_eeprom(Path::new(&a[3]))?;
+                        let bytes = save::EepromImage::load(Path::new(&a[3]))?;
                         let start = std::time::Instant::now();
                         usb::write_eeprom(&mut s, &bytes)?;
                         println!("Imported EEPROM in {:?}", start.elapsed());
                     }
                     "palette" => {
                         let mut prefs = info.settings;
-                        prefs.active_palette = a[3].parse()?;
+                        prefs.active_palette = host::PaletteIndex::new(a[3].parse()?)?;
                         s.request(protocol::SETTINGS, &prefs.to_bytes())?;
                     }
                     _ => anyhow::bail!("Unknown operation"),

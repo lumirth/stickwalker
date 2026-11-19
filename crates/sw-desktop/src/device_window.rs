@@ -5,13 +5,18 @@ use crate::updater::{AppUpdate, Updates};
 use crate::*;
 
 use host::worker::{Command, ConnectionState, Presentation, Worker};
-use std::{path::PathBuf, time::Duration};
+use std::{sync::atomic::Ordering, time::Duration};
 
 #[derive(Clone, Copy)]
 pub(super) enum FileAction {
     Export,
     Import,
     Package,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum PendingExit {
+    Quit,
+    Restart,
 }
 pub struct StickView {
     worker: Worker,
@@ -28,7 +33,8 @@ pub struct StickView {
     pub(super) live_state: Presentation,
     #[cfg(debug_assertions)]
     pub(super) live_update: Option<AppUpdate>,
-    close_requested: bool,
+    pending_exit: Option<PendingExit>,
+    device_mac: Option<String>,
     local_revision: u64,
     pub(super) updates: Updates,
     _subscriptions: Vec<Subscription>,
@@ -45,7 +51,6 @@ impl StickView {
         let worker = Worker::start();
         let updates = Updates::new();
         cx.set_global(AppState {
-            hardware_busy: worker.hardware_busy.clone(),
             menu: MenuState {
                 install_label: "No Device Connected".into(),
                 update_label: updates.action_label(),
@@ -112,7 +117,7 @@ impl StickView {
             loop {
                 if view
                     .update(cx, |view, cx| {
-                        if preferences::Preferences::load().automatic_updates {
+                        if preferences::current(cx).automatic_updates {
                             view.updates.check(true);
                             view.refresh_shell(cx);
                         }
@@ -128,21 +133,13 @@ impl StickView {
         }));
         let owner = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
-            if cx.global::<AppState>().locked() {
-                return false;
-            }
-            let close = owner
-                .update(cx, |view, cx| view.prepare_close(cx))
-                .unwrap_or(true);
-            if close {
-                cx.defer(|cx| cx.quit());
-            }
-            close
+            let _ = owner.update(cx, |view, cx| view.request_exit(PendingExit::Quit, cx));
+            false
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         subscriptions.push(cx.observe_window_appearance(window, |_, w, cx| {
-            if preferences::Preferences::load().dark.is_none() {
+            if preferences::current(cx).dark.is_none() {
                 Theme::change(ThemeMode::from(w.appearance()), Some(w), cx);
             }
         }));
@@ -164,33 +161,36 @@ impl StickView {
             live_state: Presentation::default(),
             #[cfg(debug_assertions)]
             live_update: None,
-            close_requested: false,
+            pending_exit: None,
+            device_mac: None,
             local_revision: 0,
             updates,
             _subscriptions: subscriptions,
         }
     }
-    pub(crate) fn prepare_close(&mut self, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn request_exit(&mut self, exit: PendingExit, cx: &mut Context<Self>) {
         if self.locked() {
-            return false;
+            return;
         }
         if let Some((handle, editor)) = self.editor.clone()
             && let Ok(settings) = handle.update(cx, |_, w, cx| {
-                editor.update(cx, |e, cx| {
-                    e.commit_inputs(w, cx);
-                    e.settings()
-                })
+                editor.update(cx, |editor, cx| editor.take_committed_settings(w, cx))
             })
-            && self
-                .state
-                .connection
-                .info()
-                .is_some_and(|i| i.settings != settings)
         {
             self.change_palette(settings, cx);
         }
-        self.close_requested = self.state.acked_revision < self.local_revision && self.editable();
-        !self.close_requested
+        self.pending_exit = Some(exit);
+        self.finish_exit(cx);
+    }
+    fn finish_exit(&mut self, cx: &mut Context<Self>) {
+        if self.locked() || (self.editable() && self.state.acked_revision < self.local_revision) {
+            return;
+        }
+        match self.pending_exit.take() {
+            Some(PendingExit::Quit) => cx.defer(|cx| cx.quit()),
+            Some(PendingExit::Restart) => self.updates.restart(cx),
+            None => {}
+        }
     }
     pub(super) fn receive(&mut self, state: Presentation, w: &mut Window, cx: &mut Context<Self>) {
         #[cfg(debug_assertions)]
@@ -208,17 +208,17 @@ impl StickView {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let previous = self.state.connection.info().map(|i| &i.mac);
-        let incoming = state.connection.info().map(|i| &i.mac);
-        let device_changed = previous != incoming;
+        let incoming = state.connection.info().map(|i| i.mac.clone());
+        let device_changed = incoming.is_some() && self.device_mac != incoming;
         if device_changed {
-            self.local_revision = 0;
+            self.device_mac = incoming;
+            self.local_revision = state.acked_revision;
             if let Some((handle, _)) = self.editor.take() {
                 self._editor_subscription = None;
                 let _ = handle.update(cx, |_, w, _| w.remove_window());
             }
         }
-        if state.error.is_some() {
+        if state.failed_revision == Some(self.local_revision) || state.connection.info().is_none() {
             self.local_revision = state.acked_revision;
         }
         if !device_changed
@@ -234,13 +234,6 @@ impl StickView {
         } else {
             None
         };
-        if self.close_requested {
-            if device_changed || state.error.is_some() {
-                self.close_requested = false;
-            } else if state.acked_revision >= self.local_revision {
-                cx.quit();
-            }
-        }
         self.state = state;
         let enabled = self.editable();
         self.palette
@@ -256,41 +249,40 @@ impl StickView {
             self._editor_subscription = None;
         }
         self.refresh_shell(cx);
+        self.finish_exit(cx);
     }
     pub(super) fn refresh_shell(&mut self, cx: &mut Context<Self>) {
         if !self.worker.hardware_busy.load(Ordering::SeqCst) {
             self.updates.install_downloaded();
         }
-        let can_install = self.state.connection.port().is_some()
-            && (self.state.connection.info().is_none() || self.update_available())
-            && !matches!(
-                self.state.connection,
-                ConnectionState::LinkingInGame { .. }
-                    | ConnectionState::Reconnecting { .. }
-                    | ConnectionState::Unavailable { .. }
-                    | ConnectionState::Flashing { .. }
-            )
-            && !self.locked();
+        let access = self.state.connection.access();
+        let locked = self.locked() || self.state.hardware_busy;
+        let can_install = access.can_install()
+            && !locked
+            && (access == DeviceAccess::InstallOnly || self.update_available());
         let install_label = self.install_label();
         let app = cx.global_mut::<AppState>();
         let next = MenuState {
-            app_installing: self.updates.is_installing(),
+            locked,
             update_label: self.updates.action_label(),
             updates_supported: self.updates.can_act(),
             checking_firmware: self.state.checking_firmware,
-            managed: self.state.connection.info().is_some(),
-            ready: matches!(self.state.connection, ConnectionState::Ready { .. }),
-            selected: matches!(
-                self.state.connection,
-                ConnectionState::Ready { .. }
-                    | ConnectionState::Unmanaged { .. }
-                    | ConnectionState::SaveFault { .. }
-            ),
-            linking: matches!(self.state.connection, ConnectionState::LinkingInGame { .. }),
-            hardware_busy: self.state.hardware_busy,
+            access,
             can_install,
             install_label,
         };
+        if app.menu.locked != next.locked
+            && let Some((handle, editor)) = &self.editor
+        {
+            let enabled = next.access == DeviceAccess::Ready && !next.locked;
+            let (handle, editor) = (*handle, editor.clone());
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, w, cx| {
+                    editor.update(cx, |e, cx| e.receive(None, enabled, w, cx))
+                });
+            });
+        }
+        let app = cx.global_mut::<AppState>();
         if app.menu != next {
             app.menu = next;
             refresh_menus(cx);
@@ -298,10 +290,10 @@ impl StickView {
         cx.notify();
     }
     pub(super) fn locked(&self) -> bool {
-        self.worker.hardware_busy.load(Ordering::SeqCst) || self.updates.is_installing()
+        self.worker.hardware_busy.load(Ordering::SeqCst) || self.updates.blocks_hardware()
     }
     pub(super) fn editable(&self) -> bool {
-        !self.locked() && matches!(self.state.connection, ConnectionState::Ready { .. })
+        !self.locked() && self.state.connection.access() == DeviceAccess::Ready
     }
     pub(super) fn select(
         &mut self,
@@ -335,11 +327,11 @@ impl StickView {
         if self.preview.is_some() {
             return;
         }
-        if !self.locked() {
+        if !self.locked() && command.allowed(&self.state.connection) {
             let _ = self
                 .worker
                 .commands
-                .send(self.state.connection.port().cloned(), command);
+                .send(self.state.connection.target(), command);
         }
     }
     pub(super) fn app_update(&mut self, cx: &mut Context<Self>) {
@@ -351,21 +343,18 @@ impl StickView {
             return;
         }
         match self.updates.state {
-            AppUpdate::ReadyToRestart { .. } => self.updates.restart(cx),
+            AppUpdate::ReadyToRestart { .. } => self.request_exit(PendingExit::Restart, cx),
             AppUpdate::Available(_) => self.updates.install(),
             _ => self.updates.check(false),
         }
         self.refresh_shell(cx);
     }
     pub(super) fn files(&self, action: FileAction, window: &mut Window, cx: &mut Context<Self>) {
+        let access = self.state.connection.access();
         let available = match action {
-            FileAction::Package => cx.global::<AppState>().menu.selected,
-            FileAction::Export => self.editable(),
-            FileAction::Import => self
-                .state
-                .connection
-                .info()
-                .is_some_and(|info| info.mode != host::usb::DeviceMode::Linking),
+            FileAction::Package => access.can_install(),
+            FileAction::Export => access == DeviceAccess::Ready,
+            FileAction::Import => access.can_write_save(),
         };
         if self.locked() || !available {
             return;
@@ -373,7 +362,7 @@ impl StickView {
         let directory = directories::UserDirs::new()
             .map(|dirs| dirs.document_dir().unwrap_or(dirs.home_dir()).to_owned())
             .unwrap_or_default();
-        let target = self.state.connection.port().cloned();
+        let target = self.state.connection.target();
         cx.spawn_in(window, async move |view, cx| {
             let result = match action {
                 FileAction::Export => {
@@ -407,11 +396,43 @@ impl StickView {
                 }
             };
             if let Ok(Ok(Some(path))) = result {
+                let image = if matches!(action, FileAction::Import) {
+                    let source = path.clone();
+                    Some(
+                        cx.background_executor()
+                            .spawn(async move { host::save::EepromImage::load(&source) })
+                            .await,
+                    )
+                } else {
+                    None
+                };
                 let _ = view.update_in(cx, |view, window, cx| {
-                    if matches!(action, FileAction::Package)
-                        || target.as_ref() == view.state.connection.port()
-                    {
-                        view.selected_file(action, path, window, cx)
+                    if target != view.state.connection.target() || view.locked() {
+                        return;
+                    }
+                    match image {
+                        Some(Ok(image)) => {
+                            let command = Command::Import(image);
+                            if command.allowed(&view.state.connection) {
+                                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                                view.confirm(
+                                    "Replace current save?",
+                                    &format!("Import “{name}” onto {}.", view.device_label()),
+                                    "Import",
+                                    command,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
+                        Some(Err(error)) => {
+                            view.state.error = Some(error.to_string());
+                            cx.notify();
+                        }
+                        None if matches!(action, FileAction::Package) => {
+                            view.send(Command::OpenPackage(path))
+                        }
+                        None => view.send(Command::Export(path)),
                     }
                 });
             }
@@ -419,44 +440,13 @@ impl StickView {
         .detach();
     }
 
-    fn selected_file(
-        &mut self,
-        action: FileAction,
-        path: PathBuf,
-        w: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match action {
-            FileAction::Export => self.send(Command::Export(path)),
-            FileAction::Package => self.send(Command::OpenPackage(path)),
-            FileAction::Import => {
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                let stick = self.device_label();
-                self.confirm(
-                    "Replace current save?",
-                    &format!("Import “{name}” onto {stick}."),
-                    "Import",
-                    Command::Import(path),
-                    w,
-                    cx,
-                );
-            }
-        }
-    }
     pub(super) fn reset(&self, erase: bool, w: &mut Window, cx: &mut Context<Self>) {
-        if self.locked()
-            || self.state.connection.port().is_none()
-            || matches!(self.state.connection, ConnectionState::LinkingInGame { .. })
-        {
-            return;
-        }
-        if !cx.global::<AppState>().menu.selected
-            || (!erase && self.state.connection.info().is_none())
-        {
+        let command = if erase {
+            Command::CleanInstall
+        } else {
+            Command::Reset
+        };
+        if self.locked() || !command.allowed(&self.state.connection) {
             return;
         }
         self.confirm(
@@ -471,11 +461,7 @@ impl StickView {
                 "Clears this save and its DS pairing."
             },
             if erase { "Erase and install" } else { "Reset" },
-            if erase {
-                Command::CleanInstall
-            } else {
-                Command::Reset
-            },
+            command,
             w,
             cx,
         );
@@ -489,7 +475,7 @@ impl StickView {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let port = self.state.connection.port().cloned();
+        let target = self.state.connection.target();
         let answer = w.prompt(
             PromptLevel::Warning,
             title,
@@ -500,7 +486,7 @@ impl StickView {
         cx.spawn_in(w, async move |view, cx| {
             if answer.await == Ok(1) {
                 let _ = view.update(cx, |v, _| {
-                    if v.state.connection.port() == port.as_ref() && !v.locked() {
+                    if v.state.connection.target() == target && !v.locked() {
                         v.send(command);
                     }
                 });
@@ -557,7 +543,7 @@ impl StickView {
         if !self.editable() {
             return;
         }
-        let target = self.state.connection.port().cloned();
+        let target = self.state.connection.target();
         let settings = self.state.connection.info().unwrap().settings;
         let contents = settings
             .slots
@@ -568,7 +554,7 @@ impl StickView {
         cx.spawn_in(w, async move |view, cx| {
             let result = crate::palette_window::palette_file(action, contents, cx).await;
             let _ = view.update(cx, |v, cx| {
-                if !v.editable() || v.state.connection.port() != target.as_ref() {
+                if !v.editable() || v.state.connection.target() != target {
                     return;
                 }
                 match result.and_then(|s| s.map(|s| host::palette::parse_many(&s)).transpose()) {
@@ -616,7 +602,7 @@ impl StickView {
                 .unwrap_or_default();
             match host::palette::parse(&input) {
                 Ok(p) => {
-                    let slot = &mut settings.slots[settings.active_palette as usize];
+                    let slot = &mut settings.slots[settings.active_palette.index()];
                     if let Some(name) = p.name {
                         slot.name = name;
                     }
@@ -631,10 +617,12 @@ impl StickView {
             return;
         }
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                point(px(230.), px(190.)),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
                 size(px(716.), px(464.)),
+                cx,
             ))),
+            app_id: Some(APP_ID.into()),
             window_min_size: Some(size(px(680.), px(430.))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Palettes".into()),
@@ -666,7 +654,7 @@ impl StickView {
     pub(super) fn copy_palette(&self, cx: &mut App) {
         if let Some(info) = self.state.connection.info() {
             cx.write_to_clipboard(ClipboardItem::new_string(host::palette::format(
-                &info.settings.slots[info.settings.active_palette as usize],
+                &info.settings.slots[info.settings.active_palette.index()],
             )));
         }
     }
@@ -727,16 +715,6 @@ impl StickView {
             self.confirm(&format!("Install Stickwalker on {}?",self.device_label()), "This replaces the device’s current software. Existing Stickwalker saves and settings are kept.", "Install", Command::Update, w, cx);
             return;
         }
-        if matches!(
-            self.state.connection,
-            ConnectionState::Reconnecting { .. } | ConnectionState::LinkingInGame { .. }
-        ) {
-            return;
-        }
-        if self.state.connection.port().is_some()
-            && (self.state.connection.info().is_none() || self.update_available())
-        {
-            self.send(Command::Update);
-        }
+        self.send(Command::Update);
     }
 }

@@ -1502,15 +1502,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "delog"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed991f9823b19e8a0380e198dcbb6aa6ac82727b40bfecd2c6cc634f46b7e01c"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "deranged"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4005,29 +3996,6 @@ name = "litrs"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
-
-[[package]]
-name = "littlefs2"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "162d215700412b0173e3c8cfde130176fb799beccdd3d8db7cee57be3fb72ada"
-dependencies = [
- "bitflags 2.13.2",
- "delog",
- "generic-array",
- "heapless",
- "littlefs2-core",
- "littlefs2-sys",
-]
-
-[[package]]
-name = "littlefs2-core"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c0f7acafcb6c9dfcbc3c7c54aa7b8e04367d535daeb4be0e7131f93e4587dd2"
-dependencies = [
- "bitflags 2.13.2",
-]
 
 [[package]]
 name = "littlefs2-sys"
@@ -6936,44 +6904,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "sw-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-channel",
- "directories",
- "gpui-kit",
- "gpui-pre",
- "gpui-updater-core",
- "gpui-updater-sparkle",
- "palette",
- "serde",
- "serde_json",
- "sw-host",
- "winresource",
-]
-
-[[package]]
-name = "sw-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-channel",
- "crc32fast",
- "directories",
- "espflash",
- "flate2",
- "littlefs2",
- "semver",
- "serde",
- "serde_json",
- "serialport",
- "sha2 0.10.9",
- "tempfile",
- "ureq",
-]
-
-[[package]]
 name = "str_indices"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7091,6 +7021,45 @@ checksum = "9f12b12995e3638c70618c1facb1ce65302f6a6f706b675f07c58a5d7391120e"
 dependencies = [
  "kurbo 0.13.1",
  "siphasher",
+]
+
+[[package]]
+name = "sw-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "directories",
+ "gpui-kit",
+ "gpui-pre",
+ "gpui-updater-core",
+ "gpui-updater-sparkle",
+ "palette",
+ "serde",
+ "serde_json",
+ "sw-host",
+ "tempfile",
+ "winresource",
+]
+
+[[package]]
+name = "sw-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "crc32fast",
+ "directories",
+ "espflash",
+ "flate2",
+ "littlefs2-sys",
+ "semver",
+ "serde",
+ "serde_json",
+ "serialport",
+ "sha2 0.10.9",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]

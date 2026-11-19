@@ -7,7 +7,7 @@ pub mod save;
 pub mod settings;
 pub mod usb;
 pub mod worker;
-pub use settings::{DeviceSettings, PaletteName, PaletteSlot, SLOT_COUNT};
+pub use settings::{DeviceSettings, PaletteIndex, PaletteName, PaletteSlot, SLOT_COUNT};
 
 pub const PALETTE_NAMES: [&str; 6] = [
     "Walker LCD",
@@ -32,9 +32,7 @@ pub fn rgb888(c: u16) -> u32 {
     let c = u32::from(c);
     (((c >> 11) * 255 / 31) << 16) | ((((c >> 5) & 63) * 255 / 63) << 8) | ((c & 31) * 255 / 31)
 }
-pub fn data_dir() -> std::path::PathBuf {
+pub fn data_dir() -> Option<std::path::PathBuf> {
     directories::ProjectDirs::from("me", "kukas", "Stickwalker")
-        .expect("user data directory")
-        .data_dir()
-        .into()
+        .map(|dirs| dirs.data_dir().to_owned())
 }

@@ -8,9 +8,8 @@ from pathlib import Path
 import secrets
 import subprocess
 import tempfile
-import tomllib
 
-root = Path(__file__).resolve().parents[1]
+from package import APPCAST_NAME, APP_ID, RELEASE_URL, desktop_version, update_key, root
 
 
 def run(*args):
@@ -18,18 +17,16 @@ def run(*args):
 
 
 def make_feeds(artifacts, out):
-    version = tomllib.loads((root / "crates/sw-desktop/Cargo.toml").read_text())["package"][
-        "version"
-    ]
+    version = desktop_version()
     # The release library verifies each generated signature with this public key.
-    os.environ["SPARKLE_PUBLIC_KEY"] = os.environ["STICKWALKER_UPDATE_KEY"]
+    os.environ["SPARKLE_PUBLIC_KEY"] = update_key()
     if not os.environ.get("SPARKLE_PRIVATE_KEY"):
         raise SystemExit("Set SPARKLE_PRIVATE_KEY from the release signing key.")
     out.mkdir(parents=True, exist_ok=True)
-    base = "https://github.com/lumirth/stickwalker/releases/download"
     layout = [
         "--base-url",
-        base,
+        RELEASE_URL,
+        "--appcast-name", APPCAST_NAME,
         "--release-dir",
         "desktop-v{version}",
         "--channel-dir",
@@ -47,7 +44,7 @@ def make_feeds(artifacts, out):
             "--out",
             str(out / "latest.json"),
             "--app-id",
-            "me.kukas.stickwalker",
+            APP_ID,
             "--signatures",
             "ignore",
             "--ed25519-key-env",
@@ -70,6 +67,11 @@ def make_feeds(artifacts, out):
         ],
         check=True,
     )
+    for archive in artifacts.glob("Stickwalker-*-macos-*.dmg"):
+        arch = archive.stem.rsplit("-", 1)[1]
+        feed = out / APPCAST_NAME.format(arch=arch)
+        if not feed.is_file() or archive.name not in feed.read_text():
+            raise SystemExit(f"Missing Sparkle feed for {archive.name}.")
     print(out)
 
 
@@ -107,11 +109,13 @@ def credentials():
             keychain,
         )
         run("security", "list-keychains", "-d", "user", "-s", keychain)
+        run("security", "default-keychain", "-d", "user", "-s", keychain)
         run(
             "xcrun",
             "notarytool",
             "store-credentials",
             "stickwalker-release",
+            "--keychain", keychain,
             "--key",
             str(key),
             "--key-id",
@@ -119,15 +123,15 @@ def credentials():
             "--issuer",
             os.environ["APPLE_API_ISSUER_ID"],
         )
+        with Path(os.environ["GITHUB_ENV"]).open("a") as env:
+            env.write(f"STICKWALKER_NOTARY_KEYCHAIN={keychain}\n")
 
 
 def publish(tag):
     with tempfile.TemporaryDirectory(prefix="stickwalker-release-") as temp:
         folder = Path(temp)
         if tag.startswith("desktop-v"):
-            version = tomllib.loads((root / "crates/sw-desktop/Cargo.toml").read_text())[
-                "package"
-            ]["version"]
+            version = desktop_version()
             if tag != "desktop-v" + version:
                 raise SystemExit("Check out the desktop release tag before publishing.")
             assets, feeds = folder / "assets", folder / "feeds"

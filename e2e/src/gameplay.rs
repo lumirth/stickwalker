@@ -40,6 +40,29 @@ fn menu(rig: &mut Rig, state: u32, selection: u8) -> Result<()> {
     Ok(())
 }
 
+pub fn dismiss_ir_result(rig: &mut Rig) -> Result<()> {
+    let state = address(rig, "g_state")?;
+    let view = state + 49;
+    let view_updates = state + 43;
+    let mut first_scan = None;
+    // Returning the IR buffer to the game precedes its first input scan.
+    // A player dismisses the result once that screen is responding to buttons.
+    for _ in 0..40 {
+        if byte(rig, view)? == 14 {
+            let scan = byte(rig, view_updates)?;
+            if *first_scan.get_or_insert(scan) != scan {
+                rig.press("side")?;
+                if byte(rig, view)? != 0 {
+                    return Err("Dismissing the IR result did not return home".into());
+                }
+                return Ok(());
+            }
+        }
+        rig.run(25)?;
+    }
+    Err("The IR result screen never became ready".into())
+}
+
 pub fn inventory(rig: &mut Rig, output: &Path) -> Result<()> {
     let state = address(rig, "g_state")?;
     let eeprom = address(rig, "eeprom")?;

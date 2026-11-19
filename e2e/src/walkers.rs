@@ -74,8 +74,8 @@ impl Walkers {
         }
         self.center()?;
         let link = [
-            address(&self.0[0], "in_link")?,
-            address(&self.0[1], "in_link")?,
+            address(&self.0[0], "eeprom_owner")?,
+            address(&self.0[1], "eeprom_owner")?,
         ];
         for turn in 0..400 {
             self.run(25)?;

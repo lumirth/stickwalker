@@ -107,7 +107,7 @@ impl Session {
         let timeout = if self.identified {
             Duration::from_secs(2)
         } else {
-            Duration::from_millis(150)
+            Duration::from_millis(350)
         };
         let result = self.exchange(op, payload, timeout);
         if result.is_ok() {
@@ -119,39 +119,93 @@ impl Session {
         ensure!(payload.len() <= 4096, "Management message is too large");
         self.sequence = self.sequence.wrapping_add(1);
         self.port.write_all(&frame(op, self.sequence, payload))?;
-        let until = Instant::now() + timeout;
-        let mut buf = [0; 256];
-        while Instant::now() < until {
-            match self.port.read(&mut buf) {
-                Ok(n) => {
-                    for &b in &buf[..n] {
-                        if let Some(raw) = self.decoder.push(b) {
-                            if raw[2] != 1
-                                || raw[3] != op
-                                || raw[4..6] != self.sequence.to_le_bytes()
-                            {
-                                continue;
+        receive(
+            &mut self.port,
+            &mut self.decoder,
+            self.sequence,
+            op,
+            timeout,
+        )
+    }
+}
+
+fn receive(
+    port: &mut impl Read,
+    decoder: &mut Decoder,
+    sequence: u16,
+    op: u8,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
+    let until = Instant::now() + timeout;
+    let mut buf = [0; 256];
+    while Instant::now() < until {
+        match port.read(&mut buf) {
+            Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()),
+            Ok(n) => {
+                for &b in &buf[..n] {
+                    if let Some(raw) = decoder.push(b) {
+                        if raw[2] != 1 || raw[3] != op || raw[4..6] != sequence.to_le_bytes() {
+                            continue;
+                        }
+                        ensure!(raw.len() >= 13, "Empty management reply");
+                        match raw[8] {
+                            0 => return Ok(raw[9..raw.len() - 4].to_vec()),
+                            1 => {
+                                bail!("Stickwalker is busy. Finish connecting, then try again.")
                             }
-                            ensure!(raw.len() >= 13, "Empty management reply");
-                            match raw[8] {
-                                0 => return Ok(raw[9..raw.len() - 4].to_vec()),
-                                1 => {
-                                    bail!("Stickwalker is busy. Finish connecting, then try again.")
-                                }
-                                2 => bail!(
-                                    "This operation is not supported by the connected firmware."
-                                ),
-                                _ => bail!(
-                                    "Stickwalker could not save its state. Import an EEPROM image or reset the walker."
-                                ),
+                            2 => {
+                                bail!("This operation is not supported by the connected firmware.")
                             }
+                            _ => bail!(
+                                "Stickwalker could not save its state. Import an EEPROM image or reset the walker."
+                            ),
                         }
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(e) => return Err(e.into()),
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "Stickwalker did not reply. Reconnect it and try again.",
+    )
+    .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Cursor};
+
+    #[test]
+    fn unplug_ends_the_exchange_and_interrupted_reads_resume() {
+        let mut decoder = Decoder::default();
+        let timeout = Duration::from_secs(1);
+        let error = receive(&mut io::empty(), &mut decoder, 1, STATUS, timeout).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+
+        struct Interrupted(bool, Cursor<Vec<u8>>);
+        impl Read for Interrupted {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if std::mem::take(&mut self.0) {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                self.1.read(out)
             }
         }
-        bail!("Stickwalker did not reply. Reconnect it and try again.")
+        let mut stream = Interrupted(true, Cursor::new(frame(STATUS, 7, &[0, 42])));
+        assert_eq!(
+            receive(&mut stream, &mut decoder, 7, STATUS, timeout).unwrap(),
+            [42]
+        );
     }
 }

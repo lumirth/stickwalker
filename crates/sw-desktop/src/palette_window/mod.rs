@@ -16,7 +16,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use host::{DeviceSettings, PaletteName, PaletteSlot, palette as text, rgb565, rgb888};
+use host::{DeviceSettings, PaletteName, PaletteSlot, palette as text, rgb888};
 #[derive(Clone)]
 pub(crate) struct Choice {
     pub value: usize,
@@ -134,7 +134,9 @@ pub(crate) async fn palette_file(
             .update(|_, cx| cx.prompt_for_new_path(&directory, Some("palettes.txt")))?
             .await??
         {
-            host::save::atomic_write(&path, contents.as_bytes())?;
+            cx.background_executor()
+                .spawn(async move { host::save::atomic_write(&path, contents.as_bytes()) })
+                .await?;
         }
         Ok(None)
     } else {
@@ -148,11 +150,15 @@ pub(crate) async fn palette_file(
                 })
             })?
             .await??;
-        paths
-            .and_then(|p| p.into_iter().next())
-            .map(std::fs::read_to_string)
-            .transpose()
-            .map_err(Into::into)
+        let Some(path) = paths.and_then(|p| p.into_iter().next()) else {
+            return Ok(None);
+        };
+        cx.background_executor()
+            .spawn(async move {
+                let bytes = host::save::read_limited(&path, 64 * 1024)?;
+                Ok(Some(String::from_utf8(bytes)?))
+            })
+            .await
     }
 }
 impl PaletteEditor {
@@ -245,7 +251,7 @@ impl PaletteEditor {
         }
     }
     fn sync_name(&self, w: &mut Window, cx: &mut Context<Self>) {
-        let value = self.settings.slots[self.settings.active_palette as usize]
+        let value = self.settings.slots[self.settings.active_palette.index()]
             .name
             .as_str();
         if self.name.read(cx).value().as_ref() != value {
@@ -254,7 +260,7 @@ impl PaletteEditor {
         }
     }
     fn sync(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        if self.midtones[self.settings.active_palette as usize].automatic()
+        if self.midtones[self.settings.active_palette.index()].automatic()
             && matches!(self.shade, 1 | 2)
         {
             self.shade = 0;
@@ -268,22 +274,33 @@ impl PaletteEditor {
         self.commit(w, cx, false);
     }
     fn commit(&mut self, w: &mut Window, cx: &mut Context<Self>, validate: bool) {
+        let previous = self.settings;
+        self.apply_inputs(w, cx, validate);
+        if previous != self.settings {
+            self.changed(w, cx);
+        }
+    }
+    pub(crate) fn take_committed_settings(
+        &mut self,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> DeviceSettings {
+        self.apply_inputs(w, cx, false);
+        self.settings
+    }
+    fn apply_inputs(&mut self, w: &mut Window, cx: &mut Context<Self>, validate: bool) {
         if !self.enabled {
             return;
         }
-        let saved = self.settings;
-        let i = self.settings.active_palette as usize;
+        let i = self.settings.active_palette.index();
         if let Some(name) = PaletteName::from_user_input(&self.name.read(cx).value()) {
             self.settings.slots[i].name = name;
         }
         let hex = self.hex.read(cx).value();
-        let hex = hex.trim().trim_start_matches('#');
         let invalid_hex = "Enter a six-digit hex color.";
-        let color = (hex.len() == 6)
-            .then(|| u32::from_str_radix(hex, 16).ok())
-            .flatten();
+        let color = text::parse_hex(hex.trim()).ok();
         if let Some(color) = color {
-            self.settings.slots[i].colors[self.shade] = rgb565(color);
+            self.settings.slots[i].colors[self.shade] = color.rgb565();
             if self.midtones[i].automatic() {
                 self.blend();
             }
@@ -293,9 +310,6 @@ impl PaletteEditor {
             }
         }
         self.sync_name(w, cx);
-        if saved != self.settings {
-            self.changed(w, cx);
-        }
         if color.is_none() {
             if validate {
                 self.show_error(invalid_hex.into(), w, cx);
@@ -319,7 +333,7 @@ impl PaletteEditor {
         cx.notify();
     }
     fn set_color(&mut self, color: u16, w: &mut Window, cx: &mut Context<Self>) {
-        let slot = self.settings.active_palette as usize;
+        let slot = self.settings.active_palette.index();
         self.settings.slots[slot].colors[self.shade] = color;
         if self.midtones[slot].automatic() {
             self.blend();
@@ -327,7 +341,7 @@ impl PaletteEditor {
         self.changed(w, cx);
     }
     fn set_two_color(&mut self, enabled: bool, w: &mut Window, cx: &mut Context<Self>) {
-        let slot = self.settings.active_palette as usize;
+        let slot = self.settings.active_palette.index();
         self.commit_inputs(w, cx);
         if self.midtones[slot].automatic() == enabled {
             return;
@@ -355,16 +369,13 @@ impl PaletteEditor {
         cx.notify();
     }
     fn blend(&mut self) {
-        let colors = &mut self.settings.slots[self.settings.active_palette as usize].colors;
+        let colors = &mut self.settings.slots[self.settings.active_palette.index()].colors;
         *colors = text::ramp(colors[0], colors[3]);
-    }
-    pub(crate) fn settings(&self) -> DeviceSettings {
-        self.settings
     }
     pub fn copy(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.commit_inputs(w, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(text::format(
-            &self.settings.slots[self.settings.active_palette as usize],
+            &self.settings.slots[self.settings.active_palette.index()],
         )));
     }
     pub fn paste(&mut self, w: &mut Window, cx: &mut Context<Self>) {
@@ -378,7 +389,7 @@ impl PaletteEditor {
             .and_then(|s| text::parse(&s));
         match result {
             Ok(palette) => {
-                self.apply(self.settings.active_palette as usize, palette);
+                self.apply(self.settings.active_palette.index(), palette);
                 self.sync_name(w, cx);
                 self.changed(w, cx);
             }

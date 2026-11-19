@@ -70,9 +70,14 @@ static struct {
     uint64_t next_page;
 } ui = {.redraw = true};
 static Input input;
-typedef enum { TRANSFER_NONE, TRANSFER_READ, TRANSFER_WRITE } TransferMode;
+typedef enum { OWNER_GAME, OWNER_IR, OWNER_USB_READ, OWNER_USB_WRITE } EepromOwner;
+static EepromOwner eeprom_owner;
+
+static bool usb_owns_eeprom(void)
+{
+    return eeprom_owner == OWNER_USB_READ || eeprom_owner == OWNER_USB_WRITE;
+}
 static struct {
-    TransferMode mode;
     size_t position;
     uint64_t deadline;
 } transfer;
@@ -80,7 +85,6 @@ static void transfer_clear(void);
 static uint64_t preferences_due;
 static bool screen_asleep;
 static bool audio_wake_pending = true;
-static bool in_link;
 static bool game_ready;
 static char hardware_id[6];
 static uint8_t button_levels;
@@ -171,12 +175,15 @@ static bool prefs_save(void)
     return ok;
 }
 
-static void focus(View view)
+static void enter_view(View view)
 {
     button_levels = 0;
     input = (Input){.phase = INPUT_WAIT_RELEASE};
     ui.view = view;
+    ui.last_activity = pw_host_now_us();
     ui.redraw = true;
+    display_fill(0);
+    if (view == VIEW_PLAY) audio_wake_pending = true;
 }
 
 static const char *physical(uint8_t mask)
@@ -312,9 +319,8 @@ static void draw_page(void)
 
 static void close_settings(bool timed_out)
 {
-    focus(VIEW_PLAY);
+    enter_view(VIEW_PLAY);
     style();
-    display_fill(0);
     display_game(game_frame);
     if (timed_out) {
         pw_sleep_screen();
@@ -332,7 +338,7 @@ static void depleted_shutdown(void)
         if (pw_communicating()) {
             pw_cancel_connection();
         }
-        if (!pw_save()) printf("Stickwalker: Low-battery save failed\n");
+        pw_save();
     }
     board_shutdown();
     // External power arrived before shutdown took effect.
@@ -358,7 +364,7 @@ static void menu_action(uint8_t action)
                 prefs_save();
                 close_settings(false);
             } else {
-                focus(VIEW_SETTINGS);
+                enter_view(VIEW_SETTINGS);
             }
         }
     } else if (action == LEFT) {
@@ -368,7 +374,7 @@ static void menu_action(uint8_t action)
     } else if (action == CENTER) {
         switch (ui.menu_row) {
         case 0:
-            focus(VIEW_CONTROLS);
+            enter_view(VIEW_CONTROLS);
             ui.draft = settings;
             ui.control_row = 0;
             break;
@@ -445,7 +451,7 @@ static uint8_t inputs(Switches switches, uint64_t now)
     }
     if (ui.view == VIEW_PLAY && input.power_since &&
         now - input.power_since >= SETTINGS_HOLD_US) {
-        focus(VIEW_SETTINGS);
+        enter_view(VIEW_SETTINGS);
         ui.menu_row = 0;
         ui.redraw = true;
         ui.last_activity = now;
@@ -500,7 +506,7 @@ void pw_host_present(const uint8_t pixels[PW_SCREEN_PIXELS])
 
 void pw_host_display_sleep(bool asleep)
 {
-    if (ui.view == VIEW_PLAY && !in_link) {
+    if (ui.view == VIEW_PLAY && eeprom_owner != OWNER_IR) {
         screen_asleep = asleep;
         if (asleep) {
             audio_off();
@@ -520,7 +526,7 @@ void pw_host_contrast(uint8_t setting)
 
 uint64_t pw_host_tone(uint32_t frequency, uint8_t volume)
 {
-    if (screen_asleep || in_link || ui.view != VIEW_PLAY) {
+    if (screen_asleep || eeprom_owner == OWNER_IR || ui.view != VIEW_PLAY) {
         return pw_host_now_us();
     }
     return audio_tone(frequency, volume);
@@ -542,10 +548,10 @@ bool pw_host_communication(bool active)
     if (!active) {
         esp_pm_configure(&normal_clock);
         save_end_transfer();
-        in_link = false;
+        eeprom_owner = OWNER_GAME;
         return true;
     }
-    transfer_clear();
+    if (eeprom_owner != OWNER_GAME) return false;
     if (!board_link_power_ready() || !pw_save_changes()) {
         return false;
     }
@@ -559,7 +565,7 @@ bool pw_host_communication(bool active)
         return false;
     }
     input = (Input){.phase = INPUT_WAIT_RELEASE};
-    in_link = true;
+    eeprom_owner = OWNER_IR;
     return true;
 }
 
@@ -572,10 +578,10 @@ void pw_host_device_id(uint8_t identity[40])
 
 void pw_host_fault(const char *message)
 {
-    printf("Stickwalker: %s\n", message);
+    (void)message;
     game_ready = false;
-    focus(VIEW_RECOVERY);
-    in_link = false;
+    enter_view(VIEW_RECOVERY);
+    eeprom_owner = OWNER_GAME;
     infrared_stop();
     audio_off();
     screen_asleep = false;
@@ -625,11 +631,15 @@ static void identify_device(void)
     if (game_ready) pw_keep_awake();
 }
 
-static void apply_settings(const ManagementSettings *next)
+static void apply_settings(const ManagementSettings *next, bool palette_only)
 {
     memcpy(&settings, next, sizeof(settings));
     memcpy(palette_names, next->names, sizeof(palette_names));
-    ui.draft = settings;
+    if (palette_only) {
+        ui.draft.palette = settings.palette;
+    } else {
+        ui.draft = settings;
+    }
     uint16_t colors[PALETTES][4];
     memcpy(colors, next->colors, sizeof(colors));
     display_palette_table(colors, true);
@@ -646,14 +656,15 @@ static bool capture_save(void)
         board_motion_drain();
     }
     pw_tick();
-    return !in_link && pw_save();
+    return eeprom_owner != OWNER_IR && pw_save();
 }
 
 static void transfer_clear(void)
 {
-    if (transfer.mode == TRANSFER_WRITE) {
+    if (eeprom_owner == OWNER_USB_WRITE) {
         save_end_transfer();
     }
+    eeprom_owner = OWNER_GAME;
     memset(&transfer, 0, sizeof(transfer));
 }
 
@@ -664,7 +675,9 @@ static bool begin_import(void)
     if (!recovery && !capture_save()) {
         return false;
     }
-    return save_begin_import(recovery);
+    if (!save_begin_import(recovery)) return false;
+    eeprom_owner = OWNER_USB_WRITE;
+    return true;
 }
 
 static bool finish_import(void)
@@ -672,13 +685,14 @@ static bool finish_import(void)
     PwRuntimeState runtime = {0};
     pw_host_runtime_checkpoint(&runtime);
     bool committed = save_commit();
-    save_end_transfer();
+    transfer_clear();
     if (!committed) {
         return false;
     }
     screen_asleep = false;
     board_motion(MOTION_LIVE);
-    ui.view = VIEW_PLAY;
+    enter_view(VIEW_PLAY);
+    display_power(true);
     pw_init();
     game_ready = ui.view != VIEW_RECOVERY;
     ui.redraw = true;
@@ -694,7 +708,7 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
         memcpy(status.version, app->version, sizeof(status.version));
         memcpy(status.build, app->app_elf_sha256, sizeof(status.build));
         esp_efuse_mac_get_default(status.mac);
-        status.state = !game_ready || ui.view == VIEW_RECOVERY ? 2 : in_link ? 1 : 0;
+        status.state = !game_ready || ui.view == VIEW_RECOVERY ? 2 : eeprom_owner == OWNER_IR ? 1 : 0;
         Battery battery = board_battery();
         status.battery_mv = battery.millivolts;
         status.external_power = battery.external;
@@ -703,7 +717,9 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
         *length = sizeof(status);
         return MANAGE_OK;
     }
-    if (in_link) {
+    if (eeprom_owner == OWNER_IR ||
+        (eeprom_owner == OWNER_USB_WRITE && op != MANAGE_WRITE) ||
+        (eeprom_owner == OWNER_USB_READ && op != MANAGE_READ)) {
         return MANAGE_BUSY;
     }
     if (op == MANAGE_IDENTIFY && !count) {
@@ -713,7 +729,8 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
     if (op == MANAGE_SETTINGS && count == sizeof(ManagementSettings)) {
         ManagementSettings next;
         memcpy(&next, in, sizeof(next));
-        if (next.palette & MANAGE_PALETTE_ONLY) {
+        bool palette_only = next.palette & MANAGE_PALETTE_ONLY;
+        if (palette_only) {
             next.palette &= ~MANAGE_PALETTE_ONLY;
             next.reverse = settings.reverse;
             next.layout = settings.layout;
@@ -722,7 +739,7 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
         if (!settings_valid(&next)) {
             return MANAGE_INVALID;
         }
-        apply_settings(&next);
+        apply_settings(&next, palette_only);
         return MANAGE_OK;
     }
     if (op == MANAGE_WRITE) {
@@ -730,7 +747,7 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
             if (!begin_import()) {
                 return MANAGE_FAILED;
             }
-            uint8_t blank[4096];
+            uint8_t blank[256];
             memset(blank, 0xff, sizeof(blank));
             for (unsigned offset = 0; offset < 65536; offset += sizeof(blank)) {
                 pw_host_eeprom_write(offset, blank, sizeof(blank));
@@ -753,9 +770,8 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
             if (!begin_import()) {
                 return MANAGE_FAILED;
             }
-            transfer.mode = TRANSFER_WRITE;
         }
-        if (transfer.mode != TRANSFER_WRITE || offset != transfer.position) {
+        if (eeprom_owner != OWNER_USB_WRITE || offset != transfer.position) {
             transfer_clear();
             return MANAGE_INVALID;
         }
@@ -763,9 +779,7 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
         transfer.position += bytes;
         transfer.deadline = pw_host_now_us() + 2000000;
         if (transfer.position == 65536) {
-            bool committed = finish_import();
-            memset(&transfer, 0, sizeof(transfer));
-            return committed ? MANAGE_OK : MANAGE_FAILED;
+            return finish_import() ? MANAGE_OK : MANAGE_FAILED;
         }
         return MANAGE_OK;
     }
@@ -792,9 +806,9 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
             if (!capture_save()) {
                 return MANAGE_FAILED;
             }
-            transfer.mode = TRANSFER_READ;
+            eeprom_owner = OWNER_USB_READ;
         }
-        if (transfer.mode != TRANSFER_READ || page.offset != transfer.position) {
+        if (eeprom_owner != OWNER_USB_READ || page.offset != transfer.position) {
             return MANAGE_INVALID;
         }
         pw_host_eeprom_read(page.offset, out, page.length);
@@ -846,15 +860,13 @@ void app_main(void)
         management_poll();
         // Fresh requests extend the transfer deadline. The USB SOF monitor can
         // briefly report disconnected during flash writes, even with a live host.
-        if (transfer.mode && now >= transfer.deadline) {
+        if (usb_owns_eeprom() && now >= transfer.deadline) {
             transfer_clear();
         }
-        if (preferences_due && now >= preferences_due && !in_link) {
-            if (prefs_save()) {
-                preferences_due = 0;
-            }
+        if (preferences_due && now >= preferences_due && eeprom_owner == OWNER_GAME) {
+            preferences_due = prefs_save() ? 0 : now + 5000000;
         }
-        if (transfer.mode) {
+        if (usb_owns_eeprom()) {
             // Explicit EEPROM transfers borrow the game buffer briefly. Status
             // polling never enters this path. A lost host releases it on timeout.
             board_power_tick(false, screen_asleep);
@@ -866,15 +878,15 @@ void app_main(void)
         }
         uint64_t next_game = now + 1000000;
         Switches switches = {0};
-        if (!in_link) {
+        if (eeprom_owner != OWNER_IR) {
             switches = board_switches(screen_asleep);
         }
-        board_power_tick(in_link, screen_asleep);
+        board_power_tick(eeprom_owner == OWNER_IR, screen_asleep);
         Battery battery = board_battery();
         if (battery.depleted) {
             depleted_shutdown();
         }
-        if (!in_link) {
+        if (eeprom_owner != OWNER_IR) {
             if (screen_asleep) board_motion_drain();
             if (switches.pressed && ui.view == VIEW_PLAY && !screen_asleep && pw_sound_enabled()) {
                 audio_prepare();
@@ -899,9 +911,9 @@ void app_main(void)
                          screen_asleep ? MOTION_FIFO : MOTION_LIVE);
             next_game = board_motion_deadline(next_game);
         }
-        if (in_link) {
+        if (eeprom_owner == OWNER_IR) {
             uint64_t service_until = pw_host_now_us() + 20000;
-            while (in_link && pw_communicating() && pw_host_now_us() < service_until) {
+            while (eeprom_owner == OWNER_IR && pw_communicating() && pw_host_now_us() < service_until) {
                 pw_tick();
             }
             infrared_yield();
@@ -920,7 +932,7 @@ void app_main(void)
         if (!screen_asleep) {
             next_display = display_tick();
         }
-        if (audio_wake_pending && board_audio_ready() && !in_link) {
+        if (audio_wake_pending && board_audio_ready() && eeprom_owner != OWNER_IR) {
             audio_wake_pending = false;
             if (ui.view == VIEW_PLAY && pw_sound_enabled()) audio_prepare();
         }

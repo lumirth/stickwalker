@@ -17,9 +17,17 @@ use std::{
 };
 
 pub fn connect_rom(port: &Port) -> Result<Flasher> {
-    let serial = serialport::new(&port.path, 115200)
-        .timeout(Duration::from_secs(3))
-        .open_native()?;
+    let until = Instant::now() + Duration::from_secs(2);
+    let serial = loop {
+        match serialport::new(&port.path, 115200)
+            .timeout(Duration::from_secs(3))
+            .open_native()
+        {
+            Ok(port) => break port,
+            Err(_) if Instant::now() < until => thread::sleep(Duration::from_millis(150)),
+            Err(error) => return Err(error.into()),
+        }
+    };
     let info = UsbPortInfo {
         vid: 0x303a,
         pid: 0x1001,
@@ -68,9 +76,9 @@ impl ProgressCallbacks for Progress<'_> {
     }
 }
 fn read_region(flasher: &mut Flasher, offset: usize, size: usize) -> Result<Vec<u8>> {
-    let temp = tempfile::NamedTempFile::new()?;
-    flasher.read_flash(offset as u32, size as u32, 4096, 64, temp.path().into())?;
-    let bytes = fs::read(temp.path())?;
+    let temp = tempfile::NamedTempFile::new()?.into_temp_path();
+    flasher.read_flash(offset as u32, size as u32, 4096, 64, temp.to_path_buf())?;
+    let bytes = fs::read(&temp)?;
     ensure!(bytes.len() == size, "Incomplete device read");
     Ok(bytes)
 }
@@ -95,6 +103,12 @@ fn find_restarted<T>(
     None
 }
 
+fn app_fits(table: &[u8], offset: usize, size: usize, settings: (usize, usize)) -> bool {
+    crate::release::partition(table, "factory")
+        .is_some_and(|(at, capacity)| at == offset && size <= capacity)
+        && crate::release::partition(table, "nvs") == Some(settings)
+}
+
 /// The partition table is written last. A retry can still find the legacy
 /// source, or the completed EEPROM intake if legacy bank sectors were retired.
 pub fn install(
@@ -103,7 +117,7 @@ pub fn install(
     package: &Package,
     fresh: bool,
     progress: &mut dyn FnMut(&str, Option<u8>),
-) -> Result<(Port, Info)> {
+) -> Result<(Port, Session, Info)> {
     let manifest = &package.manifest;
     let images = manifest
         .images
@@ -133,6 +147,8 @@ pub fn install(
             session.request(protocol::PREPARE, &[])?;
             managed = true;
         }
+        drop(session);
+        thread::sleep(Duration::from_millis(200));
     }
     progress("Preparing Stickwalker", None);
     let mut flasher = connect_rom(port).context(
@@ -186,66 +202,89 @@ pub fn install(
                 && manifest.settings.size == 0x6000,
             "This firmware package cannot use the installed storage."
         );
+        // The table may already be complete after an interrupted legacy install.
+        if !managed {
+            let nvs = read_region(
+                &mut flasher,
+                manifest.settings.offset,
+                manifest.settings.size,
+            )?;
+            migrated = crate::legacy::migrated_preferences(&nvs);
+        }
         // A save fault is repaired live after boot; reinstalling never clears it.
-        if current && managed {
+        if current
+            && managed
+            && app_fits(
+                &table,
+                app.offset,
+                app_bytes.len(),
+                (manifest.settings.offset, manifest.settings.size),
+            )
+        {
             writes.push((*app, app_bytes));
         } else {
             writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
         }
-    } else if public {
+    } else if public || !raw_intake {
+        // A torn table may lack the spiffs entry while the old save is intact.
         progress("Reading the existing save", None);
         let raw = read_region(&mut flasher, 0x670000, 0x180000)?;
         let nvs = read_region(&mut flasher, 0x9000, 0x5000)?;
         let eeprom = match save::classify_public_partition(&raw) {
-            save::PublicPartition::StickwalkerSave(image) => image,
-            // Retiring bank headers can overlap LittleFS data. A verified intake
-            // was written first; prefer the original source whenever it still reads.
-            _ if raw_intake => read_region(&mut flasher, save::WALKER, save::EEPROM)?,
+            save::PublicPartition::StickwalkerSave(image) => Some(image),
+            // The verified intake outlives the legacy headers. Never rewrite the
+            // surviving copy from itself during a retry.
+            _ if raw_intake => None,
             save::PublicPartition::EmptyOrForeign => {
                 flasher.erase_region(
                     manifest.settings.offset as u32,
                     manifest.settings.size as u32,
                 )?;
                 flasher.erase_region(manifest.state.offset as u32, manifest.state.size as u32)?;
-                Vec::new()
+                None
             }
             save::PublicPartition::DamagedSave(error) => {
                 return Err(error.context("The older save is damaged. Nothing was erased. Use Device → Erase and Install for a fresh walker."));
             }
         };
-        if !eeprom.is_empty() {
+        if eeprom.is_some() || raw_intake {
             migrated = Some(crate::legacy::preferences(&nvs));
-            // Finish the intake before erasing any overlapping legacy sectors.
-            flasher.write_bin_to_flash(
-                save::WALKER as u32,
-                &eeprom,
-                &mut Progress {
-                    report: progress,
-                    units: 0,
-                    region: eeprom.len(),
-                    previous: 0,
-                    total: image_size + eeprom.len(),
-                    label: "Transferring save",
-                },
-            )?;
-            saved = eeprom.len();
-            for header in [0x620000, 0x621000, 0x700000, 0x701000] {
-                flasher.erase_region(header, 4096)?;
+            ensure!(
+                manifest.state.offset == save::WALKER && manifest.settings.offset == 0x9000,
+                "This firmware does not support installing the older save"
+            );
+            if let Some(image) = eeprom {
+                let bytes = image.bytes();
+                flasher.write_bin_to_flash(
+                    save::WALKER as u32,
+                    bytes,
+                    &mut Progress {
+                        report: progress,
+                        units: 0,
+                        region: bytes.len(),
+                        previous: 0,
+                        total: image_size + bytes.len(),
+                        label: "Transferring save",
+                    },
+                )?;
+                saved = bytes.len();
             }
-            // This is the newly added NVS page (formerly OTA metadata).
-            // Existing Arduino NVS pages remain readable by ESP-IDF.
+            // Only these markers block the firmware's raw intake. Usually both
+            // public checkpoint copies can stay intact until the first boot.
+            for header in [0x620000, 0x621000, 0x700000, 0x701000] {
+                let magic = read_region(&mut flasher, header + 68, 4)?;
+                if magic.starts_with(b"SWK") && (b'0'..=b'6').contains(&magic[3]) {
+                    flasher.erase_region(header as u32, 4096)?;
+                }
+            }
+            // Keep the original NVS pages readable until the new firmware confirms them.
             flasher.erase_region(0xe000, 4096)?;
         }
         writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
-    } else if raw_intake {
-        // A completed intake can outlive an interrupted partition-table write.
-        writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
     } else {
-        flasher.erase_region(
-            manifest.settings.offset as u32,
-            manifest.settings.size as u32,
-        )?;
-        flasher.erase_region(manifest.state.offset as u32, manifest.state.size as u32)?;
+        // The intake and original NVS pages survive an interrupted partition table.
+        let nvs = read_region(&mut flasher, 0x9000, 0x5000)?;
+        migrated = crate::legacy::migrated_preferences(&nvs);
         writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
     }
     writes.sort_by_key(|(image, _)| image.kind == "partitions");
@@ -266,9 +305,10 @@ pub fn install(
         saved += bytes.len();
     }
     progress("Restarting Stickwalker", None);
-    let _ = Chip::Esp32s3.rtc_wdt_reset(flasher.connection());
+    let reset = Chip::Esp32s3.rtc_wdt_reset(flasher.connection());
     drop(flasher);
-    let until = Instant::now() + Duration::from_secs(25);
+    // The reset itself may disconnect USB before the ROM acknowledges the last write.
+    let until = Instant::now() + Duration::from_secs(if reset.is_ok() { 25 } else { 3 });
     while Instant::now() < until {
         thread::sleep(Duration::from_millis(300));
         let Ok(candidates) = ports() else { continue };
@@ -283,19 +323,44 @@ pub fn install(
             );
             if let Some(settings) = migrated {
                 session.request(protocol::SETTINGS, &settings.to_bytes())?;
-                // PREPARE flushes preferences; the host controls any reset.
-                session.request(protocol::PREPARE, &[])?;
+                if info.mode != DeviceMode::SaveFault {
+                    // PREPARE commits preferences and the mounted save together.
+                    session.request(protocol::PREPARE, &[])?;
+                }
                 info = Info::read(&mut session)?;
             }
-            return Ok((port, info));
+            return Ok((port, session, info));
         }
     }
+    reset.context(
+        "Firmware was written, but the Stick could not restart. Reconnect it and try again.",
+    )?;
     anyhow::bail!("Firmware was written. Reconnect the Stick to check its version.")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_only_updates_require_matching_nvs_and_enough_application_space() {
+        fn entry(label: &[u8], offset: u32, size: u32) -> [u8; 32] {
+            let mut e = [0; 32];
+            e[..2].copy_from_slice(&[0xaa, 0x50]);
+            e[4..8].copy_from_slice(&offset.to_le_bytes());
+            e[8..12].copy_from_slice(&size.to_le_bytes());
+            e[12..12 + label.len()].copy_from_slice(label);
+            e
+        }
+        let table = [
+            entry(b"nvs", 0x9000, 0x6000),
+            entry(b"factory", 0x10000, 0x60000),
+        ]
+        .concat();
+        assert!(app_fits(&table, 0x10000, 0x60000, (0x9000, 0x6000)));
+        assert!(!app_fits(&table, 0x10000, 0x60001, (0x9000, 0x6000)));
+        assert!(!app_fits(&table, 0x10000, 0x60000, (0x9000, 0x5000)));
+    }
 
     #[test]
     fn post_flash_settings_follow_the_chip_when_a_port_is_reused() {

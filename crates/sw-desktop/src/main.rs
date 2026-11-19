@@ -5,6 +5,7 @@
 extern crate gpui_kit as gpui;
 mod device_window;
 mod menus;
+const APP_ID: &str = env!("STICKWALKER_APP_ID");
 use menus::refresh_menus;
 mod assets;
 
@@ -23,10 +24,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use host::worker::DeviceAccess;
 
 actions!(
     stickwalker,
@@ -57,20 +55,15 @@ actions!(
 );
 #[derive(Default, PartialEq, Eq)]
 struct MenuState {
-    app_installing: bool,
+    locked: bool,
     update_label: String,
     updates_supported: bool,
-    managed: bool,
-    ready: bool,
-    selected: bool,
-    linking: bool,
-    hardware_busy: bool,
+    access: DeviceAccess,
     checking_firmware: bool,
     can_install: bool,
     install_label: String,
 }
 struct AppState {
-    hardware_busy: Arc<AtomicBool>,
     menu: MenuState,
     about: Option<AnyWindowHandle>,
     main_window: AnyWindowHandle,
@@ -79,11 +72,6 @@ struct AppState {
     editor_bar: Option<WeakEntity<AppMenuBar>>,
 }
 impl Global for AppState {}
-impl AppState {
-    fn locked(&self) -> bool {
-        self.hardware_busy.load(Ordering::SeqCst) || self.menu.app_installing
-    }
-}
 fn shortcut(key: &str, action: impl Action, context: Option<&str>, cx: &App) -> KeyBinding {
     KeyBinding::load(
         key,
@@ -100,6 +88,7 @@ fn main() {
         .with_assets(assets::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
+            preferences::start(cx);
             let keys = [
                 shortcut("secondary-w", CloseWindow, None, cx),
                 shortcut("escape", CloseWindow, Some("About"), cx),
@@ -116,23 +105,24 @@ fn main() {
             cx.on_action(|_: &Quit, cx| {
                 let main = cx.global::<AppState>().main.clone();
                 cx.defer(move |cx| {
-                    if main.update(cx, |v, cx| v.prepare_close(cx)).unwrap_or(true) {
-                        cx.quit();
-                    }
+                    let _ = main.update(cx, |v, cx| {
+                        v.request_exit(device_window::PendingExit::Quit, cx)
+                    });
                 });
             });
             cx.on_action(|_: &About, cx| menus::open_about(cx));
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                    point(px(180.), px(160.)),
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
                     size(px(480.), px(310.)),
+                    cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Stickwalker".into()),
                     ..TitleBar::title_bar_options()
                 }),
                 window_min_size: Some(size(px(460.), px(310.))),
-                app_id: Some("me.kukas.stickwalker".into()),
+                app_id: Some(APP_ID.into()),
                 ..TitleBar::window_options()
             };
             if let Err(error) = gpui_kit::open_window(options, cx, |w, cx| {

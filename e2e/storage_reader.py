@@ -1,6 +1,7 @@
 """Use the host diagnostic reader for simulator flash results."""
 from functools import cache
 from pathlib import Path
+import os
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def reader():
     subprocess.run(["cargo", "build", "--quiet", "--locked", "-p",
                     "sw-host", "--example", "device"], cwd=ROOT, check=True)
-    return ROOT / "target/debug/examples/device"
+    return ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "debug/examples/device"
 
 def decode(data):
     result = subprocess.run([reader(), "decode", "-"], input=data, capture_output=True)
