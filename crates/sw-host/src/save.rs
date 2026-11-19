@@ -74,9 +74,13 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     temp.as_file().sync_all()?;
     #[cfg(windows)]
     for delay_ms in [25, 75] {
+        const ERROR_SHARING_VIOLATION: i32 = 32;
         match temp.persist(path) {
             Ok(_) => return Ok(()),
-            Err(e) if e.error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(e)
+                if e.error.kind() == std::io::ErrorKind::PermissionDenied
+                    || e.error.raw_os_error() == Some(ERROR_SHARING_VIOLATION) =>
+            {
                 temp = e.file;
                 std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             }

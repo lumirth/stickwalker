@@ -323,15 +323,19 @@ impl StickView {
 
     fn footer_message(&self) -> Option<(FooterKind, String)> {
         use FooterKind::{Error, Restart, Status, Update};
-        if let Some(error) = self.local_error.as_ref().or(self.state.error.as_ref()) {
-            return Some((Error, error.clone()));
-        }
-        if let Some(status) = self.state.status.as_deref().or_else(|| {
-            self.pending_install
-                .as_ref()
-                .map(|install| install.status())
-        }) {
-            return Some((Status, status.into()));
+        if !self.updates.blocks_hardware() {
+            if let Some(error) = self.local_error.as_ref().or(self.state.error.as_ref()) {
+                return Some((Error, error.clone()));
+            }
+            if let Some(status) = self.state.status.as_deref() {
+                return Some((Status, status.into()));
+            }
+            if let Some(install) = &self.pending_install {
+                return Some((Status, install.status().into()));
+            }
+            if self.state.checking_firmware {
+                return Some((Status, "Checking for firmware updates…".into()));
+            }
         }
         let update = &self.updates.state;
         let message = match update {
@@ -357,9 +361,6 @@ impl StickView {
             }
             AppUpdate::UpToDate if self.latest_check == CheckFeedback::App => {
                 "Stickwalker Desktop is up to date".into()
-            }
-            _ if self.latest_check == CheckFeedback::Firmware && self.state.checking_firmware => {
-                "Checking for firmware updates…".into()
             }
             _ if self.latest_check == CheckFeedback::Firmware => {
                 self.state.firmware_feedback.clone()?
@@ -477,6 +478,9 @@ impl Render for StickView {
             .on_action(cx.listener(|v, _: &CheckAppUpdates, _, cx| v.app_update(cx)))
             .child(
                 TitleBar::new()
+                    .on_close_window(
+                        cx.listener(|v, _, _, cx| v.request_exit(PendingExit::Quit, cx)),
+                    )
                     .when(cfg!(target_os = "macos"), |bar| {
                         bar.child(div().flex_1().child({
                             #[cfg(debug_assertions)]
@@ -517,7 +521,7 @@ mod tests {
     };
 
     #[gpui_kit::test]
-    fn firmware_download_takes_priority_over_an_available_app_update(cx: &mut TestAppContext) {
+    fn footer_prioritizes_firmware_activity_and_blocking_app_updates(cx: &mut TestAppContext) {
         use super::FooterKind;
         use crate::device_window::tests::open_device;
         use gpui_updater_core::{Asset, Release};
@@ -537,6 +541,12 @@ mod tests {
                 v.state.firmware = None;
                 v.updates.state = AppUpdate::Available(Box::new(release));
                 assert_eq!(v.footer_message(), banner);
+                v.state.checking_firmware = true;
+                assert_eq!(
+                    v.footer_message(),
+                    Some((FooterKind::Status, "Checking for firmware updates…".into()))
+                );
+                v.state.checking_firmware = false;
                 cx.notify();
             });
             w.draw(cx).clear(cx);
@@ -562,6 +572,17 @@ mod tests {
         assert!(ui.debug_bounds("feedback-message").unwrap().size.width > banner_bounds.size.width);
         ui.update(|w, cx| {
             view.update(cx, |v, cx| {
+                let available = std::mem::replace(&mut v.updates.state, AppUpdate::Installing);
+                assert_eq!(
+                    v.footer_message(),
+                    Some((FooterKind::Status, "Installing app update…".into()))
+                );
+                v.updates.state = AppUpdate::Restarting;
+                assert_eq!(
+                    v.footer_message(),
+                    Some((FooterKind::Status, "Restarting to update…".into()))
+                );
+                v.updates.state = available;
                 v.present(Presentation::default(), w, cx);
                 assert_eq!(v.footer_message(), banner);
             });
@@ -729,7 +750,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_close_request_cannot_replace_a_draining_restart(cx: &mut TestAppContext) {
+    fn close_respects_the_hardware_lock_and_a_draining_restart(cx: &mut TestAppContext) {
         use crate::device_window::{ExitState, PendingExit};
         let (handle, view) = cx.update(|cx| {
             gpui_kit::init(cx);
@@ -741,6 +762,10 @@ mod tests {
         cx.update_window(handle, |_, w, cx| {
             view.update(cx, |v, cx| {
                 v.show_state(5, w, cx);
+                v.state.hardware_busy = true;
+                v.request_exit(PendingExit::Quit, cx);
+                assert_eq!(v.exit, ExitState::Running);
+                v.state.hardware_busy = false;
                 v.pending_revision = Some(v.state.acked_revision + 1);
                 v.request_exit(PendingExit::Restart, cx);
                 v.request_exit(PendingExit::Quit, cx);
