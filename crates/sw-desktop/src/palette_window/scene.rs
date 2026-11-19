@@ -1,13 +1,13 @@
 use crate::*;
 use host::rgb888;
 
-/// Original CC0 four-shade scene. Integer raster scaling keeps the pixel edges crisp.
+/// Tentaquil on Dead Channel, drawn at integer scale in the selected palette.
 pub fn scene(colors: [u16; 4]) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
             let scale = (f32::from(bounds.size.width) / 96.).floor().max(1.);
-            for (y, row) in include_str!("../../assets/meadow-scene.txt")
+            for (y, row) in include_str!("../../assets/tentaquil-dead-channel.txt")
                 .lines()
                 .enumerate()
             {
