@@ -46,25 +46,29 @@ fn scan_files(fs: &mut filesystem::Volume<'_>) -> Result<Option<EepromImage>> {
     let mut damaged_sequence = None;
     let mut found = false;
     for name in [c"/pw-a.bin", c"/pw-b.bin"] {
-        match fs.read(name, 0x180000) {
-            Ok(None) => continue,
-            Ok(Some(bytes)) if bytes.len() >= 8 && word(&bytes, 0) == CHECKPOINT_MAGIC => {
-                let sequence = word(&bytes, 4);
-                if bytes.len() == EEPROM + 12
-                    && word(&bytes, 8) == crc32fast::hash(&bytes[12..])
-                    && validate_eeprom(&bytes[12..]).is_ok()
-                {
-                    if newest.as_ref().is_none_or(|(n, _)| sequence > *n) {
-                        newest = Some((sequence, bytes[12..].to_vec()));
-                    }
-                } else {
-                    damaged_sequence = damaged_sequence.max(Some(sequence));
-                }
-            }
-            // A torn file may lack even its header. Its intact partner is usable.
-            _ => {}
-        }
+        let Some(bytes) = fs.read(name, 0x180000)? else {
+            continue;
+        };
         found = true;
+        // A torn header has no sequence. Use the intact partner in that case.
+        if bytes.len() < 8 {
+            continue;
+        }
+        ensure!(
+            word(&bytes, 0) == CHECKPOINT_MAGIC,
+            "The older save has a damaged checkpoint header"
+        );
+        let sequence = word(&bytes, 4);
+        if bytes.len() == EEPROM + 12
+            && word(&bytes, 8) == crc32fast::hash(&bytes[12..])
+            && validate_eeprom(&bytes[12..]).is_ok()
+        {
+            if newest.as_ref().is_none_or(|(n, _)| sequence > *n) {
+                newest = Some((sequence, bytes[12..].to_vec()));
+            }
+        } else {
+            damaged_sequence = damaged_sequence.max(Some(sequence));
+        }
     }
     let journal = fs.read(c"/pw-journal.bin", 0x180000)?;
     if !found && journal.is_none() {

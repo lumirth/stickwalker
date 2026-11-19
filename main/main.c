@@ -470,7 +470,7 @@ static uint8_t inputs(Switches switches, uint64_t now)
         input.phase = INPUT_PRESSING;
         input.switches = down ? down : pressed;
     }
-    if (down == used) {
+    if ((down | pressed) == used) {
         input.switches = used;
     }
     if (down || input.phase == INPUT_IDLE) {
@@ -680,6 +680,12 @@ static bool begin_import(void)
     return true;
 }
 
+static unsigned invalid_transfer(void)
+{
+    transfer_clear();
+    return MANAGE_INVALID;
+}
+
 static bool finish_import(void)
 {
     PwRuntimeState runtime = {0};
@@ -755,25 +761,24 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
             return finish_import() ? MANAGE_OK : MANAGE_FAILED;
         }
         if (count <= sizeof(uint32_t)) {
-            return MANAGE_INVALID;
+            return invalid_transfer();
         }
         uint32_t offset;
         memcpy(&offset, in, sizeof(offset));
         size_t bytes = count - sizeof(offset);
         if (offset > 65536 || bytes > 65536 - offset) {
-            return MANAGE_INVALID;
+            return invalid_transfer();
         }
         if (!offset) {
             if (bytes < 8 || memcmp(in + sizeof(offset), "nintendo", 8)) {
-                return MANAGE_INVALID;
+                return invalid_transfer();
             }
             if (!begin_import()) {
                 return MANAGE_FAILED;
             }
         }
         if (eeprom_owner != OWNER_USB_WRITE || offset != transfer.position) {
-            transfer_clear();
-            return MANAGE_INVALID;
+            return invalid_transfer();
         }
         pw_host_eeprom_write(offset, in + sizeof(offset), bytes);
         transfer.position += bytes;
@@ -794,12 +799,13 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
         preferences_due = 0;
         return MANAGE_OK;
     }
-    if (op == MANAGE_READ && count == sizeof(ManagementRead)) {
+    if (op == MANAGE_READ) {
         ManagementRead page;
+        if (count != sizeof(page)) return invalid_transfer();
         memcpy(&page, in, sizeof(page));
         if (!page.length || page.length > MANAGE_PAYLOAD - 1 ||
             page.offset > 65536 - page.length) {
-            return MANAGE_INVALID;
+            return invalid_transfer();
         }
         if (!page.offset) {
             transfer_clear();
@@ -809,7 +815,7 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
             eeprom_owner = OWNER_USB_READ;
         }
         if (eeprom_owner != OWNER_USB_READ || page.offset != transfer.position) {
-            return MANAGE_INVALID;
+            return invalid_transfer();
         }
         pw_host_eeprom_read(page.offset, out, page.length);
         *length = page.length;

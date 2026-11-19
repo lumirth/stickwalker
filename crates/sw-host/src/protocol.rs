@@ -1,7 +1,7 @@
 use anyhow::{Result, bail, ensure};
 use serialport::SerialPort;
 use std::{
-    io::{Read, Write},
+    io::{self, Read, Write},
     time::{Duration, Instant},
 };
 
@@ -96,12 +96,16 @@ impl Session {
             .timeout(Duration::from_millis(30))
             .preserve_dtr_on_open()
             .open()?;
-        Ok(Self {
+        Ok(Self::from_port(port))
+    }
+
+    pub(crate) fn from_port(port: Box<dyn SerialPort>) -> Self {
+        Self {
             port,
             sequence: 0,
             decoder: Decoder::default(),
             identified: false,
-        })
+        }
     }
     pub fn request(&mut self, op: u8, payload: &[u8]) -> Result<Vec<u8>> {
         let timeout = if !self.identified {
@@ -127,15 +131,33 @@ impl Session {
             "The request to your Stick is too large."
         );
         self.sequence = self.sequence.wrapping_add(1);
-        self.port.write_all(&frame(op, self.sequence, payload))?;
-        receive(
-            &mut self.port,
-            &mut self.decoder,
-            self.sequence,
-            op,
-            timeout,
-        )
+        let until = Instant::now() + timeout;
+        send_frame(&mut self.port, &frame(op, self.sequence, payload), until)?;
+        receive(&mut self.port, &mut self.decoder, self.sequence, op, until)
     }
+}
+
+fn send_frame(port: &mut impl Write, mut bytes: &[u8], until: Instant) -> io::Result<()> {
+    while !bytes.is_empty() {
+        if Instant::now() >= until {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Timed out sending to your Stick.",
+            ));
+        }
+        match port.write(bytes) {
+            // Windows can complete a timed-out WriteFile with zero bytes.
+            Ok(0) => std::thread::sleep(Duration::from_millis(1)),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+                ) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 fn receive(
@@ -143,9 +165,8 @@ fn receive(
     decoder: &mut Decoder,
     sequence: u16,
     op: u8,
-    timeout: Duration,
+    until: Instant,
 ) -> Result<Vec<u8>> {
-    let until = Instant::now() + timeout;
     let mut buf = [0; 256];
     while Instant::now() < until {
         match port.read(&mut buf) {
@@ -193,10 +214,50 @@ mod tests {
     use std::io::{self, Cursor};
 
     #[test]
+    fn a_stalled_write_resumes_at_the_first_unsent_byte() {
+        struct SerialWriter {
+            count: usize,
+            sent: Vec<u8>,
+        }
+        impl Write for SerialWriter {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.count += 1;
+                match self.count {
+                    2 => return Err(io::ErrorKind::TimedOut.into()),
+                    3 => return Err(io::ErrorKind::Interrupted.into()),
+                    4 => return Ok(0),
+                    _ => {}
+                }
+                let n = data.len().min(317);
+                self.sent.extend_from_slice(&data[..n]);
+                Ok(n)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let wire = frame(WRITE, 5, &[0xc0; CHUNK]);
+        let mut port = SerialWriter {
+            count: 0,
+            sent: Vec::new(),
+        };
+        send_frame(&mut port, &wire, Instant::now() + Duration::from_secs(1)).unwrap();
+        assert_eq!(port.sent, wire);
+        let mut stalled = Cursor::new(&mut [][..]);
+        let err = send_frame(
+            &mut stalled,
+            &wire,
+            Instant::now() + Duration::from_millis(3),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
     fn unplug_ends_the_exchange_and_interrupted_reads_resume() {
         let mut decoder = Decoder::default();
-        let timeout = Duration::from_secs(1);
-        let error = receive(&mut io::empty(), &mut decoder, 1, STATUS, timeout).unwrap_err();
+        let until = Instant::now() + Duration::from_secs(1);
+        let error = receive(&mut io::empty(), &mut decoder, 1, STATUS, until).unwrap_err();
         assert_eq!(
             error.downcast_ref::<io::Error>().unwrap().kind(),
             io::ErrorKind::UnexpectedEof
@@ -213,7 +274,7 @@ mod tests {
         }
         let mut stream = Interrupted(true, Cursor::new(frame(STATUS, 7, &[0, 42])));
         assert_eq!(
-            receive(&mut stream, &mut decoder, 7, STATUS, timeout).unwrap(),
+            receive(&mut stream, &mut decoder, 7, STATUS, until).unwrap(),
             [42]
         );
     }

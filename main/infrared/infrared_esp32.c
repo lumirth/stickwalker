@@ -373,6 +373,7 @@ static void measure_receiver_noise(void)
         consumed_cycle = cycle;
         publish_word(&receiver.read_count, published);
     }
+    publish_word(&receiver.overflow, 0);
     // Keep the measured background, but start the first receive turn cleanly.
     infrared_decoder_rearm(&decoder);
 }

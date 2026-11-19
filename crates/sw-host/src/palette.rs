@@ -59,6 +59,7 @@ pub fn parse_hex(value: &str) -> Result<Rgb24> {
     Ok(Rgb24(u32::from_str_radix(value, 16)?))
 }
 pub fn parse(text: &str) -> Result<ParsedPalette> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let fields: Vec<_> = if text.contains('|') {
         text.trim().split('|').map(str::trim).collect()
     } else {
@@ -94,17 +95,19 @@ pub fn parse(text: &str) -> Result<ParsedPalette> {
 }
 pub fn parse_many(text: &str) -> Result<Vec<ParsedPalette>> {
     let mut result = Vec::new();
-    for (line, text) in text.lines().enumerate() {
+    for (line, text) in text.trim_start_matches('\u{feff}').lines().enumerate() {
         let text = text.trim();
-        if text.is_empty()
-            || (text == "#"
-                || text
-                    .strip_prefix('#')
-                    .is_some_and(|s| s.starts_with(char::is_whitespace)))
-        {
+        let comment = text
+            .strip_prefix('#')
+            .is_some_and(|s| s.is_empty() || s.starts_with(char::is_whitespace));
+        if text.is_empty() || (comment && !text.contains('|')) {
             continue;
         }
-        result.push(parse(text).with_context(|| format!("Line {}", line + 1))?);
+        match parse(text) {
+            Ok(palette) => result.push(palette),
+            Err(_) if comment => continue,
+            Err(error) => return Err(error).with_context(|| format!("Line {}", line + 1)),
+        }
         ensure!(
             result.len() <= SLOT_COUNT,
             "A palette set can contain at most six palettes."

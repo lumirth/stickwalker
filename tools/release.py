@@ -16,8 +16,19 @@ def run(*args):
     subprocess.run(args, cwd=root, check=True)
 
 
+def desktop_assets(version):
+    return [
+        f"Stickwalker-{version}-{platform}"
+        for platform in ("macos-arm64.dmg", "windows-x86_64.exe", "linux-x86_64.tar.gz")
+    ]
+
+
 def make_feeds(artifacts, out):
     version = desktop_version()
+    for name in desktop_assets(version):
+        path = artifacts / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise SystemExit(f"Missing desktop installer: {name}")
     # The release library verifies each generated signature with this public key.
     signing_env = {**os.environ, "SPARKLE_PUBLIC_KEY": update_key()}
     if not os.environ.get("SPARKLE_PRIVATE_KEY"):
@@ -47,6 +58,9 @@ def make_feeds(artifacts, out):
             APP_ID,
             "--signatures",
             "ignore",
+            "--require", "macos",
+            "--require", "windows",
+            "--require", "linux",
             "--ed25519-key-env",
             "SPARKLE_PRIVATE_KEY",
         ],
@@ -137,10 +151,17 @@ def publish(tag):
             if tag != "desktop-v" + version:
                 raise SystemExit("Check out the desktop release tag before publishing.")
             assets, feeds = folder / "assets", folder / "feeds"
-            run("gh", "release", "download", tag, "--dir", str(assets))
+            patterns = [arg for name in desktop_assets(version) for arg in ("--pattern", name)]
+            run("gh", "release", "download", tag, "--dir", str(assets), *patterns)
             make_feeds(assets, feeds)
             run("gh", "release", "upload", tag, *map(str, feeds.iterdir()), "--clobber")
-            run("gh", "release", "edit", tag, "--draft=false", "--latest")
+            # The feed must point to public installers before we advertise it.
+            draft = subprocess.check_output(
+                ["gh", "release", "view", tag, "--json", "isDraft", "--jq", ".isDraft"],
+                cwd=root, text=True,
+            ).strip()
+            if draft == "true":
+                run("gh", "release", "edit", tag, "--draft=false", "--latest=false")
             exists = (
                 subprocess.run(
                     ["gh", "release", "view", "desktop-feed"],
@@ -173,6 +194,7 @@ def publish(tag):
                     "--notes",
                     "Stable desktop update metadata. Download the versioned desktop release to install.",
                 )
+            run("gh", "release", "edit", tag, "--latest")
         elif tag == "firmware-v" + (root / "VERSION").read_text().strip():
             assets = folder / "firmware"
             run("gh", "release", "download", tag, "--dir", str(assets))

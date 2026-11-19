@@ -58,9 +58,15 @@ static struct {
     bool ready;
 } power;
 static unsigned cutoff = 3300;
-static MotionMode motion_mode;
+typedef enum {
+    IMU_UNINIT = -1,
+    IMU_OFF = MOTION_OFF,
+    IMU_LIVE = MOTION_LIVE,
+    IMU_FIFO = MOTION_FIFO,
+    IMU_IDLE = MOTION_IDLE,
+} ImuState;
+static ImuState imu_state = IMU_UNINIT;
 static uint64_t peripherals_ready_at;
-static bool imu_ready;
 static struct {
     int16_t xyz[342][3];
     unsigned count;
@@ -256,8 +262,8 @@ Switches board_switches(bool screen_asleep)
                     brief |= POWER;
                 }
             }
+            discard_sleep_click = false;
         }
-        discard_sleep_click = false;
         last_power_key = now;
     }
     uint8_t captured_down;
@@ -448,21 +454,18 @@ static bool init_imu(void)
 
 void board_motion(MotionMode mode)
 {
-    if (imu_ready && motion_mode == mode) {
+    if (imu_state == (ImuState)mode) {
         return;
     }
-    if (!imu_ready && mode != MOTION_OFF) {
-        if (now_us() < next_sensor) {
+    if (imu_state == IMU_UNINIT) {
+        if (mode == MOTION_OFF || now_us() < next_sensor) {
             return;
         }
-        imu_ready = init_imu();
         next_sensor = now_us() + 2000000;
-    }
-    if (!imu_ready && mode != MOTION_OFF) {
-        return;
+        if (!init_imu()) return;
     }
     if (!write_reg(imu, 0x7c, 0)) {
-        imu_ready = false;
+        imu_state = IMU_UNINIT;
         return;
     }
     esp_rom_delay_us(450);
@@ -480,8 +483,8 @@ void board_motion(MotionMode mode)
     } else {
         configured = write_reg(imu, 0x7d, 0);
     }
-    imu_ready = configured && write_reg(imu, 0x7c, mode == MOTION_LIVE ? 0 : 1);
-    motion_mode = mode;
+    imu_state = configured && write_reg(imu, 0x7c, mode == MOTION_LIVE ? 0 : 1)
+        ? (ImuState)mode : IMU_UNINIT;
     motion.count = 0;
     motion.clock_us = 0;
     motion.period_q16 = 40000u << 16;
@@ -490,7 +493,7 @@ void board_motion(MotionMode mode)
 
 void board_motion_drain(void)
 {
-    if (!imu_ready || motion_mode != MOTION_FIFO) return;
+    if (imu_state != IMU_FIFO) return;
     // Partial button wakes have no watermark interrupt. Bosch requires APS off
     // before FIFO access; changing APS does not stop acquisition or flush data.
     if (!write_reg(imu, 0x7c, 0)) goto failed;
@@ -550,17 +553,17 @@ void board_motion_drain(void)
     return;
 failed:
     motion.count = 0;
-    imu_ready = false;
+    imu_state = IMU_UNINIT;
 }
 
 uint64_t board_motion_until(void)
 {
-    return motion_mode == MOTION_FIFO && motion.count ? motion.last_us : now_us();
+    return imu_state == IMU_FIFO && motion.count ? motion.last_us : now_us();
 }
 
 uint64_t board_motion_deadline(uint64_t sample_us)
 {
-    if (motion_mode != MOTION_FIFO) return sample_us;
+    if (imu_state != IMU_FIFO) return sample_us;
     // The game asks for its last FFT tick. Wait for the sensor frame on the
     // far side of that tick, so interpolation can complete it in this wake.
     if (!motion.count) return sample_us + 44000;
@@ -580,10 +583,10 @@ static void orient_acceleration(const int32_t xyz[3], int8_t out[3])
 bool board_acceleration(uint64_t sample_us, int8_t out[3])
 {
     uint8_t data[15];
-    if (!imu_ready || motion_mode == MOTION_OFF) {
+    if (imu_state == IMU_UNINIT || imu_state == IMU_OFF) {
         return false;
     }
-    if (motion_mode == MOTION_FIFO) {
+    if (imu_state == IMU_FIFO) {
         if (!motion.count || sample_us + 44000 < motion.first_us || sample_us > motion.last_us + 44000) return false;
         uint64_t elapsed = sample_us > motion.first_us ? sample_us - motion.first_us : 0;
         uint64_t position = (elapsed << 16) / motion.period_q16;
@@ -601,10 +604,10 @@ bool board_acceleration(uint64_t sample_us, int8_t out[3])
         return true;
     }
     if (!read_reg(imu, 0x03, data, sizeof(data))) {
-        imu_ready = false;
+        imu_state = IMU_UNINIT;
         return false;
     }
-    if (motion_mode == MOTION_IDLE) esp_rom_delay_us(400);
+    if (imu_state == IMU_IDLE) esp_rom_delay_us(400);
     if (!(data[0] & 0x80)) {
         return false;
     }
@@ -707,6 +710,7 @@ void board_shutdown(void)
         uint8_t sources;
         if (read_reg(pm, PM_SOURCE, &sources, 1)) {
             if (sources & 3) {
+                power.next_source = 0;
                 power.next_read = 0;
                 board_power_tick(false, false);
                 return;

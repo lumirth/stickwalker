@@ -337,6 +337,7 @@ enum Chip {
 }
 
 struct Motion {
+    chip_id: u8,
     sample: [i16; 3],
     config_bytes: usize,
     status: u8,
@@ -500,9 +501,11 @@ impl I2cDevice for Device {
                     }
                     0x7d => {
                         imu.accelerometer = value & 4 != 0;
-                        imu.available_at = ((pm.borrow().now + 2 * CYCLES_PER_MS) / imu.period()
-                            + 1)
-                            * imu.period();
+                        if imu.accelerometer && imu.rate != 0 {
+                            let period = imu.period();
+                            imu.available_at =
+                                ((pm.borrow().now + 2 * CYCLES_PER_MS) / period + 1) * period;
+                        }
                         imu.fifo.clear();
                         imu.fresh = false;
                     }
@@ -552,7 +555,7 @@ impl I2cDevice for Device {
                 imu.advance(now);
                 imu.bytes += 1;
                 match register {
-                    0 => 0x24,
+                    0 => imu.chip_id,
                     3 => {
                         if imu.fresh {
                             0x80
@@ -884,6 +887,7 @@ impl Rig {
         let pm = Rc::new(RefCell::new(Pm::new(mv, usb, locked, speaker.clone())));
         let panel = Rc::new(RefCell::new(Panel::new()));
         let imu = Rc::new(RefCell::new(Motion {
+            chip_id: 0x24,
             sample: [0, 0, 16384],
             config_bytes: 0,
             status: 0,
@@ -1337,6 +1341,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             rig.snapshot(&output, "recovered")?;
             return Ok(());
         }
+        if journey == "sound-and-colors" {
+            rig.imu.borrow_mut().chip_id = 0; // IMU identity is unavailable at boot.
+        }
         rig.run(2200)?;
         if journey == "management" { return management::check(&mut rig, &output); }
         if journey == "depleted" {
@@ -1367,6 +1374,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !rig.frame().iter().any(|&p| p != 0) || rig.machine.bus.sleeping {
                 return Err("Plugging in did not return to the walker".into());
             }
+            // A wall charger arrives after the screen turns off for the low-battery save.
+            rig.usb_power(false, 3150);
+            for _ in 0..3500 {
+                rig.run(1)?;
+                if !rig.pm.borrow().rail() {
+                    break;
+                }
+            }
+            assert!(!rig.pm.borrow().rail() && !rig.pm.borrow().power_cut);
+            rig.usb_power(true, 3150);
+            rig.machine.bus.periph.usb.connected = false;
+            let mut resumed = false;
+            for _ in 0..2000 {
+                rig.run(1)?;
+                let lit = rig.pm.borrow().rail();
+                if resumed && !lit {
+                    return Err("Stick repeated low-battery shutdown on a wall charger".into());
+                }
+                resumed |= lit;
+            }
+            assert!(resumed, "Wall power did not resume gameplay");
             return Ok(());
         }
         for _ in 0..140 {
@@ -1401,6 +1429,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if journey == "sound-and-colors" {
             rig.run(200)?;
             speaker::sequence(&mut rig, &output)?;
+            // The menu sounds paused motion before the IMU could be initialized.
+            assert_eq!(rig.imu.borrow().config_bytes, 0);
+            rig.imu.borrow_mut().chip_id = 0x24;
+            rig.run(2500)?;
+            if rig.imu.borrow().status != 1 || !rig.imu.borrow().accelerometer {
+                return Err("Step sensing did not recover after the menu sounds".into());
+            }
             rig.open_settings()?;
             rig.press("side")?;
             rig.press("side")?;

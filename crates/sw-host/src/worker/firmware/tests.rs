@@ -146,7 +146,10 @@ fn download_feedback_depends_on_who_requested_it() {
         serial: "30EDA0001A20".into(),
     };
     let mut worker = WorkerState {
-        active: ActiveDevice::Unmanaged(port),
+        active: ActiveDevice::Unmanaged {
+            port,
+            next_probe: Instant::now() + Duration::from_secs(5),
+        },
         firmware: FirmwareUpdates::new(None),
         state: Presentation::default(),
         last_sent: None,

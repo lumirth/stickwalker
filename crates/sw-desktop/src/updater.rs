@@ -1,11 +1,21 @@
+#[cfg(any(not(target_os = "macos"), test))]
 use anyhow::Context;
+#[cfg(any(target_os = "macos", test))]
+use gpui_updater_core::DriverEvent;
+use gpui_updater_core::Release;
+#[cfg(not(target_os = "macos"))]
 use gpui_updater_core::{
-    Artifact, DriverEvent, DriverEvents, EngineConfig, OwnershipHints, Release,
-    StaticManifestSource, UpdateDriver, UpdateEngine, Verification,
+    Artifact, EngineConfig, OwnershipHints, StaticManifestSource, UpdateEngine, Verification,
 };
+#[cfg(target_os = "macos")]
+use gpui_updater_core::{DriverEvents, UpdateDriver};
+#[cfg(target_os = "macos")]
 use gpui_updater_sparkle::{SparkleDriver, SparkleOptions, StagedUpdatePolicy};
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::{cell::RefCell, rc::Rc};
 
+#[cfg(not(target_os = "macos"))]
 const FEED: &str =
     "https://github.com/lumirth/stickwalker/releases/download/desktop-feed/latest.json";
 #[derive(Clone, Debug)]
@@ -18,9 +28,9 @@ pub enum AppUpdate {
     UpToDate,
     Available(Box<Release>),
     Downloading {
-        version: String,
         percent: Option<u8>,
     },
+    #[cfg(not(target_os = "macos"))]
     ReadyToInstall(Artifact),
     Installing,
     ReadyToRestart {
@@ -30,6 +40,7 @@ pub enum AppUpdate {
 }
 
 impl AppUpdate {
+    #[cfg(not(target_os = "macos"))]
     fn setup_error(error: anyhow::Error) -> Self {
         eprintln!("Desktop update setup failed: {error:#}");
         Self::Failed(error.to_string())
@@ -42,15 +53,27 @@ impl AppUpdate {
 }
 
 pub enum UpdateEvent {
+    #[cfg(any(target_os = "macos", test))]
     Driver(Box<DriverEvent>),
+    #[cfg(any(not(target_os = "macos"), debug_assertions))]
     Native(AppUpdate),
 }
+
+enum UpdateBackend {
+    #[cfg(target_os = "macos")]
+    Sparkle(Rc<RefCell<SparkleDriver>>),
+    #[cfg(not(target_os = "macos"))]
+    Native(async_channel::Sender<UpdateEvent>),
+    Unavailable,
+}
+
 pub struct Updates {
-    driver: Option<SparkleDriver>,
+    backend: UpdateBackend,
     pub events: async_channel::Receiver<UpdateEvent>,
-    native_tx: async_channel::Sender<UpdateEvent>,
     pub state: AppUpdate,
 }
+
+#[cfg(not(target_os = "macos"))]
 fn engine() -> anyhow::Result<UpdateEngine<StaticManifestSource>> {
     let key = option_env!("STICKWALKER_UPDATE_KEY")
         .map(str::trim)
@@ -93,12 +116,28 @@ fn linux_bundle_root(exe: &std::path::Path) -> anyhow::Result<&std::path::Path> 
         "Extract the full Stickwalker folder to update."
     );
     for entry in std::fs::read_dir(root).context("Couldn’t read the Stickwalker folder.")? {
-        let name = entry
-            .context("Couldn’t read the Stickwalker folder.")?
-            .file_name();
-        anyhow::ensure!(
-            expected.iter().any(|file| name == *file),
-            "Move extra files out of the Stickwalker folder and try again."
+        let entry = entry.context("Couldn’t read the Stickwalker folder.")?;
+        let name = entry.file_name();
+        if expected.iter().any(|file| name == *file)
+            || (name == ".directory" && entry.file_type()?.is_file())
+        {
+            continue;
+        }
+        if name == "__pycache__" && entry.file_type()?.is_dir() {
+            for child in std::fs::read_dir(entry.path())? {
+                let child = child?;
+                anyhow::ensure!(
+                    child.file_type()?.is_file()
+                        && child.path().extension().is_some_and(|ext| ext == "pyc"),
+                    "Move “__pycache__/{}” out of the Stickwalker folder to update.",
+                    child.file_name().to_string_lossy()
+                );
+            }
+            continue;
+        }
+        anyhow::bail!(
+            "Move “{}” out of the Stickwalker folder to update.",
+            name.to_string_lossy()
         );
     }
     Ok(root)
@@ -106,9 +145,9 @@ fn linux_bundle_root(exe: &std::path::Path) -> anyhow::Result<&std::path::Path> 
 
 impl Updates {
     pub fn new() -> Self {
-        let (native_tx, events) = async_channel::unbounded();
-        let tx = native_tx.clone();
-        let (driver, state) = match SparkleDriver::load(
+        let (tx, events) = async_channel::unbounded();
+        #[cfg(target_os = "macos")]
+        let (backend, state) = match SparkleDriver::load(
             SparkleOptions::new().staged_updates(StagedUpdatePolicy::HostRelaunches),
         ) {
             Ok(Some(mut driver)) => {
@@ -117,21 +156,24 @@ impl Updates {
                 }));
                 driver.set_automatically_checks_for_updates(false);
                 driver.set_automatically_downloads_updates(false);
-                (Some(driver), AppUpdate::Idle)
+                (
+                    UpdateBackend::Sparkle(Rc::new(RefCell::new(driver))),
+                    AppUpdate::Idle,
+                )
             }
-            Ok(None)
-                if !cfg!(target_os = "macos")
-                    && option_env!("STICKWALKER_UPDATE_KEY")
-                        .is_some_and(|key| !key.trim().is_empty()) =>
-            {
-                (None, AppUpdate::Idle)
-            }
-            Ok(None) => (None, AppUpdate::Unsupported),
+            Ok(None) => (UpdateBackend::Unavailable, AppUpdate::Unsupported),
             Err(error) => (
-                None,
+                UpdateBackend::Unavailable,
                 AppUpdate::failed("Couldn’t start app updates.", error),
             ),
         };
+        #[cfg(not(target_os = "macos"))]
+        let (backend, state) =
+            if option_env!("STICKWALKER_UPDATE_KEY").is_some_and(|k| !k.trim().is_empty()) {
+                (UpdateBackend::Native(tx), AppUpdate::Idle)
+            } else {
+                (UpdateBackend::Unavailable, AppUpdate::Unsupported)
+            };
         #[cfg(target_os = "windows")]
         std::thread::spawn(|| {
             if let Ok(root) = gpui_updater_core::install::current_install_root() {
@@ -139,25 +181,30 @@ impl Updates {
             }
         });
         Self {
-            driver,
+            backend,
             events,
-            native_tx,
             state,
         }
     }
     pub fn can_act(&self) -> bool {
-        matches!(
-            self.state,
-            AppUpdate::Idle
-                | AppUpdate::UpToDate
-                | AppUpdate::Available(_)
-                | AppUpdate::Failed(_)
-                | AppUpdate::ReadyToRestart { .. }
-        )
+        !matches!(self.backend, UpdateBackend::Unavailable)
+            && matches!(
+                self.state,
+                AppUpdate::Idle
+                    | AppUpdate::UpToDate
+                    | AppUpdate::Available(_)
+                    | AppUpdate::Failed(_)
+                    | AppUpdate::ReadyToRestart { .. }
+            )
     }
     pub fn blocks_hardware(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        if matches!(self.backend, UpdateBackend::Sparkle(_))
+            && matches!(self.state, AppUpdate::Downloading { .. })
+        {
+            return true;
+        }
         matches!(self.state, AppUpdate::Installing)
-            || (self.driver.is_some() && matches!(self.state, AppUpdate::Downloading { .. }))
     }
     pub fn action_label(&self) -> String {
         match &self.state {
@@ -175,64 +222,72 @@ impl Updates {
         ) {
             return;
         }
-        self.state = AppUpdate::Checking { background };
-        if let Some(driver) = &mut self.driver {
-            driver.check_for_update_information();
-        } else {
-            let tx = self.native_tx.clone();
-            std::thread::spawn(move || {
-                let state = match engine() {
-                    Err(error) => AppUpdate::setup_error(error),
-                    Ok(engine) => match engine.check() {
-                        Ok(Some(release)) => AppUpdate::Available(Box::new(release)),
-                        Ok(None) => AppUpdate::Idle,
-                        Err(error) => AppUpdate::failed("Couldn’t check for updates.", error),
-                    },
-                };
-                let _ = tx.try_send(UpdateEvent::Native(state));
-            });
+        match &self.backend {
+            UpdateBackend::Unavailable => return,
+            #[cfg(target_os = "macos")]
+            UpdateBackend::Sparkle(driver) => driver.borrow().check_for_update_information(),
+            #[cfg(not(target_os = "macos"))]
+            UpdateBackend::Native(tx) => {
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let state = match engine() {
+                        Err(error) => AppUpdate::setup_error(error),
+                        Ok(engine) => match engine.check() {
+                            Ok(Some(release)) => AppUpdate::Available(Box::new(release)),
+                            Ok(None) => AppUpdate::Idle,
+                            Err(error) => AppUpdate::failed("Couldn’t check for updates.", error),
+                        },
+                    };
+                    let _ = tx.try_send(UpdateEvent::Native(state));
+                });
+            }
         }
+        self.state = AppUpdate::Checking { background };
     }
     pub fn install(&mut self) {
-        let AppUpdate::Available(release) = &self.state else {
+        let AppUpdate::Available(_release) = &self.state else {
             return;
         };
-        let release = release.clone();
-        self.state = AppUpdate::Downloading {
-            version: release.version.to_string(),
-            percent: None,
-        };
-        if let Some(driver) = &mut self.driver {
-            driver.install();
-            return;
+        match &self.backend {
+            UpdateBackend::Unavailable => return,
+            #[cfg(target_os = "macos")]
+            UpdateBackend::Sparkle(driver) => driver.borrow_mut().install(),
+            #[cfg(not(target_os = "macos"))]
+            UpdateBackend::Native(tx) => {
+                let tx = tx.clone();
+                let release = _release.clone();
+                std::thread::spawn(move || {
+                    let state = match engine() {
+                        Err(error) => AppUpdate::setup_error(error),
+                        Ok(engine) => match engine.download(&release, |n, total| {
+                            let _ = tx.try_send(UpdateEvent::Native(AppUpdate::Downloading {
+                                percent: total
+                                    .filter(|n| *n > 0)
+                                    .map(|total| (n * 100 / total).min(100) as u8),
+                            }));
+                        }) {
+                            Ok(artifact) => AppUpdate::ReadyToInstall(artifact),
+                            Err(error) => AppUpdate::failed("Couldn’t download the update.", error),
+                        },
+                    };
+                    let _ = tx.try_send(UpdateEvent::Native(state));
+                });
+            }
         }
-        let tx = self.native_tx.clone();
-        std::thread::spawn(move || {
-            let state = match engine() {
-                Err(error) => AppUpdate::setup_error(error),
-                Ok(engine) => match engine.download(&release, |n, total| {
-                    let _ = tx.try_send(UpdateEvent::Native(AppUpdate::Downloading {
-                        version: release.version.to_string(),
-                        percent: total
-                            .filter(|n| *n > 0)
-                            .map(|total| (n * 100 / total).min(100) as u8),
-                    }));
-                }) {
-                    Ok(artifact) => AppUpdate::ReadyToInstall(artifact),
-                    Err(error) => AppUpdate::failed("Couldn’t download the update.", error),
-                },
-            };
-            let _ = tx.try_send(UpdateEvent::Native(state));
-        });
+        self.state = AppUpdate::Downloading { percent: None };
     }
     // Called on the UI thread only after the active hardware job has finished.
+    #[cfg(not(target_os = "macos"))]
     pub fn install_downloaded(&mut self) {
         let AppUpdate::ReadyToInstall(artifact) = &self.state else {
             return;
         };
+        let UpdateBackend::Native(tx) = &self.backend else {
+            return;
+        };
         let artifact = artifact.clone();
         self.state = AppUpdate::Installing;
-        let tx = self.native_tx.clone();
+        let tx = tx.clone();
         std::thread::spawn(move || {
             let state = match engine() {
                 Err(error) => AppUpdate::setup_error(error),
@@ -249,13 +304,6 @@ impl Updates {
     pub fn accept(&mut self, event: UpdateEvent) {
         let checking = matches!(self.state, AppUpdate::Checking { .. });
         let background = matches!(self.state, AppUpdate::Checking { background: true });
-        let check_failed = || {
-            if background {
-                AppUpdate::Idle
-            } else {
-                AppUpdate::Failed("Couldn’t check for updates.".into())
-            }
-        };
         let current = || {
             if background {
                 AppUpdate::Idle
@@ -263,88 +311,112 @@ impl Updates {
                 AppUpdate::UpToDate
             }
         };
-        let UpdateEvent::Driver(event) = event else {
-            if let UpdateEvent::Native(state) = event {
+        match event {
+            #[cfg(any(not(target_os = "macos"), debug_assertions))]
+            UpdateEvent::Native(state) => {
                 self.state = match state {
                     AppUpdate::Failed(_) if background => AppUpdate::Idle,
                     AppUpdate::Idle if checking => current(),
                     state => state,
                 };
             }
-            return;
-        };
-        self.state = match *event {
-            // Sparkle repeats discovery when the user accepts an offered update.
-            DriverEvent::Checking | DriverEvent::Found(_)
-                if matches!(
-                    self.state,
-                    AppUpdate::Downloading { .. } | AppUpdate::Installing
-                ) =>
-            {
-                return;
-            }
-            DriverEvent::Checking => AppUpdate::Checking {
-                background: background || !checking,
-            },
-            DriverEvent::UpToDate => current(),
-            DriverEvent::Found(release) => AppUpdate::Available(Box::new(release)),
-            DriverEvent::Downloading { downloaded, total } => {
-                let version = match &self.state {
-                    AppUpdate::Available(release) => release.version.to_string(),
-                    AppUpdate::Downloading { version, .. } => version.clone(),
-                    _ => String::new(),
+            #[cfg(any(target_os = "macos", test))]
+            UpdateEvent::Driver(event) => {
+                let check_failed = || {
+                    if background {
+                        AppUpdate::Idle
+                    } else {
+                        AppUpdate::Failed("Couldn’t check for updates.".into())
+                    }
                 };
-                AppUpdate::Downloading {
-                    version,
-                    percent: total
-                        .filter(|n| *n > 0)
-                        .map(|t| (downloaded * 100 / t).min(100) as u8),
-                }
+                self.state = match *event {
+                    // Sparkle repeats discovery when the user accepts an offered update.
+                    DriverEvent::Checking | DriverEvent::Found(_)
+                        if matches!(
+                            self.state,
+                            AppUpdate::Downloading { .. } | AppUpdate::Installing
+                        ) =>
+                    {
+                        return;
+                    }
+                    DriverEvent::Checking => AppUpdate::Checking {
+                        background: background || !checking,
+                    },
+                    DriverEvent::UpToDate => current(),
+                    DriverEvent::Found(release) => AppUpdate::Available(Box::new(release)),
+                    DriverEvent::Downloading { downloaded, total } => AppUpdate::Downloading {
+                        percent: total
+                            .filter(|n| *n > 0)
+                            .map(|t| (downloaded * 100 / t).min(100) as u8),
+                    },
+                    DriverEvent::Installing => AppUpdate::Installing,
+                    DriverEvent::ReadyToRelaunch(_) => AppUpdate::ReadyToRestart { path: None },
+                    DriverEvent::Failed(error) if checking => {
+                        eprintln!("Desktop update check failed: {error}");
+                        check_failed()
+                    }
+                    DriverEvent::Failed(error) => AppUpdate::failed(
+                        if matches!(self.state, AppUpdate::Installing) {
+                            "Couldn’t install the update."
+                        } else {
+                            "Couldn’t download the update."
+                        },
+                        error,
+                    ),
+                    DriverEvent::Settled
+                        if matches!(
+                            self.state,
+                            AppUpdate::Checking { .. }
+                                | AppUpdate::Downloading { .. }
+                                | AppUpdate::Installing
+                        ) =>
+                    {
+                        AppUpdate::Idle
+                    }
+                    _ => return,
+                };
             }
-            DriverEvent::Installing => AppUpdate::Installing,
-            DriverEvent::ReadyToRelaunch(_) => AppUpdate::ReadyToRestart { path: None },
-            DriverEvent::Failed(error) if checking => {
-                eprintln!("Desktop update check failed: {error}");
-                check_failed()
-            }
-            DriverEvent::Failed(error) => AppUpdate::failed(
-                if matches!(self.state, AppUpdate::Installing) {
-                    "Couldn’t install the update."
-                } else {
-                    "Couldn’t download the update."
-                },
-                error,
-            ),
-            DriverEvent::Settled
-                if matches!(
-                    self.state,
-                    AppUpdate::Checking { .. }
-                        | AppUpdate::Downloading { .. }
-                        | AppUpdate::Installing
-                ) =>
-            {
-                AppUpdate::Idle
-            }
-            _ => return,
-        };
-    }
-    pub fn restart(&mut self, cx: &mut gpui_kit::App) {
-        let AppUpdate::ReadyToRestart { path } = &self.state else {
-            return;
-        };
-        if let Some(driver) = &mut self.driver {
-            driver.relaunch();
-        } else {
-            if let Some(path) = path {
-                cx.set_restart_path(path.clone());
-            }
-            cx.restart();
         }
+    }
+    pub fn defer_restart(&self, cx: &mut gpui_kit::App) -> bool {
+        let AppUpdate::ReadyToRestart { path } = &self.state else {
+            return false;
+        };
+        if let Some(path) = path {
+            cx.set_restart_path(path.clone());
+        }
+        match &self.backend {
+            #[cfg(target_os = "macos")]
+            UpdateBackend::Sparkle(driver) => {
+                let driver = driver.clone();
+                cx.defer(move |_| driver.borrow_mut().relaunch());
+            }
+            #[cfg(not(target_os = "macos"))]
+            UpdateBackend::Native(_) => cx.defer(|cx| cx.restart()),
+            UpdateBackend::Unavailable => return false,
+        }
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unavailable_backend_cannot_start_a_manual_or_automatic_check() {
+        use super::{AppUpdate, UpdateBackend, Updates};
+        let (_, events) = async_channel::unbounded();
+        let mut updates = Updates {
+            backend: UpdateBackend::Unavailable,
+            events,
+            state: AppUpdate::Failed("Couldn’t start app updates.".into()),
+        };
+        assert!(!updates.can_act());
+        for automatic in [false, true] {
+            updates.check(automatic);
+            assert!(matches!(updates.state, AppUpdate::Failed(_)));
+        }
+    }
+
     use super::linux_bundle_root;
     #[test]
     fn linux_updates_replace_only_the_extracted_application() {
@@ -364,10 +436,23 @@ mod tests {
             std::fs::write(dir.path().join(name), []).unwrap();
         }
         assert_eq!(linux_bundle_root(&exe).unwrap(), dir.path());
+        std::fs::write(dir.path().join(".directory"), []).unwrap();
+        let cache = dir.path().join("__pycache__");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("install-launcher.cpython-313.pyc"), []).unwrap();
+        assert_eq!(linux_bundle_root(&exe).unwrap(), dir.path());
+        std::fs::write(cache.join("travel.eeprom"), []).unwrap();
+        assert!(
+            linux_bundle_root(&exe)
+                .unwrap_err()
+                .to_string()
+                .contains("__pycache__/travel.eeprom")
+        );
+        std::fs::remove_file(cache.join("travel.eeprom")).unwrap();
         std::fs::write(dir.path().join("eeprom.bin"), []).unwrap();
         assert_eq!(
             linux_bundle_root(&exe).unwrap_err().to_string(),
-            "Move extra files out of the Stickwalker folder and try again."
+            "Move “eeprom.bin” out of the Stickwalker folder to update."
         );
     }
 }

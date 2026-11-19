@@ -14,7 +14,10 @@ pub(super) enum ActiveDevice {
         next: Instant,
         identify: bool,
     },
-    Unmanaged(Port),
+    Unmanaged {
+        port: Port,
+        next_probe: Instant,
+    },
     Unavailable {
         port: Port,
         message: String,
@@ -38,7 +41,7 @@ impl ActiveDevice {
         match self {
             Self::Disconnected => ConnectionState::Disconnected,
             Self::Probing { port, .. } => ConnectionState::Reconnecting { port: port.clone() },
-            Self::Unmanaged(port) => ConnectionState::Unmanaged { port: port.clone() },
+            Self::Unmanaged { port, .. } => ConnectionState::Unmanaged { port: port.clone() },
             Self::Unavailable { port, message, .. } => ConnectionState::Unavailable {
                 port: port.clone(),
                 message: message.clone(),
@@ -64,7 +67,7 @@ impl ActiveDevice {
         match self {
             Self::Disconnected => None,
             Self::Probing { port, .. }
-            | Self::Unmanaged(port)
+            | Self::Unmanaged { port, .. }
             | Self::Unavailable { port, .. }
             | Self::Managed { port, .. }
             | Self::Flashing { port, .. } => Some(port),
@@ -131,31 +134,32 @@ impl ActiveDevice {
     pub fn deadline(&self) -> Option<Instant> {
         match self {
             Self::Probing { next, .. } | Self::Unavailable { next, .. } => Some(*next),
+            Self::Unmanaged { next_probe, .. } => Some(*next_probe),
             _ => None,
         }
     }
 
-    pub fn try_open(&mut self, ports: &[Port]) {
+    pub fn try_open(&mut self, ports: &[Port], mut open: impl FnMut(&str) -> Result<Session>) {
         let now = Instant::now();
         if let Self::Unavailable { port, next, .. } = self
             && now >= *next
         {
             *self = Self::probe(port.clone(), None, false);
         }
-        let Self::Probing {
-            port,
-            expected,
-            until,
-            next,
-            identify,
-        } = self
-        else {
-            return;
+        let (port, expected, until, identify) = match self {
+            Self::Probing {
+                port,
+                expected,
+                until,
+                next,
+                identify,
+            } if now >= *next => {
+                *next = now + Duration::from_millis(400);
+                (port, expected.as_ref(), *until, *identify)
+            }
+            Self::Unmanaged { port, next_probe } if now >= *next_probe => (port, None, now, false),
+            _ => return,
         };
-        if now < *next {
-            return;
-        }
-        *next = now + Duration::from_millis(400);
         let mut opened = false;
         let mut access_denied = false;
         // Prefer the selected port. Only probe alternatives to find a known MAC.
@@ -164,22 +168,19 @@ impl ActiveDevice {
             .filter(|p| *p == port)
             .chain(ports.iter().filter(|p| *p != port && expected.is_some()));
         for candidate in candidates {
-            if let (Some(mac), Some(serial)) = (expected.as_ref(), usb::mac_id(&candidate.serial))
+            if let (Some(mac), Some(serial)) = (expected, usb::mac_id(&candidate.serial))
                 && mac != &serial
             {
                 continue;
             }
-            match Session::open(&candidate.path) {
+            match open(&candidate.path) {
                 Ok(mut session) => {
                     opened |= candidate == port;
                     if let Ok(info) = Info::read(&mut session) {
-                        if expected
-                            .as_ref()
-                            .is_some_and(|id| usb::mac_id(&info.mac).as_ref() != Some(id))
-                        {
+                        if expected.is_some_and(|id| usb::mac_id(&info.mac).as_ref() != Some(id)) {
                             continue;
                         }
-                        if *identify && info.mode != DeviceMode::Linking {
+                        if identify && info.mode != DeviceMode::Linking {
                             let _ = session.request(protocol::IDENTIFY, &[]);
                         }
                         *self = Self::Managed {
@@ -197,7 +198,7 @@ impl ActiveDevice {
                 }
             }
         }
-        if now < *until {
+        if now < until {
             return;
         }
         let port = port.clone();
@@ -211,7 +212,10 @@ impl ActiveDevice {
             // A different board may now occupy the same COM number.
             Self::probe(port, None, false)
         } else if opened {
-            Self::Unmanaged(port)
+            Self::Unmanaged {
+                port,
+                next_probe: Instant::now() + Duration::from_secs(5),
+            }
         } else {
             let message = if cfg!(target_os = "linux") && access_denied {
                 "Install the included 60-stickwalker.rules file, then reconnect the Stick.".into()
@@ -279,4 +283,49 @@ impl ActiveDevice {
         };
         Ok((port, session))
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn a_late_boot_promotes_the_same_port_without_rediscovery() {
+    use serialport::{SerialPort, TTYPort};
+    use std::io::{Read, Write};
+
+    let (mut wire, slave) = TTYPort::pair().unwrap();
+    let port = Port {
+        path: slave.name().unwrap(),
+        serial: String::new(),
+    };
+    let open = |_: &str| Ok(Session::from_port(slave.try_clone()?));
+    let ports = std::slice::from_ref(&port);
+    let mut active = ActiveDevice::probe(port.clone(), None, false);
+    if let ActiveDevice::Probing { until, .. } = &mut active {
+        *until = Instant::now();
+    }
+    active.try_open(ports, open);
+    let ActiveDevice::Unmanaged { next_probe, .. } = &mut active else {
+        panic!("expected setup")
+    };
+    assert!(*next_probe > Instant::now() + Duration::from_secs(4));
+    *next_probe = Instant::now();
+    let status = protocol::frame(protocol::STATUS, 1, &[]);
+    let mut request = vec![0; status.len()];
+    wire.read_exact(&mut request).unwrap();
+    assert_eq!(request, status);
+    let peer = std::thread::spawn(move || {
+        wire.set_timeout(Duration::from_secs(2)).unwrap();
+        wire.read_exact(&mut request).unwrap();
+        assert_eq!(request, status);
+        let mut reply = vec![0; 75];
+        reply[65..71].copy_from_slice(&[0x30, 0xed, 0xa0, 0, 0x1a, 0x20]);
+        reply.extend(crate::DeviceSettings::default().to_bytes());
+        wire.write_all(&protocol::frame(protocol::STATUS, 1, &reply))
+            .unwrap();
+        wire
+    });
+    active.try_open(ports, open);
+    let _wire = peer.join().unwrap();
+    assert!(
+        matches!(active, ActiveDevice::Managed { info, .. } if info.mac == "30:ed:a0:00:1a:20")
+    );
 }

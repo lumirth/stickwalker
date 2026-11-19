@@ -57,6 +57,7 @@ impl StickView {
             .child(assets::icon("chevron"))
             .disabled(self.locked())
             .on_click(cx.listener(|view, _, w, cx| {
+                view.clear_local_error(cx);
                 let mut menu = gpui_kit::component::native_menu::NativeMenu::new();
                 for p in &view.state.ports {
                     menu = menu.menu(view.state.port_label(p), Box::new(SelectStick(p.clone())));
@@ -336,16 +337,17 @@ impl Render for StickView {
                     .map(|p| format!("Downloading app update · {p}%"))
                     .unwrap_or_else(|| "Downloading app update…".into()),
             ),
+            #[cfg(not(target_os = "macos"))]
             AppUpdate::ReadyToInstall(_) => Some("App update downloaded".into()),
             AppUpdate::Installing => Some("Installing app update…".into()),
             AppUpdate::Failed(error) => Some(error.clone()),
             _ => None,
         };
-        let device_error = self.state.error.is_some();
+        let device_error = self.local_error.is_some() || self.state.error.is_some();
         let device_message = self
-            .state
-            .error
+            .local_error
             .as_ref()
+            .or(self.state.error.as_ref())
             .or(self.state.status.as_ref())
             .or(self
                 .state
@@ -371,11 +373,12 @@ impl Render for StickView {
                         .ghost()
                         .label("Dismiss")
                         .on_click(cx.listener(move |v, _, _, cx| {
-                            if device_error {
-                                v.state.error = None;
-                                v.send(Command::DismissError);
-                            } else {
-                                v.updates.state = AppUpdate::Idle;
+                            if v.local_error.take().is_none() {
+                                if v.state.error.take().is_some() {
+                                    v.send(Command::DismissError);
+                                } else {
+                                    v.updates.state = AppUpdate::Idle;
+                                }
                             }
                             v.refresh_shell(cx);
                         })),
@@ -410,13 +413,16 @@ impl Render for StickView {
             )
             .on_action(cx.listener(|v, _: &ExportEeprom, w, cx| v.files(FileAction::Export, w, cx)))
             .on_action(cx.listener(|v, _: &ImportEeprom, w, cx| v.files(FileAction::Import, w, cx)))
-            .on_action(cx.listener(|_, _: &AppearanceSystem, w, cx| {
+            .on_action(cx.listener(|v, _: &AppearanceSystem, w, cx| {
+                v.clear_local_error(cx);
                 preferences::set_appearance(None, w, cx)
             }))
-            .on_action(cx.listener(|_, _: &AppearanceLight, w, cx| {
+            .on_action(cx.listener(|v, _: &AppearanceLight, w, cx| {
+                v.clear_local_error(cx);
                 preferences::set_appearance(Some(false), w, cx)
             }))
-            .on_action(cx.listener(|_, _: &AppearanceDark, w, cx| {
+            .on_action(cx.listener(|v, _: &AppearanceDark, w, cx| {
+                v.clear_local_error(cx);
                 preferences::set_appearance(Some(true), w, cx)
             }))
             .on_action(cx.listener(|v, _: &CopyPalette, _, cx| v.copy_palette(cx)))
@@ -440,7 +446,10 @@ impl Render for StickView {
             .on_action(cx.listener(|v, _: &ResetWalker, w, cx| v.reset(false, w, cx)))
             .on_action(cx.listener(|v, _: &EraseInstall, w, cx| v.reset(true, w, cx)))
             .on_action(cx.listener(|v, _: &OpenPackage, w, cx| v.files(FileAction::Package, w, cx)))
-            .on_action(cx.listener(|v, _: &CheckFirmware, _, _| v.send(Command::CheckFirmware)))
+            .on_action(cx.listener(|v, _: &CheckFirmware, _, cx| {
+                v.clear_local_error(cx);
+                v.send(Command::CheckFirmware)
+            }))
             .on_action(cx.listener(|v, _: &Install, w, cx| v.install(w, cx)))
             .on_action(cx.listener(|v, _: &CheckAppUpdates, _, cx| v.app_update(cx)))
             .child(
@@ -642,6 +651,28 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn a_close_request_cannot_replace_a_draining_restart(cx: &mut TestAppContext) {
+        use crate::device_window::{ExitState, PendingExit};
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::open_window(WindowOptions::default(), cx, |w, cx| {
+                cx.new(|cx| StickView::new(w, cx))
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, w, cx| {
+            view.update(cx, |v, cx| {
+                v.show_state(5, w, cx);
+                v.local_revision = v.state.acked_revision + 1;
+                v.request_exit(PendingExit::Restart, cx);
+                v.request_exit(PendingExit::Quit, cx);
+                assert_eq!(v.exit, ExitState::Draining(PendingExit::Restart));
+            });
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn an_invalid_save_is_rejected_before_asking_to_replace_the_walk(cx: &mut TestAppContext) {
         let (handle, view) = cx.update(|cx| {
             gpui_kit::init(cx);
@@ -660,16 +691,23 @@ mod tests {
         cx.simulate_path_prompt_response(|_| Some(vec![file.path().to_owned()]));
         cx.run_until_parked();
         assert!(!cx.has_pending_prompt());
-        cx.update(|cx| {
-            assert!(
-                view.read(cx)
-                    .state
-                    .error
-                    .as_deref()
-                    .unwrap()
-                    .contains("Pokéwalker save")
-            )
-        });
+        cx.update_window(handle, |_, w, cx| {
+            view.update(cx, |v, cx| {
+                let mut next = v.state.clone();
+                next.connection.info_mut().unwrap().millivolts += 1;
+                v.preview = None;
+                v.receive(next, w, cx);
+                assert!(
+                    v.local_error
+                        .as_deref()
+                        .unwrap()
+                        .contains("Pokéwalker save")
+                );
+                v.copy_palette(cx);
+                assert!(v.local_error.is_none());
+            });
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

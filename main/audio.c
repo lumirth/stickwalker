@@ -20,7 +20,6 @@ static volatile AudioState state;
 static uint32_t phase;
 static volatile uint32_t increment;
 static volatile int32_t amplitude;
-static uint64_t output_ready;
 static uint64_t warm_until;
 static uint64_t quiet_since;
 
@@ -78,8 +77,7 @@ static bool audio_on(void)
     };
     const i2s_event_callbacks_t callbacks = {.on_sent = fill_audio};
     if (i2s_channel_init_std_mode(tx, &standard) != ESP_OK ||
-        i2s_channel_register_event_callback(tx, &callbacks, NULL) != ESP_OK ||
-        i2s_channel_enable(tx) != ESP_OK) {
+        i2s_channel_register_event_callback(tx, &callbacks, NULL) != ESP_OK) {
         audio_off();
         return false;
     }
@@ -87,15 +85,17 @@ static bool audio_on(void)
     for (unsigned attempt = 0; attempt < 3 && !configured; ++attempt) {
         configured = configure_codec();
     }
-    if (!configured || !board_amp_power(true) || !board_codec_write(0x31, 0x00)) {
+    if (!configured || !board_amp_power(true)) {
         audio_off();
         return false;
     }
-    warm_until = esp_timer_get_time() + AMP_START_MS * 1000;
     quiet_since = esp_timer_get_time();
-    // Start and stop traverse the same DMA queue, so its latency cancels.
-    output_ready = warm_until;
+    warm_until = quiet_since + AMP_START_MS * 1000;
     state = AUDIO_WARMING;
+    if (i2s_channel_enable(tx) != ESP_OK || !board_codec_write(0x31, 0x00)) {
+        audio_off();
+        return false;
+    }
     return true;
 }
 
@@ -145,7 +145,7 @@ uint64_t audio_tone(uint32_t millihertz, uint8_t volume)
     amplitude = volume == 1 || limited ? 1600 : 3200;
     increment = ((uint64_t)millihertz << 32) / (RATE * 1000u);
     if (state == AUDIO_HOLDING) state = AUDIO_PLAYING;
-    return now > output_ready ? now : output_ready;
+    return now > warm_until ? now : warm_until;
 }
 
 uint64_t audio_tick(bool score_active)

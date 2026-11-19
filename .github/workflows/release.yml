@@ -23,6 +23,7 @@ jobs:
         with:
           name: firmware
           path: dist/firmware/*
+          if-no-files-found: error
           retention-days: 7
   desktop:
     if: startsWith(github.ref_name, 'desktop-v')
@@ -95,6 +96,7 @@ jobs:
             dist/desktop/*.dmg
             dist/desktop/*.exe
             dist/desktop/*.tar.gz
+          if-no-files-found: error
           retention-days: 7
   draft:
     needs: [firmware, desktop]

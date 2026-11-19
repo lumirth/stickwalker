@@ -74,6 +74,13 @@ pub fn check(rig: &mut Rig, output: &Path) -> Result<()> {
     let stored = save::decode_current(&rig.machine.bus.flash[SAVE..])?;
     assert_eq!(&original[..save::EEPROM], &stored.0);
 
+    read(rig, 0, 480)?;
+    assert_eq!(
+        request(rig, protocol::READ, &[0]).unwrap_err().to_string(),
+        format!("Management {} failed: 2", protocol::READ)
+    );
+    request(rig, protocol::IDENTIFY, &[])?;
+
     // An abandoned export releases the borrowed buffer and catches game time up.
     read(rig, 0, 480)?;
     rig.run(2200)?;
@@ -94,6 +101,12 @@ pub fn check(rig: &mut Rig, output: &Path) -> Result<()> {
     let mut partial = 0u32.to_le_bytes().to_vec();
     partial.extend(&incoming[..4080]);
     partial[4 + 0x400] ^= 0x5a;
+    request(rig, protocol::WRITE, &partial)?;
+    assert_eq!(
+        request(rig, protocol::WRITE, &[1]).unwrap_err().to_string(),
+        format!("Management {} failed: 2", protocol::WRITE)
+    );
+    assert_eq!(snapshot(rig)?[0x400], later[0x400]);
     request(rig, protocol::WRITE, &partial)?;
     for (op, payload) in [(protocol::IDENTIFY, &[][..]), (protocol::SETTINGS, prefs.as_slice()), (protocol::PREPARE, &[][..])] {
         assert_eq!(request(rig, op, payload).unwrap_err().to_string(),

@@ -45,6 +45,11 @@ fn interoperable_palette_text() {
 
 #[test]
 fn ramps_round_trip_and_bad_hex_lines_are_not_comments() {
+    let marked = palette::parse("\u{feff}# Blue|FFFFFF|000000").unwrap();
+    assert_eq!(marked.name.unwrap().as_str(), "# Blue");
+    let set = palette::parse_many("\u{feff}# Use Name|BG|INK\r\n# Blue|FFFFFF|000000\r\n").unwrap();
+    assert_eq!(set.len(), 1);
+    assert_eq!(set[0].name.unwrap().as_str(), "# Blue");
     let ramp = palette::parse("Paper|FFFFFF|000000").unwrap();
     // Published sRGB transfer curve at 2/3 and 1/3 luminance: D5 and 9C.
     assert_eq!(ramp.colors, [0xffff, 0xd6ba, 0x9cf3, 0]);

@@ -109,6 +109,20 @@ fn app_fits(table: &[u8], offset: usize, size: usize, settings: (usize, usize)) 
         && crate::release::partition(table, "nvs") == Some(settings)
 }
 
+fn write_intake(
+    image: &save::EepromImage,
+    staged: Option<&[u8]>,
+    mut write: impl FnMut(usize, &[u8]) -> Result<()>,
+) -> Result<()> {
+    if staged == Some(image.bytes()) {
+        return Ok(());
+    }
+    // The first sector contains the marker the firmware recognizes on boot.
+    let (first, rest) = image.bytes().split_at(4096);
+    write(save::WALKER + first.len(), rest)?;
+    write(save::WALKER, first)
+}
+
 /// The partition table is written last. A retry can still find the legacy
 /// source, or the completed EEPROM intake if legacy bank sectors were retired.
 pub fn install(
@@ -143,7 +157,11 @@ pub fn install(
             "The selected Stick changed. Select it again."
         );
         expected_mac = Some(connected_mac);
-        if info.mode != DeviceMode::SaveFault {
+        ensure!(
+            info.mode != DeviceMode::Linking,
+            "Finish the IR link on your Stick first."
+        );
+        if !fresh && info.mode == DeviceMode::Ready {
             session.request(protocol::PREPARE, &[])?;
             managed = true;
         }
@@ -185,14 +203,7 @@ pub fn install(
     let mut saved = 0;
     let mut writes = Vec::new();
     let mut migrated = None;
-    if fresh {
-        flasher.erase_region(
-            manifest.settings.offset as u32,
-            manifest.settings.size as u32,
-        )?;
-        flasher.erase_region(manifest.state.offset as u32, manifest.state.size as u32)?;
-        writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
-    } else if current || native {
+    let check_storage = || -> Result<()> {
         ensure!(
             manifest.storage == "SWK6"
                 && manifest.state.offset == save::WALKER
@@ -202,6 +213,17 @@ pub fn install(
                 && manifest.settings.size == 0x6000,
             "This firmware package cannot use the installed storage."
         );
+        Ok(())
+    };
+    if fresh {
+        flasher.erase_region(
+            manifest.settings.offset as u32,
+            manifest.settings.size as u32,
+        )?;
+        flasher.erase_region(manifest.state.offset as u32, manifest.state.size as u32)?;
+        writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
+    } else if current || native {
+        check_storage()?;
         // The table may already be complete after an interrupted legacy install.
         if !managed {
             let nvs = read_region(
@@ -225,15 +247,13 @@ pub fn install(
         } else {
             writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
         }
-    } else if public || !raw_intake {
+    } else {
         // A torn table may lack the spiffs entry while the old save is intact.
         progress("Reading the existing save", None);
         let raw = read_region(&mut flasher, 0x670000, 0x180000)?;
-        let nvs = read_region(&mut flasher, 0x9000, 0x5000)?;
         let eeprom = match save::classify_public_partition(&raw) {
             save::PublicPartition::StickwalkerSave(image) => Some(image),
-            // The verified intake outlives the legacy headers. Never rewrite the
-            // surviving copy from itself during a retry.
+            // The completed intake survives retirement of the old filesystem.
             _ if raw_intake => None,
             save::PublicPartition::EmptyOrForeign => {
                 flasher.erase_region(
@@ -248,26 +268,37 @@ pub fn install(
             }
         };
         if eeprom.is_some() || raw_intake {
-            migrated = Some(crate::legacy::preferences(&nvs));
-            ensure!(
-                manifest.state.offset == save::WALKER && manifest.settings.offset == 0x9000,
-                "This firmware does not support installing the older save"
-            );
+            check_storage()?;
+            let nvs = read_region(&mut flasher, 0x9000, 0x5000)?;
+            migrated = if public || eeprom.is_some() {
+                Some(crate::legacy::preferences(&nvs))
+            } else {
+                crate::legacy::migrated_preferences(&nvs)
+            };
+            // A cut during the final sector can expose the marker early. The
+            // legacy source is still intact then, even if its table entry is gone.
             if let Some(image) = eeprom {
-                let bytes = image.bytes();
-                flasher.write_bin_to_flash(
-                    save::WALKER as u32,
-                    bytes,
-                    &mut Progress {
-                        report: progress,
-                        units: 0,
-                        region: bytes.len(),
-                        previous: 0,
-                        total: image_size + bytes.len(),
-                        label: "Transferring save",
-                    },
-                )?;
-                saved = bytes.len();
+                let staged = if raw_intake {
+                    Some(read_region(&mut flasher, save::WALKER, save::EEPROM)?)
+                } else {
+                    None
+                };
+                write_intake(&image, staged.as_deref(), |offset, bytes| {
+                    flasher.write_bin_to_flash(
+                        offset as u32,
+                        bytes,
+                        &mut Progress {
+                            report: progress,
+                            units: 0,
+                            region: bytes.len(),
+                            previous: saved,
+                            total: image_size + save::EEPROM,
+                            label: "Transferring save",
+                        },
+                    )?;
+                    saved += bytes.len();
+                    Ok(())
+                })?;
             }
             // Only these markers block the firmware's raw intake. Usually both
             // public checkpoint copies can stay intact until the first boot.
@@ -280,11 +311,6 @@ pub fn install(
             // Keep the original NVS pages readable until the new firmware confirms them.
             flasher.erase_region(0xe000, 4096)?;
         }
-        writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
-    } else {
-        // The intake and original NVS pages survive an interrupted partition table.
-        let nvs = read_region(&mut flasher, 0x9000, 0x5000)?;
-        migrated = crate::legacy::migrated_preferences(&nvs);
         writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
     }
     writes.sort_by_key(|(image, _)| image.kind == ImageKind::Partitions);
@@ -308,7 +334,7 @@ pub fn install(
     let reset = Chip::Esp32s3.rtc_wdt_reset(flasher.connection());
     drop(flasher);
     // The reset itself may disconnect USB before the ROM acknowledges the last write.
-    let until = Instant::now() + Duration::from_secs(if reset.is_ok() { 25 } else { 3 });
+    let until = Instant::now() + Duration::from_secs(25);
     while Instant::now() < until {
         thread::sleep(Duration::from_millis(300));
         let Ok(candidates) = ports() else { continue };
@@ -341,6 +367,38 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupted_intake_publishes_its_header_after_the_body() {
+        let mut source = vec![0x56; save::EEPROM];
+        source[..8].copy_from_slice(b"nintendo");
+        let image = save::EepromImage::parse(source).unwrap();
+        let tail = save::EEPROM - 4096;
+        for cut in [1, 4096, tail, tail + 8, save::EEPROM - 1, save::EEPROM] {
+            let mut flash = vec![0xff; save::EEPROM];
+            let mut remaining = cut;
+            let result = write_intake(&image, None, |offset, data| {
+                let at = offset - save::WALKER;
+                let wrote = data.len().min(remaining);
+                flash[at..at + wrote].copy_from_slice(&data[..wrote]);
+                remaining -= wrote;
+                ensure!(wrote == data.len(), "Power cut");
+                Ok(())
+            });
+            assert_eq!(result.is_ok(), cut == save::EEPROM);
+            let marked = flash.starts_with(b"nintendo");
+            assert_eq!(marked, cut >= tail + 8);
+            let staged = marked.then(|| flash.clone());
+            write_intake(&image, staged.as_deref(), |offset, data| {
+                assert!(cut < save::EEPROM, "complete intake was rewritten");
+                let at = offset - save::WALKER;
+                flash[at..at + data.len()].copy_from_slice(data);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(flash, image.bytes());
+        }
+    }
 
     #[test]
     fn app_only_updates_require_matching_nvs_and_enough_application_space() {

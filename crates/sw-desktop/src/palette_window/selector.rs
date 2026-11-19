@@ -29,6 +29,12 @@ impl PaletteSelector {
             _subscription: subscription,
         }
     }
+    pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            cx.notify();
+        }
+    }
     pub fn receive(
         &mut self,
         settings: Option<DeviceSettings>,
@@ -36,8 +42,8 @@ impl PaletteSelector {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let changed = self.enabled != enabled || settings.is_some_and(|s| s != self.settings);
-        self.enabled = enabled;
+        let changed = settings.is_some_and(|s| s != self.settings);
+        self.set_enabled(enabled, cx);
         if let Some(settings) = settings {
             self.settings = settings;
         }
@@ -67,5 +73,36 @@ impl Render for PaletteSelector {
             .small()
             .disabled(!self.enabled)
             .accessibility_label("Palette")
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use gpui_kit::{AppContext, TestAppContext, WindowOptions};
+
+    #[gpui_kit::test]
+    fn an_app_install_locks_the_palette_selector_between_device_polls(cx: &mut TestAppContext) {
+        use crate::{device_window::StickView, updater::AppUpdate};
+
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::open_window(WindowOptions::default(), cx, |w, cx| {
+                cx.new(|cx| StickView::new(w, cx))
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, w, cx| {
+            view.update(cx, |v, cx| {
+                v.show_state(4, w, cx);
+                assert!(v.palette.read(cx).enabled);
+                v.updates.state = AppUpdate::Installing;
+                v.refresh_shell(cx);
+                assert!(!v.palette.read(cx).enabled);
+                v.updates.state = AppUpdate::Idle;
+                v.refresh_shell(cx);
+                assert!(v.palette.read(cx).enabled);
+            });
+        })
+        .unwrap();
     }
 }

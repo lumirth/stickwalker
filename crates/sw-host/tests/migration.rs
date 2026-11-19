@@ -146,6 +146,12 @@ fn a_damaged_littlefs_checkpoint_only_blocks_a_newer_save() {
             .windows(header.len())
             .position(|w| w == header)
             .unwrap();
+        let mut bad_header = original.clone();
+        bad_header[at] ^= 1;
+        assert!(matches!(
+            save::classify_public_partition(&bad_header),
+            save::PublicPartition::DamagedSave(_)
+        ));
         bytes[at + 12 + 128] ^= 1;
         let result = save::classify_public_partition(&bytes);
         if sequence == 7 {

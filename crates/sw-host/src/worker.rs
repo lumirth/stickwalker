@@ -379,7 +379,7 @@ impl WorkerState<'_> {
             .deadline()
             .is_some_and(|deadline| now >= deadline)
         {
-            self.active.try_open(&self.state.ports);
+            self.active.try_open(&self.state.ports, Session::open);
             self.poll = Instant::now() + Duration::from_millis(500);
         }
         if now >= self.poll {
