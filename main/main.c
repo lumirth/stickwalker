@@ -261,7 +261,7 @@ static void battery_text(char text[24])
             }
         }
     }
-    snprintf(text, 24, "~%u%% %u.%02u V", percent,
+    snprintf(text, 24, "%u%% %u.%02u V", percent,
              battery.millivolts / 1000, (battery.millivolts % 1000) / 10);
 }
 
@@ -283,8 +283,8 @@ static void draw_page(void)
     if (ui.view == VIEW_RECOVERY) {
         display_text(9, 10, "Stickwalker", 3);
         display_text(203, 10, hardware_id, 3);
-        display_text(9, 34, "The walker save could not open.", 3);
-        display_text(9, 49, "Connect USB to repair the save.", 3);
+        display_text(9, 34, "Couldn't load your save.", 3);
+        display_text(9, 49, "Connect to Stickwalker Desktop.", 3);
         return;
     }
     display_rect(0, 0, SCREEN_W, 16, 3);

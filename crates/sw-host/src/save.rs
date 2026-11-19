@@ -21,7 +21,7 @@ fn crc(a: &[u8], b: &[u8]) -> u32 {
 
 /// Bound both allocation and the actual read if the file grows after opening.
 pub fn read_limited(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    ensure!(fs::metadata(path)?.is_file(), "Choose a regular file.");
+    ensure!(fs::metadata(path)?.is_file(), "Choose a file.");
     let file = fs::File::open(path)?;
     let meta = file.metadata()?;
     ensure!(
@@ -59,7 +59,7 @@ impl EepromImage {
 pub fn validate_eeprom(bytes: &[u8]) -> Result<()> {
     ensure!(
         bytes.len() == EEPROM && &bytes[..8] == b"nintendo",
-        "Choose a valid Pokéwalker save (.eeprom)."
+        "Choose a valid Pokéwalker save."
     );
     Ok(())
 }

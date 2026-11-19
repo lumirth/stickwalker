@@ -24,42 +24,7 @@ jobs:
           name: firmware
           path: dist/firmware/*
           retention-days: 7
-  desktop_firmware:
-    if: startsWith(github.ref_name, 'desktop-v')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download the matching firmware release
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="firmware-v$(cat VERSION)"
-          status=$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$tag")
-          case "$status" in
-            200)
-              gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir dist/firmware \
-                --pattern firmware.json --pattern bootloader.bin --pattern partition-table.bin --pattern stickwalker.bin
-              ;;
-            404) echo "missing=true" >> "$GITHUB_OUTPUT" ;;
-            *) echo "Firmware release lookup failed (HTTP $status)." >&2; exit 1 ;;
-          esac
-      - name: Build the bundled firmware for an unpublished version
-        if: steps.release.outputs.missing == 'true'
-        uses: ./.github/actions/build-firmware
-      - name: Verify the firmware before starting desktop builds
-        run: python3 tools/package.py check-firmware
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bundled-firmware
-          path: dist/firmware/*
-          if-no-files-found: error
-          retention-days: 1
   desktop:
-    needs: desktop_firmware
     if: startsWith(github.ref_name, 'desktop-v')
     strategy:
       fail-fast: false
@@ -70,17 +35,12 @@ jobs:
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
-      STICKWALKER_BUNDLE_FIRMWARE: "1"
       STICKWALKER_UPDATE_KEY: ${{ vars.STICKWALKER_UPDATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: actions/download-artifact@v4
-        with:
-          name: bundled-firmware
-          path: dist/firmware
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libudev-dev libvulkan1 zlib1g-dev
       - name: Check tag and signing configuration

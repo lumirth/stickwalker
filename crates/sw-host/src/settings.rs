@@ -13,7 +13,7 @@ impl PaletteName {
             !name.is_empty()
                 && name.len() <= 15
                 && name.bytes().all(|b| (32..=126).contains(&b) && b != b'|'),
-            "Use 1–15 ASCII characters for the palette name, without |."
+            "Use 1–15 standard letters, numbers, or symbols. Leave out |."
         );
         let mut bytes = [0; 16];
         bytes[..name.len()].copy_from_slice(name.as_bytes());

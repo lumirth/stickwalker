@@ -1,38 +1,24 @@
-# Releasing Stickwalker
+# Release Stickwalker
 
-Firmware and desktop use independent SemVer numbers. `VERSION` names firmware;
-`crates/sw-desktop/Cargo.toml` names the desktop. Protocol v1 and SWK6 do not change merely
-because either application has a patch release.
+Firmware and Desktop have independent versions. Set the firmware version in `VERSION` or the Desktop version in `crates/sw-desktop/Cargo.toml`. Update Cargo.lock when the crate version changes. Write release notes in `docs/releases/<tag>.md`.
 
-Pushes to `main` and pull requests run Clippy and headless workspace tests on
-Ubuntu and Windows. Ubuntu also runs the sanitized flash journal tests.
+Pushes to main and pull requests run Clippy and workspace tests on macOS, Windows, and Linux. Ubuntu also runs the flash journal tests with sanitizers.
 
-A `firmware-v*` tag builds the firmware with the cached, pinned ESP-IDF SDK.
-A `desktop-v*` tag downloads the `firmware-v<VERSION>` package once for all
-three desktop builds. If that release does not exist yet, the desktop tag’s
-source supplies the fallback build. A failed download or invalid package
-stops packaging. macOS Apple Silicon, Windows x86-64, and Linux x86-64 each
-run the workspace tests before packaging. Both release paths produce a draft
-for review. Publishing a desktop release marks it as GitHub’s Latest release.
+## Prepare a release
 
-Before publishing the first desktop release, qualify its native install,
-USB reset/reconnect, and self-update path on each advertised OS. A successful
-cross-build is not that qualification. Intel macOS can be packaged locally but
-is not included in the initial CI matrix.
+A `firmware-v*` tag builds firmware with the pinned ESP-IDF SDK. A `desktop-v*` tag builds Desktop for Apple silicon, Windows x86-64, and Linux x86-64. Each desktop job runs the workspace tests before packaging. Both workflows create a draft release.
 
-## macOS signing
+For the first stable launch, publish the firmware first so new installs can download it. Test the desktop installer, USB reconnection after flashing, and an app update on each supported OS. On Windows, SmartScreen can prompt when opening the unsigned executable. [Windows download instructions](README.md#windows)
 
-Use a **Developer ID Application** certificate from the Apple Developer account,
-not an Apple Development certificate. Install it in the login keychain on the
-release Mac. Create an App Store Connect API key with notarization access and
-store it once using `xcrun notarytool store-credentials stickwalker-release`.
-No Apple credentials belong in this repository.
+## Sign the macOS release
+
+Install a **Developer ID Application** certificate in the release Mac's login keychain. Create an App Store Connect API key with notarization access and save its credentials with `xcrun notarytool store-credentials stickwalker-release`.
 
 ```sh
 cargo install gpui-updater-release --version 0.4.4 --features cli --locked
 python3 -m venv build/dmg-tools
 build/dmg-tools/bin/pip install -r tools/requirements-macos.txt
-# Generate a release update key once; save its private half securely.
+# Generate the signing key once and store the private half securely.
 gpui-updater-release keys generate-sparkle
 export STICKWALKER_UPDATE_KEY='<public half>'
 export STICKWALKER_SIGN_IDENTITY='Developer ID Application: Name (TEAMID)'
@@ -40,47 +26,24 @@ export STICKWALKER_NOTARY_PROFILE=stickwalker-release
 build/dmg-tools/bin/python tools/package.py desktop --sign
 ```
 
-`--sign` embeds the pinned Sparkle framework, signs nested code inside out,
-signs the application with hardened runtime and a timestamp, notarizes and
-staples the app, then creates/signs/notarizes/staples its DMG. There is no
-`codesign --deep` signing step. Unsigned local packages are explicitly
-development artifacts; the script will not silently downgrade `--sign`.
+The packager signs the embedded Sparkle framework first, then the app with hardened runtime and a timestamp. It notarizes and staples both the app and its disk image.
 
-For CI, set repository variables `STICKWALKER_UPDATE_KEY` and
-`STICKWALKER_SIGN_IDENTITY`. Secrets: `APPLE_CERTIFICATE_P12` (base64 exported
-Developer ID certificate + private key), `APPLE_CERTIFICATE_PASSWORD`,
-`APPLE_API_KEY` (p8 contents), `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER_ID`.
-`tools/release.py credentials` imports them only into the disposable runner keychain.
-Windows binaries use signed updater payloads, but Authenticode signing is not
-configured; do not promise that Windows SmartScreen warnings are eliminated.
+For CI, set the repository variables `STICKWALKER_UPDATE_KEY` and `STICKWALKER_SIGN_IDENTITY`. Store the exported certificate and private key as the base64 secret `APPLE_CERTIFICATE_P12`, with its password in `APPLE_CERTIFICATE_PASSWORD`. Store the notarization key in `APPLE_API_KEY` and its identifiers in `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID`. The workflow imports the credentials into the runner's keychain.
 
-## Publish
+## Publish a draft
 
-For the first stable release, publish `firmware-v0.1.0` first. Then tag `desktop-v0.1.0` so Desktop embeds the published firmware. After that, bump `VERSION` for firmware changes or the desktop package version for app changes. Keep Cargo's lockfile in sync when changing a package version.
-
-Write the player-facing notes in `docs/releases/<tag>.md` before tagging, or edit the release draft before publishing. Keep the dated candidate releases available for existing users.
-
-After reviewing the draft artifacts, check out that release tag and run:
+Review the artifacts and release notes, check out the tag, and run the command for that release.
 
 ```sh
-# Desktop updates use the same key pair used to sign the app feed.
-export STICKWALKER_UPDATE_KEY='<public half>'
-export SPARKLE_PRIVATE_KEY='<release signing key>'
-python3 tools/release.py publish desktop-v0.1.0
-# Or independently:
 python3 tools/release.py publish firmware-v0.1.0
 ```
 
-The desktop command downloads the reviewed artifacts, generates and verifies
-Ed25519 signatures using `gpui-updater-release`, publishes the versioned
-artifacts, then updates `desktop-feed/latest.json` and per-architecture Sparkle
-appcasts. The firmware command publishes the versioned artifacts and updates
-`firmware-feed/firmware.json` last. Firmware discovery reads that static manifest
-and downloads binaries from the immutable `firmware-v<version>` release. App updates use the stable `desktop-feed`
-URL. The desktop includes a firmware baseline, but neither product's version is forced to match the other's.
+Firmware publication uploads the versioned images before replacing `firmware-feed/firmware.json`. Desktop retrieves them over HTTPS and verifies their SHA-256 hashes.
 
-Firmware packages are fetched over HTTPS and each image has a SHA256 checksum.
-They are **not separately cryptographically signed** in this version. Desktop
-self-update payloads are signed. No eFuses or secure-boot locks are changed.
-Changing the repository name requires changing both feed URLs and publishing
-redirect-compatible releases for already distributed clients.
+```sh
+export STICKWALKER_UPDATE_KEY='<public half>'
+export SPARKLE_PRIVATE_KEY='<release signing key>'
+python3 tools/release.py publish desktop-v0.1.0
+```
+
+Desktop publication signs and verifies the update artifacts, marks the release as GitHub's Latest, and updates `desktop-feed/latest.json` and the Sparkle appcasts. Keep the feed URLs available to installed clients and the dated preview releases available to their users.

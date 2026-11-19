@@ -259,7 +259,7 @@ impl StickView {
         let locked = self.locked() || self.state.hardware_busy;
         let can_install = access.can_install()
             && !locked
-            && (access == DeviceAccess::InstallOnly || self.update_available());
+            && (access == DeviceAccess::InstallOnly || self.offer_update());
         let install_label = self.install_label();
         let app = cx.global_mut::<AppState>();
         let next = MenuState {
@@ -352,7 +352,7 @@ impl StickView {
     pub(super) fn files(&self, action: FileAction, window: &mut Window, cx: &mut Context<Self>) {
         let access = self.state.connection.access();
         let available = match action {
-            FileAction::Package => access.can_install(),
+            FileAction::Package => true,
             FileAction::Export => access == DeviceAccess::Ready,
             FileAction::Import => access.can_write_save(),
         };
@@ -366,8 +366,8 @@ impl StickView {
         cx.spawn_in(window, async move |view, cx| {
             let result = match action {
                 FileAction::Export => {
-                    let Ok(prompt) = cx
-                        .update(|_, cx| cx.prompt_for_new_path(&directory, Some("walker.eeprom")))
+                    let Ok(prompt) =
+                        cx.update(|_, cx| cx.prompt_for_new_path(&directory, Some("eeprom.bin")))
                     else {
                         return;
                     };
@@ -407,7 +407,10 @@ impl StickView {
                     None
                 };
                 let _ = view.update_in(cx, |view, window, cx| {
-                    if target != view.state.connection.target() || view.locked() {
+                    if view.locked()
+                        || (!matches!(action, FileAction::Package)
+                            && target != view.state.connection.target())
+                    {
                         return;
                     }
                     match image {
@@ -643,11 +646,6 @@ impl StickView {
                     Some(cx.subscribe(&editor, |v, _, event: &PaletteChanged, cx| {
                         v.change_palette(event.0, cx)
                     }));
-                let _ = handle.update(cx, |_, w, cx| {
-                    if paste {
-                        editor.update(cx, |e, cx| e.paste(w, cx));
-                    }
-                });
                 self.editor = Some((handle, editor));
             }
             Err(error) => {
@@ -663,22 +661,13 @@ impl StickView {
             )));
         }
     }
-    pub(super) fn update_available(&self) -> bool {
-        self.state.firmware.as_ref().is_some_and(|f| f.local())
-            || self
-                .state
-                .connection
-                .info()
-                .zip(self.state.firmware.as_ref())
-                .is_some_and(|(i, v)| {
-                    match (
-                        v.version().parse::<host::release::Version>(),
-                        i.version.parse::<host::release::Version>(),
-                    ) {
-                        (Ok(new), Ok(old)) => new > old,
-                        _ => false,
-                    }
-                })
+    pub(super) fn offer_update(&self) -> bool {
+        self.state.connection.info().is_some_and(|info| {
+            self.state
+                .firmware
+                .as_ref()
+                .is_none_or(|f| f.installable_on(&info.version))
+        })
     }
     pub(super) fn device_label(&self) -> String {
         self.state
@@ -688,25 +677,26 @@ impl StickView {
             .unwrap_or_default()
     }
     pub(super) fn install_label(&self) -> String {
-        let version = self
-            .state
-            .firmware
-            .as_ref()
-            .map(|f| f.version())
-            .unwrap_or("");
         if self.state.connection.port().is_none() {
             return "No Device Connected".into();
         }
         let Some(info) = self.state.connection.info() else {
-            return format!("Install Stickwalker {version}").trim_end().into();
+            return self.state.firmware.as_ref().map_or_else(
+                || "Install Stickwalker".into(),
+                |f| format!("Install Stickwalker {}", f.version()),
+            );
         };
-        if self.state.firmware.as_ref().is_some_and(|f| f.local()) {
+        let Some(firmware) = &self.state.firmware else {
+            return "Update Firmware".into();
+        };
+        let version = firmware.version();
+        if firmware.local() {
             if info.version == version {
                 format!("Reinstall {version}")
             } else {
                 format!("Install {version}")
             }
-        } else if self.update_available() {
+        } else if self.offer_update() {
             format!("Update Firmware to {version}")
         } else {
             "Firmware Up to Date".into()

@@ -1,26 +1,28 @@
 # Stickwalker Desktop
 
-Connect an M5Stack StickS3 over USB to install or update Stickwalker, edit its palettes, or move a save between the Stick and an emulator. [Downloads](https://github.com/lumirth/stickwalker/releases/latest)
+Connect an M5Stack StickS3 over USB to install Stickwalker, update its firmware, edit its palettes, or move a save between your Stick and an emulator. [Download Stickwalker Desktop](https://github.com/lumirth/stickwalker/releases/latest)
 
-The device name, such as **Stick 1A20**, matches the ID in Stick Settings. With several Sticks connected, use the name to switch between them. Selecting a managed Stick wakes its screen.
+The device name, such as **Stick 1A20**, matches the ID in Stick Settings. If several Sticks are connected, click the name to switch between them. Selecting a Stick with Stickwalker installed wakes its screen.
 
-Choose **Edit** beside the active palette to change its name and colors. Drag a shade or enter its hex value to see the result on the Stick. **Blend midtones** fills in the two middle shades. **Manual** restores the previous midtones during the same editing session.
+Choose **Edit** beside a palette to rename it or change its colors. Drag a shade or enter a hex value to see it on your Stick. **Blend midtones** fills in the two shades between Background and Ink.
 
-Copy or paste a palette in Hachistep's `Name|BG|INK` or `Name|BG|LIGHT|DARK|INK` format, or paste four hex colors. Use the File menu to import or export a set. A partial set replaces the first palettes in order.
+Paste four hex colors, or use a Hachistep palette in `Name|BG|INK` or `Name|BG|LIGHT|DARK|INK` format. Use the File menu to import or export a palette set. If you import fewer than six palettes, they replace the first palettes in the list.
 
-**File → Export EEPROM** writes a standard 64 KiB `.eeprom` file. **File → Import EEPROM** replaces the current save with the file you choose.
+**File → Export EEPROM…** saves the 64 KiB image as `eeprom.bin`. **File → Import EEPROM…** replaces the save on your Stick. To install firmware from a file, choose **Device → Open Firmware…** and select `firmware.json`.
 
 ## Windows
 
-Run the downloaded `.exe` directly. The Windows build is unsigned, so SmartScreen may ask you to confirm the publisher. Check that your download came from the [Stickwalker release page](https://github.com/lumirth/stickwalker/releases/latest).
+Run the downloaded `.exe`. If SmartScreen displays **Windows protected your PC**, check that you downloaded the app from the Stickwalker release page. Choose **More info**, then **Run anyway**. [Stickwalker releases](https://github.com/lumirth/stickwalker/releases/latest)
 
 ## Linux
 
-The x86-64 tarball targets Ubuntu 24.04 (glibc 2.39) and newer compatible distributions. The display needs the Vulkan loader (`libvulkan1` on Ubuntu) and a Vulkan driver for your GPU. Extract the entire `Stickwalker` folder, keep it together, and run `./stickwalker` from that folder. For an application menu entry, run `python3 install-launcher.py` there. Run it again if you move the folder.
+Extract the `Stickwalker` folder and run `./stickwalker` inside it. Keep saves and other personal files outside that folder so Desktop can update. To add an application menu entry, run `python3 install-launcher.py` from the folder. Run it again if you move the app.
+
+The x86-64 build requires glibc 2.39 or later, a Vulkan driver for your GPU, and the Vulkan loader (`libvulkan1` on Ubuntu).
 
 ## Linux USB permissions
 
-If Desktop reports a port permission error, run these commands from the extracted download and reconnect the Stick.
+If Desktop reports a port permission error, run these commands from the extracted folder and reconnect the Stick.
 
 ```sh
 sudo install -m 644 60-stickwalker.rules /etc/udev/rules.d/

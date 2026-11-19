@@ -1,3 +1,4 @@
+use anyhow::Context;
 use gpui_updater_core::{
     Artifact, DriverEvent, DriverEvents, EngineConfig, OwnershipHints, Release,
     StaticManifestSource, UpdateDriver, UpdateEngine, Verification,
@@ -27,6 +28,19 @@ pub enum AppUpdate {
     },
     Failed(String),
 }
+
+impl AppUpdate {
+    fn setup_error(error: anyhow::Error) -> Self {
+        eprintln!("Desktop update setup failed: {error:#}");
+        Self::Failed(error.to_string())
+    }
+
+    fn failed(message: &str, error: impl std::fmt::Display) -> Self {
+        eprintln!("{message} {error:#}");
+        Self::Failed(message.into())
+    }
+}
+
 pub enum UpdateEvent {
     Driver(Box<DriverEvent>),
     Native(AppUpdate),
@@ -48,7 +62,8 @@ fn engine() -> anyhow::Result<UpdateEngine<StaticManifestSource>> {
     let config = EngineConfig::new(env!("CARGO_PKG_VERSION").parse()?)
         .ed25519_public_key(key)
         .verification(Verification::Strict);
-    let exe = gpui_updater_core::install::current_install_root()?;
+    let exe = gpui_updater_core::install::current_install_root()
+        .context("Couldn’t locate Stickwalker Desktop.")?;
     let ownership = gpui_updater_core::install::ownership(&exe, &OwnershipHints::new());
     anyhow::ensure!(
         ownership.is_self_update(),
@@ -74,11 +89,18 @@ fn linux_bundle_root(exe: &std::path::Path) -> anyhow::Result<&std::path::Path> 
     ];
     // The Linux installer atomically replaces this entire directory.
     anyhow::ensure!(
-        expected.iter().all(|name| root.join(name).is_file())
-            && std::fs::read_dir(root)?.all(|entry| entry
-                .is_ok_and(|entry| expected.iter().any(|name| entry.file_name() == *name))),
-        "Extract Stickwalker into its own folder to update."
+        expected.iter().all(|name| root.join(name).is_file()),
+        "Extract the full Stickwalker folder to update."
     );
+    for entry in std::fs::read_dir(root).context("Couldn’t read the Stickwalker folder.")? {
+        let name = entry
+            .context("Couldn’t read the Stickwalker folder.")?
+            .file_name();
+        anyhow::ensure!(
+            expected.iter().any(|file| name == *file),
+            "Move extra files out of the Stickwalker folder and try again."
+        );
+    }
     Ok(root)
 }
 
@@ -105,7 +127,10 @@ impl Updates {
                 (None, AppUpdate::Idle)
             }
             Ok(None) => (None, AppUpdate::Unsupported),
-            Err(error) => (None, AppUpdate::Failed(error.to_string())),
+            Err(error) => (
+                None,
+                AppUpdate::failed("Couldn’t start app updates.", error),
+            ),
         };
         #[cfg(target_os = "windows")]
         std::thread::spawn(|| {
@@ -157,14 +182,11 @@ impl Updates {
             let tx = self.native_tx.clone();
             std::thread::spawn(move || {
                 let state = match engine() {
-                    Err(error) => AppUpdate::Failed(error.to_string()),
+                    Err(error) => AppUpdate::setup_error(error),
                     Ok(engine) => match engine.check() {
                         Ok(Some(release)) => AppUpdate::Available(Box::new(release)),
                         Ok(None) => AppUpdate::Idle,
-                        Err(error) => {
-                            eprintln!("Desktop update check failed: {error}");
-                            AppUpdate::Failed("Couldn’t check for updates.".into())
-                        }
+                        Err(error) => AppUpdate::failed("Couldn’t check for updates.", error),
                     },
                 };
                 let _ = tx.try_send(UpdateEvent::Native(state));
@@ -186,21 +208,21 @@ impl Updates {
         }
         let tx = self.native_tx.clone();
         std::thread::spawn(move || {
-            let result = (|| -> anyhow::Result<_> {
-                let engine = engine()?;
-                Ok(engine.download(&release, |n, total| {
+            let state = match engine() {
+                Err(error) => AppUpdate::setup_error(error),
+                Ok(engine) => match engine.download(&release, |n, total| {
                     let _ = tx.try_send(UpdateEvent::Native(AppUpdate::Downloading {
                         version: release.version.to_string(),
                         percent: total
                             .filter(|n| *n > 0)
                             .map(|total| (n * 100 / total).min(100) as u8),
                     }));
-                })?)
-            })();
-            let _ = tx.try_send(UpdateEvent::Native(match result {
-                Ok(artifact) => AppUpdate::ReadyToInstall(artifact),
-                Err(error) => AppUpdate::Failed(error.to_string()),
-            }));
+                }) {
+                    Ok(artifact) => AppUpdate::ReadyToInstall(artifact),
+                    Err(error) => AppUpdate::failed("Couldn’t download the update.", error),
+                },
+            };
+            let _ = tx.try_send(UpdateEvent::Native(state));
         });
     }
     // Called on the UI thread only after the active hardware job has finished.
@@ -212,11 +234,14 @@ impl Updates {
         self.state = AppUpdate::Installing;
         let tx = self.native_tx.clone();
         std::thread::spawn(move || {
-            let state = match engine().and_then(|engine| Ok(engine.install(&artifact)?)) {
-                Ok(installed) => AppUpdate::ReadyToRestart {
-                    path: installed.restart_path,
+            let state = match engine() {
+                Err(error) => AppUpdate::setup_error(error),
+                Ok(engine) => match engine.install(&artifact) {
+                    Ok(installed) => AppUpdate::ReadyToRestart {
+                        path: installed.restart_path,
+                    },
+                    Err(error) => AppUpdate::failed("Couldn’t install the update.", error),
                 },
-                Err(error) => AppUpdate::Failed(error.to_string()),
             };
             let _ = tx.try_send(UpdateEvent::Native(state));
         });
@@ -278,8 +303,18 @@ impl Updates {
             }
             DriverEvent::Installing => AppUpdate::Installing,
             DriverEvent::ReadyToRelaunch(_) => AppUpdate::ReadyToRestart { path: None },
-            DriverEvent::Failed(_) if checking => check_failed(),
-            DriverEvent::Failed(error) => AppUpdate::Failed(error.to_string()),
+            DriverEvent::Failed(error) if checking => {
+                eprintln!("Desktop update check failed: {error}");
+                check_failed()
+            }
+            DriverEvent::Failed(error) => AppUpdate::failed(
+                if matches!(self.state, AppUpdate::Installing) {
+                    "Couldn’t install the update."
+                } else {
+                    "Couldn’t download the update."
+                },
+                error,
+            ),
             DriverEvent::Settled
                 if matches!(
                     self.state,
@@ -316,7 +351,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("stickwalker");
         std::fs::write(&exe, []).unwrap();
-        assert!(linux_bundle_root(&exe).is_err());
+        assert_eq!(
+            linux_bundle_root(&exe).unwrap_err().to_string(),
+            "Extract the full Stickwalker folder to update."
+        );
         for name in [
             "icon.png",
             "60-stickwalker.rules",
@@ -326,7 +364,10 @@ mod tests {
             std::fs::write(dir.path().join(name), []).unwrap();
         }
         assert_eq!(linux_bundle_root(&exe).unwrap(), dir.path());
-        std::fs::write(dir.path().join("my-save.eeprom"), []).unwrap();
-        assert!(linux_bundle_root(&exe).is_err());
+        std::fs::write(dir.path().join("eeprom.bin"), []).unwrap();
+        assert_eq!(
+            linux_bundle_root(&exe).unwrap_err().to_string(),
+            "Move extra files out of the Stickwalker folder and try again."
+        );
     }
 }

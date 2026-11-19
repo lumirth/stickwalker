@@ -24,15 +24,15 @@ When USB is active, the controller stays awake even if the LCD sleeps. On batter
 
 ### Pocket power budget
 
-The motion journey records CPU residency, bus traffic, sleep entries, and flash rail power in `residency.csv`. The model uses 0.240 mA for SoC light sleep. The active CPU ranges are 10–25 mA up to 40 MHz, 22–36.1 mA up to 80 MHz, and 51.2–65.9 mA at 240 MHz. It adds the sensor's mode current and 0.152–0.180 mA for flash and PSRAM standby while their rail is powered. Conversion to battery current assumes 3.7 V and 90% efficiency. Runtime estimates also require usable capacity and a separate estimate of board overhead. Battery life on a physical Stick requires a discharge measurement.
+The motion journey records CPU residency, bus traffic, sleep entries, and flash rail power in `residency.csv`. The model uses 0.240 mA for SoC light sleep. The active CPU ranges are 10–25 mA up to 40 MHz, 22–36.1 mA up to 80 MHz, and 51.2–65.9 mA at 240 MHz. It adds the sensor's mode current and 0.152–0.180 mA for flash and PSRAM standby while their rail is powered. Conversion to battery current assumes 3.7 V and 90% efficiency. Use a discharge measurement for the board’s actual runtime.
 
-PSRAM is unused. On the StickS3, VDD_SPI can turn off during long light sleeps. The firmware uses an RTC minimum sleep interval of about 3.7 ms for interrupted sleeps and retains the 2.7 ms flash-ready wait on wake. It waits in a task for deadlines under 10 ms. Boards with a different flash supply or added capacitance require separate timing measurements. [ESP-IDF flash power-down](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/api-reference/system/sleep_modes.html#power-down-of-flash) · [BMI270 datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi270-ds000.pdf) · [StickS3 schematic](https://docs.m5stack.com/en/core/StickS3)
+PSRAM is unused. On the StickS3, VDD_SPI can turn off during long light sleeps. The firmware uses an RTC minimum sleep interval of about 3.7 ms for interrupted sleeps and retains the 2.7 ms flash-ready wait on wake. It waits in a task for deadlines under 10 ms. The flash supply and its capacitance determine the minimum safe wake delay. [ESP-IDF flash power-down](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/api-reference/system/sleep_modes.html#power-down-of-flash) · [BMI270 datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi270-ds000.pdf) · [StickS3 schematic](https://docs.m5stack.com/en/core/StickS3)
 
 ## Saves and USB
 
 The 64 KiB EEPROM working image lives in internal SRAM. The save service journals changes to 128-byte ranges and checks their CRC. Two flash banks let it replace a checkpoint while retaining the last committed image. An aborted write reloads that image.
 
-`main/management.h` defines the USB commands. Protocol 1 frames requests with SLIP, a request ID, length, and CRC32. Status reads do not borrow the game buffer. Explicit EEPROM reads and writes use bounded pages. An unfinished transfer times out after two seconds. Import and reset are also available while the game is in save recovery.
+`main/management.h` defines the USB commands. Protocol 1 frames requests with SLIP, a request ID, length, and CRC32. Status reads run without pausing the game. Explicit EEPROM reads and writes use bounded pages. An unfinished transfer times out after two seconds. Import and reset are also available while the game is in save recovery.
 
 The host worker owns the selected serial port. A palette edit updates the screen immediately and the Stick saves the settings after 300 ms of inactivity. Palette edits preserve the physical controls selected on the Stick.
 
@@ -40,6 +40,12 @@ The host worker owns the selected serial port. A palette edit updates the screen
 
 A routine firmware update flushes the current game and preferences, then flashes the application. The save banks and NVS stay in place. A fresh install initializes both.
 
-For public candidate firmware, the host reads the old LittleFS or raw journal and decodes the EEPROM before writing any overlapping sectors. It stages the EEPROM at the start of the new save partition and writes the partition table last. The new firmware imports the EEPROM on boot. The host translates the old control and display settings and sends them over USB for the firmware to save. A recognizable but damaged legacy save stops a normal install.
+For earlier Stickwalker previews, the host reads the old LittleFS or raw journal and decodes the EEPROM before writing any overlapping sectors. It stages the EEPROM at the start of the new save partition and writes the partition table last. The new firmware imports the EEPROM on boot. The host translates the old control and display settings and sends them over USB for the firmware to save. A recognizable but damaged legacy save stops a normal install.
 
-Stickwalker Desktop embeds an offline firmware package. Firmware update checks read `firmware-feed/firmware.json` and download the binaries from the matching versioned release. The desktop app has its own update feed. [Release instructions](../crates/sw-desktop/release.md)
+Desktop checks `firmware-feed/firmware.json` for new releases. It downloads the images from the versioned firmware release, verifies their hashes and flash layout, and stores the package for later installs. Opening a local firmware file selects it for the rest of the session, even if a newer release arrives. Desktop app updates use a separate feed. [Release instructions](../crates/sw-desktop/release.md)
+
+## Power controller recovery
+
+Stickwalker writes `0x1f` to PM1 register `0x49` to set the Power button timing. A previous configuration can leave the download lock latched. On affected revisions the lock also blocks the `SYS_CMD=0xA3` download request. Resetting the ESP32 alone leaves the power controller running.
+
+On HW5 with PM1 revision `0x4f`, restarting the PM1 application from M5Stack's updater cleared the lock. The ESP32's USB downloader remains accessible over a working USB connection. [PM1 register reference](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1207/M5PM1_Datasheet_EN.pdf) · [USB recovery](recovery.md)

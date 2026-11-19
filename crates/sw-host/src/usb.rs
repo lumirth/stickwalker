@@ -112,7 +112,10 @@ impl Info {
     pub fn read(session: &mut Session) -> Result<Self> {
         let bytes = session.request(protocol::STATUS, &[])?;
         let base = 74 + crate::settings::SETTINGS_SIZE;
-        ensure!(bytes.len() == base, "Unsupported device status");
+        ensure!(
+            bytes.len() == base,
+            "Couldn’t read the status of this Stick."
+        );
         let mut remaining = bytes.as_slice();
         let mut take = |size| {
             let (field, rest) = remaining.split_at(size);
@@ -132,7 +135,7 @@ impl Info {
             0 => DeviceMode::Ready,
             1 => DeviceMode::Linking,
             2 => DeviceMode::SaveFault,
-            _ => anyhow::bail!("Unsupported device mode"),
+            _ => anyhow::bail!("Desktop doesn’t recognize the state of this Stick."),
         };
         let millivolts = u16::from_le_bytes(take(2).try_into().unwrap());
         let power = take(1)[0];
@@ -157,8 +160,11 @@ pub fn read_eeprom(session: &mut Session) -> Result<Vec<u8>> {
         request.extend((count as u16).to_le_bytes());
         let page = session
             .request(protocol::READ, &request)
-            .with_context(|| format!("Could not export EEPROM at byte {}", bytes.len()))?;
-        ensure!(page.len() == count, "Incomplete EEPROM export");
+            .context("Couldn’t export the save. Try again.")?;
+        ensure!(
+            page.len() == count,
+            "The Stick sent an incomplete save. Try exporting again."
+        );
         bytes.extend(page);
     }
     save::validate_eeprom(&bytes)?;

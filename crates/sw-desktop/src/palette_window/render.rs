@@ -288,11 +288,10 @@ impl PaletteEditor {
 }
 impl Render for PaletteEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let message = self.error.clone().or_else(|| {
-            (!self.enabled).then(|| {
-                "Palette editing is unavailable while your Stick is busy or disconnected.".into()
-            })
-        });
+        let message = self
+            .error
+            .clone()
+            .or_else(|| (!self.enabled).then(|| "Your Stick is busy or disconnected.".into()));
         let footer = crate::device_window::render::feedback(message, self.error.is_some(), cx)
             .when(self.error.is_some(), |row| {
                 row.child(

@@ -53,8 +53,7 @@ pub(crate) fn refresh_menus(cx: &mut App) {
             items: vec![
                 MenuItem::action("Check for Firmware Updates", CheckFirmware)
                     .disabled(locked || state.checking_firmware),
-                MenuItem::action("Load Firmware File…", OpenPackage)
-                    .disabled(locked || !state.access.can_install()),
+                MenuItem::action("Open Firmware…", OpenPackage).disabled(locked),
                 MenuItem::action(state.install_label.clone(), Install).disabled(!state.can_install),
                 MenuItem::separator(),
                 MenuItem::action("Reset Walker…", ResetWalker)

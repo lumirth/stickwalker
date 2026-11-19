@@ -19,7 +19,7 @@ def run(*args):
 def make_feeds(artifacts, out):
     version = desktop_version()
     # The release library verifies each generated signature with this public key.
-    os.environ["SPARKLE_PUBLIC_KEY"] = update_key()
+    signing_env = {**os.environ, "SPARKLE_PUBLIC_KEY": update_key()}
     if not os.environ.get("SPARKLE_PRIVATE_KEY"):
         raise SystemExit("Set SPARKLE_PRIVATE_KEY from the release signing key.")
     out.mkdir(parents=True, exist_ok=True)
@@ -50,6 +50,7 @@ def make_feeds(artifacts, out):
             "--ed25519-key-env",
             "SPARKLE_PRIVATE_KEY",
         ],
+        env=signing_env,
         check=True,
     )
     subprocess.run(
@@ -65,6 +66,7 @@ def make_feeds(artifacts, out):
             "12.0",
             "--no-deltas",
         ],
+        env=signing_env,
         check=True,
     )
     for archive in artifacts.glob("Stickwalker-*-macos-*.dmg"):
@@ -179,7 +181,7 @@ def publish(tag):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
             if not exists:
                 run("gh", "release", "create", "firmware-feed", "--prerelease", "--latest=false",
-                    "--title", "Firmware update feed", "--notes", "Current firmware metadata and installation images.")
+                    "--title", "Firmware update feed", "--notes", "Latest Stickwalker firmware manifest.")
             # Payloads live in the immutable versioned release.
             run("gh", "release", "upload", "firmware-feed", str(assets / "firmware.json"), "--clobber")
         else:

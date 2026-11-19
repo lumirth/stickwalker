@@ -69,7 +69,7 @@ pub fn parse(text: &str) -> Result<ParsedPalette> {
             (PaletteName::from_user_input(name), &fields[1..])
         }
         [_, _, _, _] => (None, fields.as_slice()),
-        _ => anyhow::bail!("Clipboard does not contain a palette."),
+        _ => anyhow::bail!("Not a valid palette format."),
     };
     let values = colors
         .iter()

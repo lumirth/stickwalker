@@ -1,6 +1,6 @@
 use crate::{
     protocol::{self, Session},
-    release::Package,
+    release::{ImageKind, Package},
     save,
     usb::{DeviceMode, Info, Port, mac_id, ports},
 };
@@ -126,7 +126,7 @@ pub fn install(
         .collect::<Result<Vec<_>>>()?;
     let (app, app_bytes) = images
         .iter()
-        .find(|(image, _)| image.kind == "application")
+        .find(|(image, _)| image.kind == ImageKind::Application)
         .unwrap();
     let build: String = app_bytes[176..208]
         .iter()
@@ -287,7 +287,7 @@ pub fn install(
         migrated = crate::legacy::migrated_preferences(&nvs);
         writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
     }
-    writes.sort_by_key(|(image, _)| image.kind == "partitions");
+    writes.sort_by_key(|(image, _)| image.kind == ImageKind::Partitions);
     let total = saved + writes.iter().map(|(_, b)| b.len()).sum::<usize>();
     for (image, bytes) in writes {
         flasher.write_bin_to_flash(
@@ -318,7 +318,7 @@ pub fn install(
             Some((session, info))
         }) {
             ensure!(
-                info.version == manifest.version && info.build == build,
+                info.version == manifest.version.to_string() && info.build == build,
                 "The expected firmware did not start"
             );
             if let Some(settings) = migrated {

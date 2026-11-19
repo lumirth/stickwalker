@@ -55,7 +55,6 @@ def desktop_version():
 
 
 def check_desktop_release(tag):
-    check_firmware()
     if tag != "desktop-v" + desktop_version():
         raise SystemExit("The desktop release tag does not match the package version.")
     update_key()
@@ -126,11 +125,11 @@ def check_firmware():
         )
     manifest = json.loads(manifest_file.read_bytes())
     if manifest["version"] != (root / "VERSION").read_text().strip():
-        raise SystemExit("Bundled firmware version does not match VERSION.")
+        raise SystemExit("Firmware version does not match VERSION.")
     images = manifest["images"]
     expected = ["bootloader.bin", "partition-table.bin", "stickwalker.bin"]
     if sorted(image["file"] for image in images) != expected:
-        raise SystemExit("Bundled firmware must include the bootloader, partition table, and application.")
+        raise SystemExit("The firmware package must include the bootloader, partition table, and application.")
     for image in images:
         path = firmware_dir / image["file"]
         if not path.is_file() or path.stat().st_size == 0:
@@ -158,7 +157,6 @@ def desktop(a):
     if sys.platform == "darwin":
         import dmgbuild
 
-    check_firmware()
     mode = "debug" if a.debug else "release"
     if not a.no_build:
         subprocess.run(
@@ -171,7 +169,6 @@ def desktop(a):
                 *([] if a.debug else ["--release"]),
             ],
             cwd=root,
-            env={**os.environ, "STICKWALKER_BUNDLE_FIRMWARE": "1"},
             check=True,
         )
     version = desktop_version()

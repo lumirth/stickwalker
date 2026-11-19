@@ -1,13 +1,16 @@
 mod connection;
+mod firmware;
+
 use crate::{
     DeviceSettings,
     protocol::{self, Session},
-    release::Package,
+    release::{Package, Version},
     save,
     usb::{self, DeviceMode, Info, Port},
 };
 use anyhow::{Context, Result};
 use connection::ActiveDevice;
+use firmware::{FirmwareUpdates, Request};
 use std::{
     path::PathBuf,
     sync::{
@@ -24,7 +27,6 @@ pub enum Command {
     Select(Port),
     DismissError,
     CheckFirmware,
-    FirmwareChecked(Result<Package>),
     OpenPackage(PathBuf),
     Update,
     CleanInstall,
@@ -42,12 +44,12 @@ impl Command {
         match self {
             Self::SetSettings { .. } | Self::Export(_) => access == DeviceAccess::Ready,
             Self::Import(_) | Self::Reset => access.can_write_save(),
-            Self::Update | Self::CleanInstall | Self::OpenPackage(_) => access.can_install(),
+            Self::Update | Self::CleanInstall => access.can_install(),
             _ => true,
         }
     }
     fn targets_device(&self) -> bool {
-        self.hardware_operation() || matches!(self, Self::SetSettings { .. } | Self::OpenPackage(_))
+        self.hardware_operation() || matches!(self, Self::SetSettings { .. })
     }
     fn hardware_operation(&self) -> bool {
         matches!(
@@ -66,9 +68,14 @@ struct Work {
     command: Command,
     operation: Option<HardwareOperation>,
 }
+enum Message {
+    Command(Box<Work>),
+    FirmwareReady,
+}
+
 #[derive(Clone)]
 pub struct Commands {
-    tx: Sender<Work>,
+    tx: Sender<Message>,
     busy: Arc<AtomicBool>,
 }
 impl Commands {
@@ -78,12 +85,12 @@ impl Commands {
             .then(|| HardwareOperation::begin(&self.busy))
             .transpose()?;
         self.tx
-            .send(Work {
+            .send(Message::Command(Box::new(Work {
                 target,
                 command,
                 operation,
-            })
-            .map_err(|_| anyhow::anyhow!("Device worker closed"))
+            })))
+            .map_err(|_| anyhow::anyhow!("The Stick connection closed."))
     }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -198,6 +205,14 @@ impl Firmware {
             Self::Release(v) | Self::Local(v) => v,
         }
     }
+    pub fn installable_on(&self, installed: &str) -> bool {
+        self.local()
+            || Version::parse(self.version())
+                .ok()
+                .zip(Version::parse(installed).ok())
+                .is_none_or(|(next, current)| next.cmp_precedence(&current).is_gt())
+    }
+
     pub fn local(&self) -> bool {
         matches!(self, Self::Local(_))
     }
@@ -251,11 +266,12 @@ impl Worker {
         let hardware_busy = Arc::new(AtomicBool::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = stopping.clone();
+        let busy = hardware_busy.clone();
         let wake = commands.clone();
         thread::spawn(move || {
             loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run(&rx, &wake, &tx, &stop)
+                    run(&rx, &wake, &tx, &stop, &busy)
                 }));
                 if result.is_ok() || tx.is_closed() || stop.load(Ordering::Acquire) {
                     break;
@@ -302,292 +318,329 @@ fn publish(
     tx: &async_channel::Sender<Presentation>,
     state: &Presentation,
     last: &mut Option<Presentation>,
-) -> bool {
-    if last.as_ref() == Some(state) {
-        return true;
-    }
-    if tx.try_send(state.clone()).is_err() {
-        return false;
-    }
-    *last = Some(state.clone());
-    true
-}
-fn run(
-    rx: &Receiver<Work>,
-    wake: &Sender<Work>,
-    tx: &async_channel::Sender<Presentation>,
-    stop: &AtomicBool,
 ) {
-    let mut state = Presentation::default();
-    let mut active = ActiveDevice::Disconnected;
-    let mut package = Package::bundled().ok();
-    state.firmware = package
-        .as_ref()
-        .map(|p| Firmware::Release(p.manifest.version.clone()));
-    let mut last_sent = None;
-    let mut discover = Instant::now();
-    let mut poll = Instant::now();
-    let mut deferred = None;
+    if last.as_ref() != Some(state) && tx.try_send(state.clone()).is_ok() {
+        *last = Some(state.clone());
+    }
+}
 
-    let mut last_settings = Instant::now() - Duration::from_millis(33);
-    loop {
-        if tx.is_closed() || stop.load(Ordering::Acquire) {
-            break;
+struct WorkerState<'a> {
+    active: ActiveDevice,
+    firmware: FirmwareUpdates,
+    state: Presentation,
+    last_sent: Option<Presentation>,
+    discover: Instant,
+    poll: Instant,
+    events: &'a async_channel::Sender<Presentation>,
+    wake: &'a Sender<Message>,
+    busy: &'a AtomicBool,
+}
+
+impl WorkerState<'_> {
+    fn fetch(&mut self, reason: Request) {
+        self.firmware.request(reason, self.wake, Package::latest);
+    }
+
+    fn publish(&mut self) {
+        self.state.connection = self.active.presentation();
+        self.state.firmware = self.firmware.selection();
+        self.state.hardware_busy = self.busy.load(Ordering::Acquire);
+        publish(self.events, &self.state, &mut self.last_sent);
+    }
+
+    fn deadline(&self) -> Instant {
+        let next = if matches!(self.active, ActiveDevice::Managed { .. }) {
+            self.discover.min(self.poll)
+        } else {
+            self.discover
+        };
+        self.active.deadline().map_or(next, |time| time.min(next))
+    }
+
+    fn tick(&mut self) {
+        let now = Instant::now();
+        if now >= self.discover {
+            self.discover = now + Duration::from_secs(2);
+            match usb::ports() {
+                Ok(ports) => {
+                    if ports.iter().any(|port| !self.state.ports.contains(port)) {
+                        self.fetch(Request::Background);
+                    }
+                    if self.active.discover(&ports) {
+                        self.state.firmware_feedback = None;
+                    }
+                    self.state.ports = ports;
+                }
+                Err(error) => self.state.error = Some(error.to_string()),
+            }
         }
-        let mut next_wake = discover;
-        if matches!(active, ActiveDevice::Managed { .. }) {
-            next_wake = next_wake.min(poll);
+        if self
+            .active
+            .deadline()
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.active.try_open(&self.state.ports);
+            self.poll = Instant::now() + Duration::from_millis(500);
         }
-        if let Some(deadline) = active.deadline() {
-            next_wake = next_wake.min(deadline);
+        if now >= self.poll {
+            self.active.poll();
+            self.poll = Instant::now() + Duration::from_millis(500);
         }
+    }
+
+    fn firmware_ready(&mut self) -> Option<Box<Work>> {
+        let (reason, result) = self.firmware.finish()?;
+        self.state.checking_firmware = false;
+        match reason {
+            Request::Background => {}
+            Request::Check => {
+                self.state.firmware_feedback = None;
+                match result {
+                    Ok(()) => {
+                        let latest = self.firmware.release_version()?;
+                        let feedback = match self.state.connection.info() {
+                            Some(info)
+                                if Version::parse(&info.version)
+                                    .is_ok_and(|v| !latest.cmp_precedence(&v).is_gt()) =>
+                            {
+                                format!("Firmware {} is up to date", info.version)
+                            }
+                            _ => format!("Firmware {latest} is available"),
+                        };
+                        self.state.firmware_feedback = Some(feedback);
+                    }
+                    Err(_) => {
+                        self.state.error = Some("Couldn’t check for firmware updates.".into())
+                    }
+                }
+            }
+            Request::Install(work) => {
+                self.state.status = None;
+                if result.is_ok() {
+                    self.discover = Instant::now();
+                    self.poll = self.discover;
+                    return Some(work);
+                }
+                self.state.error = Some("Couldn’t download firmware. Check your internet connection or open a local firmware file.".into());
+            }
+        }
+        None
+    }
+
+    fn handle_command(&mut self, work: Box<Work>) {
+        if work.command.targets_device()
+            && (work.target != self.state.connection.target()
+                || !work.command.allowed(&self.state.connection))
+        {
+            if let Command::SetSettings { revision, .. } = work.command {
+                self.state.failed_revision = Some(revision);
+            }
+            self.state.error = Some("The Stick is no longer available for this action.".into());
+            return;
+        }
+        self.state.error = None;
+        if matches!(work.command, Command::Update | Command::CleanInstall)
+            && self.firmware.selected().is_none()
+        {
+            self.state.status = Some("Downloading firmware…".into());
+            self.state.firmware_feedback = None;
+            self.fetch(Request::Install(work));
+            return;
+        }
+        if work.operation.is_some() {
+            self.state.status = match work.command {
+                Command::Export(_) => Some("Exporting EEPROM…".into()),
+                Command::Import(_) => Some("Importing EEPROM…".into()),
+                _ => None,
+            };
+            self.publish();
+        }
+        let revision = match work.command {
+            Command::SetSettings { revision, .. } => Some(revision),
+            _ => None,
+        };
+        if let Err(error) = self.execute(work.command) {
+            if let Some(revision) = revision {
+                self.state.failed_revision = Some(revision);
+            }
+            self.state.error = Some(error.to_string());
+        }
+        if work.operation.is_some() {
+            self.state.status = None;
+        }
+    }
+
+    fn execute(&mut self, command: Command) -> Result<()> {
+        match command {
+            Command::Shutdown | Command::DismissError => {}
+            Command::Select(port) => {
+                if self.state.ports.contains(&port) {
+                    self.active = ActiveDevice::probe(port, None, true);
+                    self.state.acked_revision = 0;
+                    self.state.failed_revision = None;
+                    self.discover = Instant::now();
+                }
+            }
+            Command::CheckFirmware => {
+                self.state.checking_firmware = true;
+                self.state.firmware_feedback = Some("Checking for firmware updates…".into());
+                self.fetch(Request::Check);
+            }
+            Command::OpenPackage(path) => {
+                self.firmware.open(&path)?;
+                self.state.firmware_feedback = None;
+            }
+            Command::SetSettings { revision, settings } => {
+                self.active.with_session(|session, info| {
+                    session.request(protocol::SETTINGS, &settings.palette_bytes())?;
+                    info.settings.active_palette = settings.active_palette;
+                    info.settings.slots = settings.slots;
+                    Ok(())
+                })?;
+                self.state.acked_revision = revision;
+                self.state.failed_revision = None;
+            }
+            Command::Export(path) => {
+                let bytes = self
+                    .active
+                    .with_session(|session, _| usb::read_eeprom(session))?;
+                save::atomic_write(&path, &bytes)?;
+            }
+            Command::Import(image) => self.active.with_session(|session, info| {
+                usb::write_eeprom(session, &image)?;
+                *info = Info::read(session)?;
+                Ok(())
+            })?,
+            Command::Reset => self.active.with_session(|session, info| {
+                usb::reset_walker(session)?;
+                *info = Info::read(session)?;
+                Ok(())
+            })?,
+            Command::Update => self.flash(false)?,
+            Command::CleanInstall => self.flash(true)?,
+        }
+        Ok(())
+    }
+
+    fn flash(&mut self, fresh: bool) -> Result<()> {
+        let package = self
+            .firmware
+            .selected()
+            .context("Choose a firmware file to install.")?;
+        let info = self.state.connection.info();
+        if !fresh
+            && let Some(info) = info
+            && self
+                .firmware
+                .selection()
+                .is_some_and(|f| !f.installable_on(&info.version))
+        {
+            self.state.firmware_feedback = Some(format!("Firmware {} is up to date", info.version));
+            return Ok(());
+        }
+        let expected = info.and_then(|i| usb::mac_id(&i.mac));
+        let title = if fresh || info.is_none() {
+            "Installing Stickwalker…"
+        } else if info.is_some_and(|i| i.version == package.manifest.version.to_string()) {
+            "Reinstalling Stickwalker…"
+        } else {
+            "Updating Stickwalker…"
+        };
+        let (port, session) = self.active.start_flash(title.into())?;
+        self.state.firmware_feedback = None;
+        self.state.connection = self.active.presentation();
+        publish(self.events, &self.state, &mut self.last_sent);
+        let result =
+            crate::flash::install(&port, session, package, fresh, &mut |phase, percent| {
+                let step = match percent {
+                    Some(p) => format!("{phase} · {p}%"),
+                    None => phase.into(),
+                };
+                self.state.connection = ConnectionState::Flashing {
+                    title: title.into(),
+                    port: port.clone(),
+                    step,
+                    percent,
+                };
+                publish(self.events, &self.state, &mut self.last_sent);
+            });
+        self.active = match result {
+            Ok((port, session, info)) => ActiveDevice::Managed {
+                port,
+                session,
+                info: Box::new(info),
+            },
+            Err(error) => {
+                self.active = ActiveDevice::probe(port, expected, false);
+                return Err(error);
+            }
+        };
+        self.discover = Instant::now();
+        Ok(())
+    }
+}
+
+fn run(
+    rx: &Receiver<Message>,
+    wake: &Sender<Message>,
+    events: &async_channel::Sender<Presentation>,
+    stop: &AtomicBool,
+    busy: &AtomicBool,
+) {
+    let mut worker = WorkerState {
+        active: ActiveDevice::Disconnected,
+        firmware: FirmwareUpdates::new(crate::data_dir().map(|d| d.join("firmware"))),
+        state: Presentation::default(),
+        last_sent: None,
+        discover: Instant::now(),
+        poll: Instant::now(),
+        events,
+        wake,
+        busy,
+    };
+    worker.fetch(Request::Background);
+    let mut deferred = None;
+    let frame = Duration::from_millis(33);
+    let mut last_settings = Instant::now() - frame;
+    while !events.is_closed() && !stop.load(Ordering::Acquire) {
+        let wait = worker.deadline().saturating_duration_since(Instant::now());
         match deferred
             .take()
             .map(Ok)
-            .unwrap_or_else(|| rx.recv_timeout(next_wake.saturating_duration_since(Instant::now())))
+            .unwrap_or_else(|| rx.recv_timeout(wait))
         {
-            Ok(Work {
-                target,
-                mut command,
-                operation,
-            }) => {
-                if matches!(command, Command::Shutdown) {
+            Ok(Message::FirmwareReady) => {
+                deferred = worker.firmware_ready().map(Message::Command);
+            }
+            Ok(Message::Command(mut work)) => {
+                if matches!(work.command, Command::Shutdown) {
                     return;
                 }
-                if command.targets_device()
-                    && (target != state.connection.target() || !command.allowed(&state.connection))
-                {
-                    if let Command::SetSettings { revision, .. } = command {
-                        state.failed_revision = Some(revision);
-                    }
-                    state.error = Some("The Stick is no longer available for this action.".into());
-                    drop(operation);
-                    publish(tx, &state, &mut last_sent);
-                    continue;
-                }
-                if matches!(command, Command::SetSettings { .. }) {
-                    thread::sleep(
-                        Duration::from_millis(33).saturating_sub(last_settings.elapsed()),
-                    );
+                if matches!(work.command, Command::SetSettings { .. }) {
+                    thread::sleep(frame.saturating_sub(last_settings.elapsed()));
                     last_settings = Instant::now();
                     while let Ok(next) = rx.try_recv() {
-                        if next.target == target
-                            && matches!(next.command, Command::SetSettings { .. })
-                        {
-                            command = next.command;
-                        } else {
-                            deferred = Some(next);
-                            break;
-                        }
-                    }
-                }
-                state.error = None;
-                state.status = None;
-                let revision = match &command {
-                    Command::SetSettings { revision, .. } => Some(*revision),
-                    _ => None,
-                };
-                state.hardware_busy = operation.is_some();
-                publish(tx, &state, &mut last_sent);
-                let result = (|| -> Result<()> {
-                    match command {
-                        Command::Shutdown => return Ok(()),
-                        Command::DismissError => {}
-                        Command::Select(port) => {
-                            if !state.ports.contains(&port) {
-                                return Ok(());
-                            }
-                            active = ActiveDevice::probe(port, None, true);
-                            state.acked_revision = 0;
-                            state.failed_revision = None;
-                            discover = Instant::now();
-                        }
-                        Command::CheckFirmware => {
-                            if !state.checking_firmware {
-                                state.checking_firmware = true;
-                                state.firmware_feedback =
-                                    Some("Checking for firmware updates…".into());
-                                let wake = wake.clone();
-                                thread::spawn(move || {
-                                    let _ = wake.send(Work {
-                                        target: None,
-                                        command: Command::FirmwareChecked(Package::latest()),
-                                        operation: None,
-                                    });
-                                });
-                            }
-                        }
-                        Command::FirmwareChecked(result) => {
-                            state.checking_firmware = false;
-                            state.firmware_feedback = None;
-                            let p = result?;
-                            let available =
-                                p.manifest.version.parse::<crate::release::Version>()?;
-                            if package
-                                .as_ref()
-                                .and_then(|p| {
-                                    p.manifest.version.parse::<crate::release::Version>().ok()
-                                })
-                                .is_none_or(|v| v <= available)
+                        match next {
+                            Message::Command(newer)
+                                if newer.target == work.target
+                                    && matches!(newer.command, Command::SetSettings { .. }) =>
                             {
-                                state.firmware =
-                                    Some(Firmware::Release(p.manifest.version.clone()));
-                                package = Some(p);
+                                work = newer
                             }
-                            let latest = state
-                                .firmware
-                                .as_ref()
-                                .context("Firmware unavailable")?
-                                .version();
-                            state.firmware_feedback = Some(match state.connection.info() {
-                                Some(info)
-                                    if info.version.parse::<crate::release::Version>().ok()
-                                        >= latest.parse().ok() =>
-                                {
-                                    format!("Firmware {} is up to date", info.version)
-                                }
-                                _ => format!("Firmware {latest} is available"),
-                            });
-                        }
-                        Command::OpenPackage(path) => {
-                            let p = Package::open(&path)?;
-                            state.firmware = Some(Firmware::Local(p.manifest.version.clone()));
-                            package = Some(p);
-                        }
-                        Command::SetSettings { revision, settings } => {
-                            active.with_session(|session, info| {
-                                session.request(protocol::SETTINGS, &settings.palette_bytes())?;
-                                info.settings.active_palette = settings.active_palette;
-                                info.settings.slots = settings.slots;
-                                Ok(())
-                            })?;
-                            state.acked_revision = revision;
-                            state.failed_revision = None;
-                        }
-                        Command::Export(path) => {
-                            state.status = Some("Exporting EEPROM…".into());
-                            publish(tx, &state, &mut last_sent);
-                            let bytes =
-                                active.with_session(|session, _| usb::read_eeprom(session))?;
-                            save::atomic_write(&path, &bytes)?;
-                        }
-                        Command::Import(image) => {
-                            state.status = Some("Importing EEPROM…".into());
-                            publish(tx, &state, &mut last_sent);
-                            active.with_session(|session, info| {
-                                usb::write_eeprom(session, &image)?;
-                                *info = Info::read(session)?;
-                                Ok(())
-                            })?;
-                        }
-                        Command::Reset => active.with_session(|session, info| {
-                            usb::reset_walker(session)?;
-                            *info = Info::read(session)?;
-                            Ok(())
-                        })?,
-                        Command::Update | Command::CleanInstall => {
-                            let fresh = matches!(command, Command::CleanInstall);
-                            let expected =
-                                state.connection.info().and_then(|i| usb::mac_id(&i.mac));
-                            if package.is_none() {
-                                package = Some(Package::latest()?);
+                            other => {
+                                deferred = Some(other);
+                                break;
                             }
-                            let title = if fresh || state.connection.info().is_none() {
-                                "Installing Stickwalker…"
-                            } else if state.connection.info().is_some_and(|i| {
-                                Some(i.version.as_str())
-                                    == state.firmware.as_ref().map(Firmware::version)
-                            }) {
-                                "Reinstalling Stickwalker…"
-                            } else {
-                                "Updating Stickwalker…"
-                            };
-                            let (port, active_session) = active.start_flash(title.into())?;
-                            state.connection = active.presentation();
-                            publish(tx, &state, &mut last_sent);
-                            let result = crate::flash::install(
-                                &port,
-                                active_session,
-                                package.as_ref().unwrap(),
-                                fresh,
-                                &mut |phase, percent| {
-                                    let step = match percent {
-                                        Some(p) => format!("{phase} · {p}%"),
-                                        None => phase.into(),
-                                    };
-                                    active = ActiveDevice::Flashing {
-                                        title: title.into(),
-                                        port: port.clone(),
-                                        step,
-                                        percent,
-                                    };
-                                    state.connection = active.presentation();
-                                    publish(tx, &state, &mut last_sent);
-                                },
-                            );
-                            active = match result {
-                                Ok((port, session, info)) => ActiveDevice::Managed {
-                                    port,
-                                    session,
-                                    info: Box::new(info),
-                                },
-                                Err(error) => {
-                                    active = ActiveDevice::probe(port, expected, false);
-                                    return Err(error);
-                                }
-                            };
-                            state.firmware = package
-                                .as_ref()
-                                .map(|p| Firmware::Release(p.manifest.version.clone()));
-                            discover = Instant::now();
                         }
                     }
-                    Ok(())
-                })();
-                state.status = None;
-                if let Err(error) = result {
-                    if revision.is_some() {
-                        state.failed_revision = revision;
-                    }
-                    state.error = Some(error.to_string());
                 }
-                state.connection = active.presentation();
-                drop(operation);
-                state.hardware_busy = false;
-                if !publish(tx, &state, &mut last_sent) {
-                    break;
-                }
+                worker.handle_command(work);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        if Instant::now() >= discover {
-            discover = Instant::now() + Duration::from_secs(2);
-            match usb::ports() {
-                Ok(ports) => {
-                    if active.discover(&ports) {
-                        state.firmware_feedback = None;
-                    }
-                    state.ports = ports;
-                }
-                Err(error) => state.error = Some(error.to_string()),
-            }
-        }
-        if active
-            .deadline()
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
-            active.try_open(&state.ports);
-            poll = Instant::now() + Duration::from_millis(500);
-        }
-        if Instant::now() >= poll {
-            active.poll();
-            poll = Instant::now() + Duration::from_millis(500);
-        }
-        state.connection = active.presentation();
-        if !publish(tx, &state, &mut last_sent) {
-            break;
-        }
+        worker.tick();
+        worker.publish();
     }
 }
 

@@ -122,7 +122,10 @@ impl Session {
         result
     }
     fn exchange(&mut self, op: u8, payload: &[u8], timeout: Duration) -> Result<Vec<u8>> {
-        ensure!(payload.len() <= 4096, "Management message is too large");
+        ensure!(
+            payload.len() <= 4096,
+            "The request to your Stick is too large."
+        );
         self.sequence = self.sequence.wrapping_add(1);
         self.port.write_all(&frame(op, self.sequence, payload))?;
         receive(
@@ -153,18 +156,18 @@ fn receive(
                         if raw[2] != 1 || raw[3] != op || raw[4..6] != sequence.to_le_bytes() {
                             continue;
                         }
-                        ensure!(raw.len() >= 13, "Empty management reply");
+                        ensure!(raw.len() >= 13, "Your Stick sent an incomplete reply.");
                         match raw[8] {
                             0 => return Ok(raw[9..raw.len() - 4].to_vec()),
                             1 => {
-                                bail!("Stickwalker is busy. Finish connecting, then try again.")
+                                bail!(
+                                    "Your Stick is busy. If it’s linking, finish or cancel the link and try again."
+                                )
                             }
                             2 => {
                                 bail!("This operation is not supported by the connected firmware.")
                             }
-                            _ => bail!(
-                                "Stickwalker could not save its state. Import an EEPROM image or reset the walker."
-                            ),
+                            _ => bail!("Couldn’t save changes to your Stick."),
                         }
                     }
                 }

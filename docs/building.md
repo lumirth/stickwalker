@@ -15,7 +15,17 @@ tools/build.sh build
 python3 tools/package.py firmware
 ```
 
-In Stickwalker Desktop, choose **Device → Load Firmware File** and open `dist/firmware/firmware.json`. The manifest and its three binaries belong together.
+In Stickwalker Desktop, choose **Device → Open Firmware…** and open `dist/firmware/firmware.json`. The manifest and its three binaries belong together.
+
+### Flash a local build over USB
+
+Use Desktop to migrate a save from an earlier Stickwalker preview. To write a local build directly to a Stick with the current partition layout, put it in download mode and set `PORT` to its serial port. Run esptool in the ESP-IDF Python environment. [USB recovery](recovery.md)
+
+```sh
+cd build/firmware
+python -m esptool --chip esp32s3 --port "$PORT" \
+  --before no_reset --after watchdog_reset write_flash @flash_args
+```
 
 ## Original artwork
 
@@ -29,7 +39,7 @@ python3 tools/package.py firmware
 
 ## Desktop
 
-Run `cargo run --locked -p sw-desktop`. If you packaged firmware first, Cargo embeds it as the offline installer. In a debug build, press Cmd/Ctrl+1 through 8 to preview the device states and Cmd/Ctrl+0 to return to the connected Stick.
+Run `cargo run --locked -p sw-desktop`. In a debug build, press Cmd/Ctrl+1 through 8 to preview the device states and Cmd/Ctrl+0 to return to the connected Stick.
 
 On Windows and Linux, run `python3 tools/package.py desktop` to package a build. On macOS, install the Finder disk image tools first.
 

@@ -28,7 +28,11 @@ pub(crate) fn feedback(message: Option<String>, error: bool, cx: &App) -> Div {
                     .aria_label(text.clone())
                     .flex_1()
                     .min_w_0()
-                    .truncate()
+                    .when_else(
+                        error,
+                        |d| d.line_clamp(2).line_height(rems(0.9)),
+                        |d| d.truncate(),
+                    )
                     .text_xs()
                     .text_color(if error {
                         cx.theme().danger
@@ -211,13 +215,13 @@ impl StickView {
                             .min_w_0()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(if self.update_available() {
+                            .child(if self.offer_update() {
                                 version
                             } else {
                                 format!("{version} · Up to date")
                             }),
                     )
-                    .when(self.update_available(), |d| {
+                    .when(self.offer_update(), |d| {
                         d.child(
                             Button::new("update")
                                 .primary()
@@ -238,9 +242,7 @@ impl StickView {
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(
-                                    "Import an EEPROM image or reset the walker to start fresh.",
-                                ),
+                                .child("Import a saved EEPROM or reset your Stick to start fresh."),
                         )
                         .child(
                             div()
@@ -321,8 +323,8 @@ impl StickView {
 impl Render for StickView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = self.device_panel(cx);
-        let update = self.updates.state.clone();
-        let banner = match &update {
+        let update = &self.updates.state;
+        let banner = match update {
             AppUpdate::UpToDate => Some("Stickwalker Desktop is up to date".into()),
             AppUpdate::Available(release) => Some(format!(
                 "Stickwalker Desktop {} is available",
@@ -339,22 +341,24 @@ impl Render for StickView {
             AppUpdate::Failed(error) => Some(error.clone()),
             _ => None,
         };
-        let update_error = matches!(update, AppUpdate::Failed(_));
         let device_error = self.state.error.is_some();
-        let has_error = device_error || update_error;
-        let message = if device_error {
-            self.state.error.clone()
-        } else if update_error {
-            banner
-        } else {
-            self.state
-                .status
-                .clone()
-                .or(banner)
-                .or_else(|| self.state.firmware_feedback.clone())
-        };
-        let show_update = !has_error
-            && self.state.status.is_none()
+        let device_message = self
+            .state
+            .error
+            .as_ref()
+            .or(self.state.status.as_ref())
+            .or(self
+                .state
+                .firmware_feedback
+                .as_ref()
+                .filter(|_| self.state.checking_firmware));
+        let has_error =
+            device_error || (device_message.is_none() && matches!(update, AppUpdate::Failed(_)));
+        let message = device_message
+            .cloned()
+            .or(banner)
+            .or_else(|| self.state.firmware_feedback.clone());
+        let show_update = device_message.is_none()
             && matches!(
                 update,
                 AppUpdate::Available(_) | AppUpdate::ReadyToRestart { .. }
@@ -586,11 +590,24 @@ mod tests {
                 let (name, enabled) = item("Device", &crate::Install);
                 assert!(name.starts_with(caption), "{name}");
                 assert_eq!(enabled, install);
+                assert!(item("Device", &crate::OpenPackage).1);
                 assert_eq!(item("File", &crate::ExportEeprom).1, export);
                 assert_eq!(item("Edit", &crate::EditPalette).1, export);
             })
             .unwrap();
         }
+        cx.update_window(window, |_, w, cx| {
+            view.update(cx, |v, cx| {
+                v.show_state(4, w, cx);
+                let mut state = v.state.clone();
+                state.firmware = None;
+                v.present(state, w, cx);
+                let menu = &cx.global::<crate::AppState>().menu;
+                assert!(menu.can_install);
+                assert_eq!(menu.install_label, "Update Firmware");
+            });
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
