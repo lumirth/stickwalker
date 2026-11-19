@@ -435,6 +435,11 @@ impl StickView {
                         None => view.send(Command::Export(path)),
                     }
                 });
+            } else if let Ok(Err(error)) = result {
+                let _ = view.update(cx, |view, cx| {
+                    view.state.error = Some(error.to_string());
+                    cx.notify();
+                });
             }
         })
         .detach();

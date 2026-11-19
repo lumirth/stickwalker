@@ -2,6 +2,9 @@
 use crate::save::{EEPROM, EepromImage, PublicPartition, apply_spans, validate_eeprom};
 use anyhow::{Context, Result, ensure};
 mod filesystem;
+const CHECKPOINT_MAGIC: u32 = 0x50574531;
+const JOURNAL_MAGIC: u32 = 0x50574a31;
+
 fn word(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
@@ -14,34 +17,38 @@ pub(super) fn classify_littlefs(data: &[u8]) -> PublicPartition {
 
 fn scan_littlefs(data: &[u8]) -> Result<PublicPartition> {
     ensure!(data.len() == 0x180000, "Incomplete legacy filesystem");
-    if let Some(scan) = filesystem::mounted(data, scan_files) {
-        return scan;
+    if let Some(files) = filesystem::mounted(data, scan_files) {
+        if let Some(image) = files? {
+            return Ok(PublicPartition::StickwalkerSave(image));
+        }
+    } else {
+        let metadata: &[&[u8]] = &[b"littlefs", b"pw-a.bin", b"pw-b.bin", b"pw-journal.bin"];
+        ensure!(
+            !metadata
+                .iter()
+                .any(|m| data.windows(m.len()).any(|w| w == *m)),
+            "The older filesystem could not be opened"
+        );
     }
-    let markers: &[&[u8]] = &[
-        b"littlefs",
-        b"pw-a.bin",
-        b"pw-b.bin",
-        b"pw-journal.bin",
-        &0x50574531u32.to_le_bytes(),
-        &0x50574a31u32.to_le_bytes(),
-    ];
+    // LittleFS can mount an older, empty directory revision after a metadata tear.
     ensure!(
-        !markers
-            .iter()
-            .any(|m| data.windows(m.len()).any(|w| w == *m)),
-        "The older filesystem could not be opened"
+        !data
+            .windows(4)
+            .any(|bytes| bytes == CHECKPOINT_MAGIC.to_le_bytes()
+                || bytes == JOURNAL_MAGIC.to_le_bytes()),
+        "The older filesystem contains an unreadable save"
     );
     Ok(PublicPartition::EmptyOrForeign)
 }
 
-fn scan_files(fs: &mut filesystem::Volume<'_>) -> Result<PublicPartition> {
+fn scan_files(fs: &mut filesystem::Volume<'_>) -> Result<Option<EepromImage>> {
     let mut newest = None;
     let mut damaged_sequence = None;
     let mut found = false;
     for name in [c"/pw-a.bin", c"/pw-b.bin"] {
         match fs.read(name, 0x180000) {
             Ok(None) => continue,
-            Ok(Some(bytes)) if bytes.len() >= 8 && word(&bytes, 0) == 0x50574531 => {
+            Ok(Some(bytes)) if bytes.len() >= 8 && word(&bytes, 0) == CHECKPOINT_MAGIC => {
                 let sequence = word(&bytes, 4);
                 if bytes.len() == EEPROM + 12
                     && word(&bytes, 8) == crc32fast::hash(&bytes[12..])
@@ -61,7 +68,7 @@ fn scan_files(fs: &mut filesystem::Volume<'_>) -> Result<PublicPartition> {
     }
     let journal = fs.read(c"/pw-journal.bin", 0x180000)?;
     if !found && journal.is_none() {
-        return Ok(PublicPartition::EmptyOrForeign);
+        return Ok(None);
     }
     let (sequence, mut image) = newest.context("No intact checkpoint in the older filesystem")?;
     ensure!(
@@ -73,7 +80,7 @@ fn scan_files(fs: &mut filesystem::Volume<'_>) -> Result<PublicPartition> {
         while at + 12 <= b.len() {
             let size = word(&b, at + 4) as usize;
             ensure!(
-                word(&b, at) == 0x50574a31 && size <= 4096,
+                word(&b, at) == JOURNAL_MAGIC && size <= 4096,
                 "Invalid legacy save journal"
             );
             if at + 12 + size > b.len() {
@@ -88,7 +95,7 @@ fn scan_files(fs: &mut filesystem::Volume<'_>) -> Result<PublicPartition> {
             at += 12 + size;
         }
     }
-    Ok(PublicPartition::StickwalkerSave(EepromImage::parse(image)?))
+    Ok(Some(EepromImage::parse(image)?))
 }
 
 // Only the U8 preferences used by public firmware are interpreted.

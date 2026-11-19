@@ -94,6 +94,16 @@ fn public_layout_distinguishes_factory_data_from_damaged_walks() {
 }
 
 #[test]
+fn missing_littlefs_entries_do_not_make_a_checkpoint_safe_to_erase() {
+    let mut image = fixture("public-littlefs.bin.zlib");
+    image[0x1004] ^= 1;
+    assert!(matches!(
+        save::classify_public_partition(&image),
+        save::PublicPartition::DamagedSave(_)
+    ));
+}
+
+#[test]
 fn legacy_preferences_keep_controls_and_acquire_named_slots() {
     use host::{DeviceSettings, PALETTE_NAMES, legacy};
     let defaults = legacy::preferences(&vec![0xff; 0x5000]);

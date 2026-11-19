@@ -4,6 +4,8 @@
 #include "driver/i2c_master.h"
 #include "driver/rtc_io.h"
 #include "driver/usb_serial_jtag.h"
+#include "esp_attr.h"
+#include "esp_intr_alloc.h"
 #include "esp_rom_sys.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
@@ -28,7 +30,7 @@ enum {
     POWER_SAMPLE_US = 55000,
 };
 
-static const gpio_num_t pins[] = {FRONT_PIN, SIDE_PIN};
+static const DRAM_ATTR gpio_num_t pins[] = {FRONT_PIN, SIDE_PIN};
 static const uint64_t wake_pins = (1ULL << FRONT_PIN) | (1ULL << SIDE_PIN);
 static i2c_master_bus_handle_t bus;
 static i2c_master_dev_handle_t pm;
@@ -110,7 +112,7 @@ static bool update_pm(uint8_t reg, uint8_t mask, uint8_t value)
            ((current & mask) == value || write_reg(pm, reg, (current & ~mask) | value));
 }
 
-static void switch_edge(void *argument)
+static void IRAM_ATTR switch_edge(void *argument)
 {
     unsigned index = (uintptr_t)argument;
     if (index < 2) {
@@ -210,7 +212,7 @@ void board_init(void)
     gpio_config_t input = {.pin_bit_mask = wake_pins, .mode = GPIO_MODE_INPUT,
                            .pull_up_en = GPIO_PULLUP_ENABLE, .intr_type = GPIO_INTR_ANYEDGE};
     gpio_config(&input);
-    if (gpio_install_isr_service(0) == ESP_OK) {
+    if (gpio_install_isr_service(ESP_INTR_FLAG_IRAM) == ESP_OK) {
         for (unsigned i = 0; i < sizeof(pins) / sizeof(*pins); ++i) {
             gpio_isr_handler_add(pins[i], switch_edge, (void *)(uintptr_t)i);
         }

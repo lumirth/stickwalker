@@ -118,6 +118,16 @@ jobs:
           else
             python tools/package.py desktop
           fi
+      - name: Verify standalone Windows runtime
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          imports=$(llvm-readobj --coff-imports dist/desktop/Stickwalker-*-windows-x86_64.exe)
+          grep -Fq 'Format: COFF-x86-64' <<< "$imports"
+          if grep -Ei '^[[:space:]]*Name: (vcruntime|msvcp|concrt)140[^[:space:]]*\.dll[[:space:]]*$' <<< "$imports"; then
+            echo "The packaged executable requires the Visual C++ Redistributable." >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ runner.os }}

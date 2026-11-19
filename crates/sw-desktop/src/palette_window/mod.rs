@@ -241,7 +241,7 @@ impl PaletteEditor {
             if slot_changed {
                 self.sync_hex(w, cx);
             }
-            if !self.name.read(cx).focus_handle(cx).is_focused(w) {
+            if slot_changed || !self.name.read(cx).focus_handle(cx).is_focused(w) {
                 self.sync_name(w, cx);
             }
             changed = true;

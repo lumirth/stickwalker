@@ -104,10 +104,16 @@ impl Session {
         })
     }
     pub fn request(&mut self, op: u8, payload: &[u8]) -> Result<Vec<u8>> {
-        let timeout = if self.identified {
-            Duration::from_secs(2)
-        } else {
+        let timeout = if !self.identified {
             Duration::from_millis(350)
+        } else {
+            match (op, payload) {
+                // Preparing, resetting, and the first EEPROM page can flush or erase flash.
+                (PREPARE, _) | (WRITE, []) | (READ | WRITE, [0, 0, 0, 0, ..]) => {
+                    Duration::from_secs(10)
+                }
+                _ => Duration::from_secs(2),
+            }
         };
         let result = self.exchange(op, payload, timeout);
         if result.is_ok() {

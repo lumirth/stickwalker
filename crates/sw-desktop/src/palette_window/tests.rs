@@ -58,6 +58,27 @@ fn switching_palettes_commits_the_draft_to_the_previous_palette(cx: &mut TestApp
     .unwrap();
 }
 #[gpui_kit::test]
+fn switching_on_the_stick_replaces_a_focused_name_draft(cx: &mut TestAppContext) {
+    use gpui_kit::Focusable;
+    let (handle, editor) = open_editor(cx);
+    cx.update_window(handle, |_, w, cx| {
+        editor.update(cx, |editor, cx| {
+            let focus = editor.name.read(cx).focus_handle(cx);
+            w.focus(&focus, cx);
+            editor
+                .name
+                .update(cx, |input, cx| input.set_value("Desk", w, cx));
+            let mut incoming = editor.settings;
+            incoming.active_palette = host::PaletteIndex::new(1).unwrap();
+            editor.receive(Some(incoming), true, w, cx);
+            assert!(focus.is_focused(w));
+            assert_eq!(editor.take_committed_settings(w, cx), incoming);
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn dragging_through_white_keeps_the_ring_at_the_pointer(cx: &mut TestAppContext) {
     use crate::palette_window::color_field::Surface;
     use gpui_kit::{MouseButton, point};
