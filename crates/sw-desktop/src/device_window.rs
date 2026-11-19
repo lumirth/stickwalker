@@ -7,7 +7,7 @@ use crate::palette_window::{PaletteAction, PaletteChanged, PaletteEditor};
 use crate::updater::{AppUpdate, Updates};
 use crate::*;
 
-use host::worker::{Command, Presentation, Worker};
+use host::worker::{Command, ConnectionState, Presentation, Worker};
 use install::PendingInstall;
 use std::{sync::atomic::Ordering, time::Duration};
 
@@ -53,6 +53,7 @@ pub struct StickView {
     exit: ExitState,
     local_error: Option<String>,
     device_mac: Option<String>,
+    connection_epoch: u64,
     next_revision: u64,
     pending_revision: Option<u64>,
     pending_install: Option<PendingInstall>,
@@ -192,6 +193,7 @@ impl StickView {
             exit: ExitState::Running,
             local_error: None,
             device_mac: None,
+            connection_epoch: 0,
             next_revision: 0,
             pending_revision: None,
             pending_install: None,
@@ -250,6 +252,17 @@ impl StickView {
     ) {
         let incoming = state.connection.info().map(|i| i.mac.clone());
         let device_changed = incoming.is_some() && self.device_mac != incoming;
+        let previous = &self.state.connection;
+        let attached = |c: &ConnectionState| {
+            c.info().is_some() || matches!(c, ConnectionState::Unmanaged { .. })
+        };
+        // A replacement Stick can reuse the same USB port without reporting a serial number.
+        if previous.port() != state.connection.port()
+            || (device_changed && previous.info().is_some())
+            || (attached(previous) && !attached(&state.connection))
+        {
+            self.connection_epoch += 1;
+        }
         if device_changed {
             self.device_mac = incoming;
             if let Some((handle, _)) = self.editor.take() {
@@ -579,6 +592,7 @@ impl StickView {
         cx: &mut Context<Self>,
     ) {
         let target = self.state.connection.target();
+        let epoch = self.connection_epoch;
         let answer = w.prompt(
             PromptLevel::Warning,
             title,
@@ -593,6 +607,7 @@ impl StickView {
                         .as_ref()
                         .zip(v.state.connection.target().as_ref())
                         .is_some_and(|(expected, current)| expected.matches(current))
+                        || epoch != v.connection_epoch
                         || v.locked()
                         || !command.allowed(&v.state.connection)
                     {

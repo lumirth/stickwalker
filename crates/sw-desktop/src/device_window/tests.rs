@@ -13,6 +13,62 @@ fn open_device(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<StickView>) 
 }
 
 #[gpui_kit::test]
+fn erasing_a_reused_port_requires_a_fresh_confirmation(cx: &mut TestAppContext) {
+    use host::usb::Port;
+    use host::worker::{ConnectionState, Presentation};
+
+    let (window, view) = open_device(cx);
+    let port = Port {
+        path: "COM4".into(),
+        serial: String::new(),
+    };
+    let connected = Presentation {
+        ports: vec![port.clone()],
+        connection: ConnectionState::Unmanaged { port: port.clone() },
+        ..Default::default()
+    };
+    let present = |cx: &mut TestAppContext, state| {
+        cx.update_window(window, |_, w, cx| {
+            view.update(cx, |v, cx| v.receive(state, w, cx))
+        })
+        .unwrap();
+    };
+    present(cx, connected.clone());
+    for gap in [
+        Some(ConnectionState::Disconnected),
+        Some(ConnectionState::Reconnecting { port }),
+        None,
+    ] {
+        cx.update_window(window, |_, w, cx| {
+            w.dispatch_action(Box::new(crate::EraseInstall), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+        let still_attached = gap.is_none();
+        if let Some(connection) = gap {
+            present(
+                cx,
+                Presentation {
+                    connection,
+                    ..Default::default()
+                },
+            );
+        }
+        present(cx, connected.clone());
+        cx.simulate_prompt_answer("Erase and install");
+        cx.run_until_parked();
+        // The preview worker has a closed command channel. Only a valid approval reaches it.
+        cx.update(|cx| {
+            assert_eq!(
+                view.read(cx).local_error.as_deref(),
+                still_attached.then_some("The Stick connection closed.")
+            )
+        });
+    }
+}
+
+#[gpui_kit::test]
 fn importing_with_the_editor_open_survives_immediate_quit(cx: &mut TestAppContext) {
     let (handle, view) = open_device(cx);
     cx.update_window(handle, |_, w, cx| {
