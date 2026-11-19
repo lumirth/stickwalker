@@ -320,60 +320,70 @@ impl StickView {
         )
         .into_any_element()
     }
+
+    fn footer_message(&self) -> Option<(FooterKind, String)> {
+        use FooterKind::{Error, Restart, Status, Update};
+        if let Some(error) = self.local_error.as_ref().or(self.state.error.as_ref()) {
+            return Some((Error, error.clone()));
+        }
+        if let Some(status) = self.state.status.as_deref().or_else(|| {
+            self.pending_install
+                .as_ref()
+                .map(|install| install.status())
+        }) {
+            return Some((Status, status.into()));
+        }
+        let update = &self.updates.state;
+        let message = match update {
+            AppUpdate::Available(release) => {
+                return Some((
+                    Update,
+                    format!("Stickwalker Desktop {} is available", release.version),
+                ));
+            }
+            AppUpdate::ReadyToRestart { .. } => return Some((Restart, "App update ready".into())),
+            AppUpdate::Failed(error) => return Some((Error, error.clone())),
+            AppUpdate::Restarting => "Restarting to update…".into(),
+            AppUpdate::Downloading { percent, .. } => percent
+                .map(|p| format!("Downloading app update · {p}%"))
+                .unwrap_or_else(|| "Downloading app update…".into()),
+            #[cfg(not(target_os = "macos"))]
+            AppUpdate::ReadyToInstall(_) => "App update downloaded".into(),
+            AppUpdate::Installing => "Installing app update…".into(),
+            AppUpdate::Checking { background: false }
+                if self.latest_check == CheckFeedback::App =>
+            {
+                "Checking for app updates…".into()
+            }
+            AppUpdate::UpToDate if self.latest_check == CheckFeedback::App => {
+                "Stickwalker Desktop is up to date".into()
+            }
+            _ if self.latest_check == CheckFeedback::Firmware && self.state.checking_firmware => {
+                "Checking for firmware updates…".into()
+            }
+            _ if self.latest_check == CheckFeedback::Firmware => {
+                self.state.firmware_feedback.clone()?
+            }
+            _ => return None,
+        };
+        Some((Status, message))
+    }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FooterKind {
+    Status,
+    Error,
+    Update,
+    Restart,
+}
+
 impl Render for StickView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = self.device_panel(cx);
-        let update = &self.updates.state;
-        let banner = match update {
-            AppUpdate::Restarting => Some("Restarting to update…".into()),
-            AppUpdate::Available(release) => Some(format!(
-                "Stickwalker Desktop {} is available",
-                release.version
-            )),
-            AppUpdate::ReadyToRestart { .. } => Some("App update ready".into()),
-            AppUpdate::Downloading { percent, .. } => Some(
-                percent
-                    .map(|p| format!("Downloading app update · {p}%"))
-                    .unwrap_or_else(|| "Downloading app update…".into()),
-            ),
-            #[cfg(not(target_os = "macos"))]
-            AppUpdate::ReadyToInstall(_) => Some("App update downloaded".into()),
-            AppUpdate::Installing => Some("Installing app update…".into()),
-            AppUpdate::Failed(error) => Some(error.clone()),
-            _ => None,
-        };
-        let device_error = self.local_error.is_some() || self.state.error.is_some();
-        let device_message = self
-            .local_error
-            .as_ref()
-            .or(self.state.error.as_ref())
-            .or(self.state.status.as_ref());
-        let has_error =
-            device_error || (device_message.is_none() && matches!(update, AppUpdate::Failed(_)));
-        let message = device_message.cloned().or(banner).or_else(|| {
-            if let Some(install) = &self.pending_install {
-                return Some(install.status().into());
-            }
-            match (self.latest_check, update) {
-                (CheckFeedback::App, AppUpdate::Checking { background: false }) => {
-                    Some("Checking for app updates…".into())
-                }
-                (CheckFeedback::App, AppUpdate::UpToDate) => {
-                    Some("Stickwalker Desktop is up to date".into())
-                }
-                (CheckFeedback::Firmware, _) if self.state.checking_firmware => {
-                    Some("Checking for firmware updates…".into())
-                }
-                (CheckFeedback::Firmware, _) => self.state.firmware_feedback.clone(),
-                _ => None,
-            }
-        });
-        let show_update = device_message.is_none()
-            && matches!(
-                update,
-                AppUpdate::Available(_) | AppUpdate::ReadyToRestart { .. }
-            );
+        let (kind, message) = self.footer_message().unzip();
+        let has_error = kind == Some(FooterKind::Error);
+        let show_update = matches!(kind, Some(FooterKind::Update | FooterKind::Restart));
         let footer = feedback(message, has_error, cx)
             .when(has_error, |row| {
                 row.child(
@@ -397,7 +407,7 @@ impl Render for StickView {
                 row.child(
                     Button::new("app-update")
                         .xsmall()
-                        .label(if matches!(update, AppUpdate::ReadyToRestart { .. }) {
+                        .label(if kind == Some(FooterKind::Restart) {
                             "Restart"
                         } else {
                             "Update app"
@@ -505,6 +515,61 @@ mod tests {
         AppContext, Bounds, Point, TestAppContext, VisualTestContext, WindowBounds, WindowOptions,
         px, size,
     };
+
+    #[gpui_kit::test]
+    fn firmware_download_takes_priority_over_an_available_app_update(cx: &mut TestAppContext) {
+        use super::FooterKind;
+        use crate::device_window::tests::open_device;
+        use gpui_updater_core::{Asset, Release};
+        use host::worker::{Command, Presentation};
+
+        let (window, view) = open_device(cx);
+        let mut ui = VisualTestContext::from_window(window, cx);
+        let release = Release::new("1.2.3".parse().unwrap(), Asset::new("Stickwalker", "", 0));
+        let banner = Some((
+            FooterKind::Update,
+            "Stickwalker Desktop 1.2.3 is available".into(),
+        ));
+        ui.update(|w, cx| {
+            view.update(cx, |v, cx| {
+                v.show_state(4, w, cx);
+                v.preview = None;
+                v.state.firmware = None;
+                v.updates.state = AppUpdate::Available(Box::new(release));
+                assert_eq!(v.footer_message(), banner);
+                cx.notify();
+            });
+            w.draw(cx).clear(cx);
+        });
+        let banner_bounds = ui.debug_bounds("feedback-message").unwrap();
+        let (_download, result) = async_channel::bounded(1);
+        ui.update(|w, cx| {
+            view.update(cx, |v, cx| {
+                v.await_firmware(
+                    v.state.connection.target().unwrap(),
+                    Command::Update,
+                    result,
+                    cx,
+                );
+                v.refresh_shell(cx);
+                assert_eq!(
+                    v.footer_message(),
+                    Some((FooterKind::Status, "Downloading firmware…".into()))
+                );
+            });
+            w.draw(cx).clear(cx);
+        });
+        assert!(ui.debug_bounds("feedback-message").unwrap().size.width > banner_bounds.size.width);
+        ui.update(|w, cx| {
+            view.update(cx, |v, cx| {
+                v.present(Presentation::default(), w, cx);
+                assert_eq!(v.footer_message(), banner);
+            });
+            w.draw(cx).clear(cx);
+        });
+        assert_eq!(ui.debug_bounds("feedback-message").unwrap(), banner_bounds);
+    }
+
     #[gpui_kit::test]
     fn errors_and_update_notices_leave_save_actions_in_place(cx: &mut TestAppContext) {
         let (handle, view) = cx.update(|cx| {

@@ -2,7 +2,7 @@ use super::{ExitState, FileAction, PendingExit, StickView};
 use crate::updater::AppUpdate;
 use gpui_kit::{AnyWindowHandle, AppContext, Entity, TestAppContext, WindowOptions};
 
-fn open_device(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<StickView>) {
+pub(super) fn open_device(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<StickView>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |w, cx| {
