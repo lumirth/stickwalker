@@ -60,7 +60,8 @@ typedef struct {
     volatile uint32_t read_count;
     volatile uint32_t last_transmit_pulse;
     volatile uint32_t transmit_started;
-    volatile uint32_t overflow;
+    volatile uint32_t receive_turn;  // Published by CPU0 after draining the ring.
+    volatile uint32_t overflow_turn; // Published by CPU1 for the batch it dropped.
     uint32_t floating_mux;
     InfraredCalibration calibration;
     uint32_t epoch_cycle;
@@ -203,6 +204,7 @@ static void IRAM_ATTR __attribute__((noinline)) capture_loop(void)
             continue;
         }
 
+        uint32_t turn = acquire_word(&receiver.receive_turn);
         bool ring_has_room = write_count - acquire_word(&receiver.read_count) <=
                              OBSERVATION_CAPACITY - PUBLISH_INTERVAL;
         InfraredObservation *records = ring_has_room
@@ -224,7 +226,7 @@ static void IRAM_ATTR __attribute__((noinline)) capture_loop(void)
             write_count += PUBLISH_INTERVAL;
             publish_word(&receiver.write_count, write_count);
         } else {
-            publish_word(&receiver.overflow, 1);
+            publish_word(&receiver.overflow_turn, turn);
             next_flags = INFRARED_OBSERVATION_REARM;
         }
 
@@ -340,6 +342,13 @@ static void release_receive_pin(void)
     gpio_set_pull_mode(RECEIVE_PIN, GPIO_FLOATING);
 }
 
+static void rearm_receive_turn(uint32_t consumed)
+{
+    publish_word(&receiver.read_count, consumed);
+    publish_word(&receiver.receive_turn, receiver.receive_turn + 1u);
+    infrared_decoder_rearm(&decoder);
+}
+
 static void measure_receiver_noise(void)
 {
     const int64_t deadline = esp_timer_get_time() + NOISE_CALIBRATION_TIMEOUT_US;
@@ -371,11 +380,9 @@ static void measure_receiver_noise(void)
         uint32_t cycle = receiver.observations[published - 1].end_cycle;
         elapsed_cycles += (uint32_t)(cycle - consumed_cycle);
         consumed_cycle = cycle;
-        publish_word(&receiver.read_count, published);
     }
-    publish_word(&receiver.overflow, 0);
     // Keep the measured background, but start the first receive turn cleanly.
-    infrared_decoder_rearm(&decoder);
+    rearm_receive_turn(published);
 }
 
 bool infrared_open(void)
@@ -423,7 +430,8 @@ bool infrared_open(void)
 
     receiver.write_count = 0;
     receiver.read_count = 0;
-    receiver.overflow = 0;
+    receiver.receive_turn = 1;
+    receiver.overflow_turn = 0;
     receiver.epoch_valid = false;
     receiver.calibration = (InfraredCalibration){
         .floating_blocks = INFRARED_INITIAL_FLOAT_BLOCKS
@@ -514,9 +522,7 @@ static void discard_observations(void)
         unsigned last = (available - 1u) & (OBSERVATION_CAPACITY - 1u);
         account_for_cycles(receiver.observations[last].end_cycle);
     }
-    publish_word(&receiver.read_count, available);
-    publish_word(&receiver.overflow, 0);
-    infrared_decoder_rearm(&decoder);
+    rearm_receive_turn(available);
 }
 
 bool infrared_transmit(const uint8_t *bytes, size_t length, uint64_t *ended_us)
@@ -568,7 +574,7 @@ bool infrared_receive(InfraredEvent *event)
     if (!opened || !event) {
         return false;
     }
-    if (acquire_word(&receiver.overflow)) {
+    if (acquire_word(&receiver.overflow_turn) == receiver.receive_turn) {
         discard_observations();
         event->value = 0;
         event->errors = INFRARED_ERROR_OVERRUN;

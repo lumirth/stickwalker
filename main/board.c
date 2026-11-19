@@ -452,20 +452,29 @@ static bool init_imu(void)
     return read_reg(imu, 0x21, &status, 1) && (status & 15) == 1;
 }
 
+static void imu_power_down_unconfigured(void)
+{
+    write_reg(imu, 0x7d, 0);
+    imu_state = IMU_UNINIT;
+}
+
 void board_motion(MotionMode mode)
 {
     if (imu_state == (ImuState)mode) {
         return;
     }
     if (imu_state == IMU_UNINIT) {
-        if (mode == MOTION_OFF || now_us() < next_sensor) {
+        if (now_us() < next_sensor) {
             return;
         }
         next_sensor = now_us() + 2000000;
-        if (!init_imu()) return;
+        if (mode == MOTION_OFF || !init_imu()) {
+            imu_power_down_unconfigured();
+            return;
+        }
     }
     if (!write_reg(imu, 0x7c, 0)) {
-        imu_state = IMU_UNINIT;
+        imu_power_down_unconfigured();
         return;
     }
     esp_rom_delay_us(450);
@@ -483,8 +492,11 @@ void board_motion(MotionMode mode)
     } else {
         configured = write_reg(imu, 0x7d, 0);
     }
-    imu_state = configured && write_reg(imu, 0x7c, mode == MOTION_LIVE ? 0 : 1)
-        ? (ImuState)mode : IMU_UNINIT;
+    if (configured && write_reg(imu, 0x7c, mode == MOTION_LIVE ? 0 : 1)) {
+        imu_state = (ImuState)mode;
+    } else {
+        imu_power_down_unconfigured();
+    }
     motion.count = 0;
     motion.clock_us = 0;
     motion.period_q16 = 40000u << 16;
@@ -553,7 +565,7 @@ void board_motion_drain(void)
     return;
 failed:
     motion.count = 0;
-    imu_state = IMU_UNINIT;
+    imu_power_down_unconfigured();
 }
 
 uint64_t board_motion_until(void)
@@ -604,7 +616,7 @@ bool board_acceleration(uint64_t sample_us, int8_t out[3])
         return true;
     }
     if (!read_reg(imu, 0x03, data, sizeof(data))) {
-        imu_state = IMU_UNINIT;
+        imu_power_down_unconfigured();
         return false;
     }
     if (imu_state == IMU_IDLE) esp_rom_delay_us(400);

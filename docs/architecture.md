@@ -42,7 +42,7 @@ A routine firmware update flushes the current game and preferences, then flashes
 
 For earlier Stickwalker previews, the host reads the old LittleFS or raw journal and decodes the EEPROM before writing any overlapping sectors. It stages the EEPROM at the start of the new save partition and writes the partition table last. The new firmware imports the EEPROM on boot. The host translates the old control and display settings and sends them over USB for the firmware to save. A recognizable but damaged legacy save stops a normal install.
 
-Desktop checks `firmware-feed/firmware.json` for new releases. It downloads the images from the versioned firmware release, verifies their hashes and flash layout, and stores the package for later installs. Opening a local firmware file selects it for the rest of the session, even if a newer release arrives. Desktop app updates use a separate feed. [Release instructions](../crates/sw-desktop/release.md)
+Desktop checks `firmware-feed/firmware.json` for new releases. It downloads the images from the versioned firmware release, verifies their hashes and flash layout, and stores the package for later installs. Open Firmware selects a local package. A successful manual firmware check switches back to the online release. Desktop app updates use a separate feed. [Release instructions](../crates/sw-desktop/release.md)
 
 ## Power controller recovery
 

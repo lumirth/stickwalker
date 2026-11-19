@@ -2,6 +2,7 @@ use anyhow::{Result, bail, ensure};
 use serialport::SerialPort;
 use std::{
     io::{self, Read, Write},
+    sync::atomic::{AtomicU16, Ordering},
     time::{Duration, Instant},
 };
 
@@ -84,7 +85,6 @@ impl Decoder {
 
 pub struct Session {
     port: Box<dyn SerialPort>,
-    sequence: u16,
     decoder: Decoder,
     identified: bool,
 }
@@ -102,7 +102,6 @@ impl Session {
     pub(crate) fn from_port(port: Box<dyn SerialPort>) -> Self {
         Self {
             port,
-            sequence: 0,
             decoder: Decoder::default(),
             identified: false,
         }
@@ -130,10 +129,11 @@ impl Session {
             payload.len() <= 4096,
             "The request to your Stick is too large."
         );
-        self.sequence = self.sequence.wrapping_add(1);
+        static NEXT_SEQUENCE: AtomicU16 = AtomicU16::new(1);
+        let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let until = Instant::now() + timeout;
-        send_frame(&mut self.port, &frame(op, self.sequence, payload), until)?;
-        receive(&mut self.port, &mut self.decoder, self.sequence, op, until)
+        send_frame(&mut self.port, &frame(op, sequence, payload), until)?;
+        receive(&mut self.port, &mut self.decoder, sequence, op, until)
     }
 }
 

@@ -27,6 +27,7 @@ pub enum Command {
     Select(Port),
     DismissError,
     CheckFirmware,
+    DownloadFirmware(async_channel::Sender<()>),
     OpenPackage(PathBuf),
     Update,
     CleanInstall,
@@ -63,6 +64,21 @@ pub struct DeviceTarget {
     port: Port,
     mac: Option<String>,
 }
+impl DeviceTarget {
+    /// An unmanaged Stick can identify itself while its firmware is downloading.
+    pub fn matches(&self, current: &Self) -> bool {
+        if !self.port.same_device(&current.port) {
+            return false;
+        }
+        match (&self.mac, &current.mac) {
+            (Some(expected), _) => current.mac.as_ref() == Some(expected),
+            (None, Some(reported)) => usb::mac_id(&self.port.serial)
+                .is_none_or(|expected| usb::mac_id(reported).as_ref() == Some(&expected)),
+            (None, None) => true,
+        }
+    }
+}
+
 struct Work {
     target: Option<DeviceTarget>,
     command: Command,
@@ -380,6 +396,9 @@ impl WorkerState<'_> {
             .is_some_and(|deadline| now >= deadline)
         {
             self.active.try_open(&self.state.ports, Session::open);
+            if matches!(self.active, ActiveDevice::Managed { .. }) {
+                self.state.firmware_feedback = None;
+            }
             self.poll = Instant::now() + Duration::from_millis(500);
         }
         if now >= self.poll {
@@ -388,48 +407,37 @@ impl WorkerState<'_> {
         }
     }
 
-    fn firmware_ready(&mut self) -> Option<Box<Work>> {
-        let (reason, result) = self.firmware.finish()?;
+    fn firmware_ready(&mut self) {
+        let Some((explicit_check, result)) = self.firmware.finish() else {
+            return;
+        };
         self.state.checking_firmware = false;
-        match reason {
-            Request::Background => {}
-            Request::Check => {
+        if let Err(error) = result {
+            eprintln!("Firmware download failed: {error:#}");
+            if explicit_check {
                 self.state.firmware_feedback = None;
-                match result {
-                    Ok(()) => {
-                        let latest = self.firmware.release_version()?;
-                        let feedback = match self.state.connection.info() {
-                            Some(info)
-                                if Version::parse(&info.version)
-                                    .is_ok_and(|v| !latest.cmp_precedence(&v).is_gt()) =>
-                            {
-                                format!("Firmware {} is up to date", info.version)
-                            }
-                            _ => format!("Firmware {latest} is available"),
-                        };
-                        self.state.firmware_feedback = Some(feedback);
-                    }
-                    Err(_) => {
-                        self.state.error = Some("Couldn’t check for firmware updates.".into())
-                    }
-                }
+                self.state.error = Some("Couldn’t check for firmware updates.".into());
             }
-            Request::Install(work) => {
-                self.state.status = None;
-                if result.is_ok() {
-                    self.discover = Instant::now();
-                    self.poll = self.discover;
-                    return Some(work);
+        } else if explicit_check && let Some(latest) = self.firmware.release_version() {
+            self.state.firmware_feedback = Some(match self.state.connection.info() {
+                Some(info)
+                    if Version::parse(&info.version)
+                        .is_ok_and(|v| !latest.cmp_precedence(&v).is_gt()) =>
+                {
+                    format!("Firmware {} is up to date", info.version)
                 }
-                self.state.error = Some("Couldn’t download firmware. Check your internet connection or open a local firmware file.".into());
-            }
+                _ => format!("Firmware {latest} is available"),
+            });
         }
-        None
     }
 
     fn handle_command(&mut self, work: Box<Work>) {
         if work.command.targets_device()
-            && (work.target != self.state.connection.target()
+            && (!work
+                .target
+                .as_ref()
+                .zip(self.state.connection.target().as_ref())
+                .is_some_and(|(original, current)| original.matches(current))
                 || !work.command.allowed(&self.state.connection))
         {
             if let Command::SetSettings { revision, .. } = work.command {
@@ -439,14 +447,6 @@ impl WorkerState<'_> {
             return;
         }
         self.state.error = None;
-        if matches!(work.command, Command::Update | Command::CleanInstall)
-            && self.firmware.selected().is_none()
-        {
-            self.state.status = Some("Downloading firmware…".into());
-            self.state.firmware_feedback = None;
-            self.fetch(Request::Install(work));
-            return;
-        }
         if work.operation.is_some() {
             self.state.status = match work.command {
                 Command::Export(_) => Some("Exporting EEPROM…".into()),
@@ -486,8 +486,16 @@ impl WorkerState<'_> {
                 self.state.firmware_feedback = Some("Checking for firmware updates…".into());
                 self.fetch(Request::Check);
             }
+            Command::DownloadFirmware(reply) => {
+                if self.firmware.selected().is_some() {
+                    let _ = reply.try_send(());
+                } else {
+                    self.fetch(Request::Install(reply));
+                }
+            }
             Command::OpenPackage(path) => {
                 self.firmware.open(&path)?;
+                self.state.checking_firmware = false;
                 self.state.firmware_feedback = None;
             }
             Command::SetSettings { revision, settings } => {
@@ -610,7 +618,7 @@ fn run(
             .unwrap_or_else(|| rx.recv_timeout(wait))
         {
             Ok(Message::FirmwareReady) => {
-                deferred = worker.firmware_ready().map(Message::Command);
+                worker.firmware_ready();
             }
             Ok(Message::Command(mut work)) => {
                 if matches!(work.command, Command::Shutdown) {
@@ -676,6 +684,26 @@ mod tests {
             state.presentation(),
             ConnectionState::Disconnected
         ));
+    }
+    #[test]
+    fn a_download_target_can_learn_its_mac_but_cannot_change_sticks() {
+        let port = Port {
+            path: "COM4".into(),
+            serial: "30EDA0001A20".into(),
+        };
+        let setup = DeviceTarget { port, mac: None };
+        let ready = DeviceTarget {
+            mac: Some("30:ed:a0:00:1a:20".into()),
+            ..setup.clone()
+        };
+        let other = DeviceTarget {
+            mac: Some("30:ed:a0:00:8b:04".into()),
+            ..setup.clone()
+        };
+        assert!(setup.matches(&ready));
+        assert!(!setup.matches(&other));
+        assert!(!ready.matches(&other));
+        assert!(!ready.matches(&setup));
     }
     #[test]
     fn port_labels_use_reported_identity_across_platforms() {

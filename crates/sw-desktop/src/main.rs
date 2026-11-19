@@ -61,6 +61,7 @@ struct MenuState {
     access: DeviceAccess,
     checking_firmware: bool,
     can_install: bool,
+    preparing_install: bool,
     install_label: String,
 }
 struct AppState {

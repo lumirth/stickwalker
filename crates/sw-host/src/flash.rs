@@ -24,8 +24,23 @@ pub fn connect_rom(port: &Port) -> Result<Flasher> {
             .open_native()
         {
             Ok(port) => break port,
+            Err(error)
+                if error.kind()
+                    == serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied) =>
+            {
+                return Err(error).with_context(|| format!("Access to {} was denied. Check port permissions and close other serial apps.", port.path));
+            }
+            // usbser reports both access denied and a missing COM port as NoDevice.
+            // A port still present at this path can report the actual OS error immediately.
+            #[cfg(windows)]
+            Err(error)
+                if error.kind() == serialport::ErrorKind::NoDevice
+                    && ports().is_ok_and(|ports| ports.iter().any(|p| p.path == port.path)) =>
+            {
+                anyhow::bail!("Couldn’t open {}: {error}", port.path)
+            }
             Err(_) if Instant::now() < until => thread::sleep(Duration::from_millis(150)),
-            Err(error) => return Err(error.into()),
+            Err(error) => anyhow::bail!("Couldn’t open {}: {error}", port.path),
         }
     };
     let info = UsbPortInfo {
@@ -42,14 +57,17 @@ pub fn connect_rom(port: &Port) -> Result<Flasher> {
         ResetBeforeOperation::DefaultReset,
         115200,
     );
-    Ok(Flasher::connect(
+    Flasher::connect(
         connection,
         true,
         true,
         true,
         Some(Chip::Esp32s3),
         Some(921600),
-    )?)
+    )
+    .context(
+        "Hold the Stick’s Power button until its green light blinks, release it, then try again.",
+    )
 }
 struct Progress<'a> {
     report: &'a mut dyn FnMut(&str, Option<u8>),
@@ -107,6 +125,36 @@ fn app_fits(table: &[u8], offset: usize, size: usize, settings: (usize, usize)) 
     crate::release::partition(table, "factory")
         .is_some_and(|(at, capacity)| at == offset && size <= capacity)
         && crate::release::partition(table, "nvs") == Some(settings)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InstallStorage {
+    Erase,
+    Current,
+    NativeBanks,
+    Legacy { public: bool, raw_intake: bool },
+}
+
+fn install_storage(
+    fresh: bool,
+    table: &[u8],
+    mut read: impl FnMut(usize, usize) -> Result<Vec<u8>>,
+) -> Result<InstallStorage> {
+    if fresh {
+        return Ok(InstallStorage::Erase);
+    }
+    if crate::release::partition(table, "walker2") == Some((save::WALKER, 0x1f0000)) {
+        return Ok(InstallStorage::Current);
+    }
+    let public = crate::release::partition(table, "spiffs") == Some((0x670000, 0x180000));
+    let native = read(save::WALKER + 0x10000 + 68, 4)? == b"SWK6"
+        || read(save::WALKER + 0xf0000 + 68, 4)? == b"SWK6";
+    if native && !public {
+        return Ok(InstallStorage::NativeBanks);
+    }
+    // An active public table takes priority over both leftover banks and their old intake.
+    let raw_intake = !native && read(save::WALKER, 8)? == b"nintendo";
+    Ok(InstallStorage::Legacy { public, raw_intake })
 }
 
 fn write_intake(
@@ -169,9 +217,7 @@ pub fn install(
         thread::sleep(Duration::from_millis(200));
     }
     progress("Preparing Stickwalker", None);
-    let mut flasher = connect_rom(port).context(
-        "Hold the Stick’s Power button until its green light blinks, release it, then try again.",
-    )?;
+    let mut flasher = connect_rom(port)?;
     let actual = flasher.device_info()?;
     ensure!(
         actual.flash_size.size() == save::FLASH as u32,
@@ -187,18 +233,7 @@ pub fn install(
         "The connected Stick changed. Select it again before installing."
     );
     let table = read_region(&mut flasher, 0x8000, 4096)?;
-    let current = crate::release::partition(&table, "walker2") == Some((save::WALKER, 0x1f0000));
-    let public = crate::release::partition(&table, "spiffs") == Some((0x670000, 0x180000));
-    let (native, raw_intake) = if fresh || current {
-        (false, false)
-    } else {
-        let a = read_region(&mut flasher, save::WALKER + 0x10000, 72)?;
-        let b = read_region(&mut flasher, save::WALKER + 0xf0000, 72)?;
-        let native = a[68..72] == *b"SWK6" || b[68..72] == *b"SWK6";
-        let raw_intake =
-            !native && read_region(&mut flasher, save::WALKER, 8)?.starts_with(b"nintendo");
-        (native, raw_intake)
-    };
+    let storage = install_storage(fresh, &table, |at, len| read_region(&mut flasher, at, len))?;
     let image_size: usize = images.iter().map(|(_, b)| b.len()).sum();
     let mut saved = 0;
     let mut writes = Vec::new();
@@ -215,103 +250,108 @@ pub fn install(
         );
         Ok(())
     };
-    if fresh {
-        flasher.erase_region(
-            manifest.settings.offset as u32,
-            manifest.settings.size as u32,
-        )?;
-        flasher.erase_region(manifest.state.offset as u32, manifest.state.size as u32)?;
-        writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
-    } else if current || native {
-        check_storage()?;
-        // The table may already be complete after an interrupted legacy install.
-        if !managed {
-            let nvs = read_region(
-                &mut flasher,
-                manifest.settings.offset,
-                manifest.settings.size,
+    match storage {
+        InstallStorage::Erase => {
+            flasher.erase_region(
+                manifest.settings.offset as u32,
+                manifest.settings.size as u32,
             )?;
-            migrated = crate::legacy::migrated_preferences(&nvs);
-        }
-        // A save fault is repaired live after boot; reinstalling never clears it.
-        if current
-            && managed
-            && app_fits(
-                &table,
-                app.offset,
-                app_bytes.len(),
-                (manifest.settings.offset, manifest.settings.size),
-            )
-        {
-            writes.push((*app, app_bytes));
-        } else {
+            flasher.erase_region(manifest.state.offset as u32, manifest.state.size as u32)?;
             writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
         }
-    } else {
-        // A torn table may lack the spiffs entry while the old save is intact.
-        progress("Reading the existing save", None);
-        let raw = read_region(&mut flasher, 0x670000, 0x180000)?;
-        let eeprom = match save::classify_public_partition(&raw) {
-            save::PublicPartition::StickwalkerSave(image) => Some(image),
-            // The completed intake survives retirement of the old filesystem.
-            _ if raw_intake => None,
-            save::PublicPartition::EmptyOrForeign => {
-                flasher.erase_region(
-                    manifest.settings.offset as u32,
-                    manifest.settings.size as u32,
-                )?;
-                flasher.erase_region(manifest.state.offset as u32, manifest.state.size as u32)?;
-                None
-            }
-            save::PublicPartition::DamagedSave(error) => {
-                return Err(error.context("The older save is damaged. Nothing was erased. Use Device → Erase and Install for a fresh walker."));
-            }
-        };
-        if eeprom.is_some() || raw_intake {
+        InstallStorage::Current | InstallStorage::NativeBanks => {
             check_storage()?;
-            let nvs = read_region(&mut flasher, 0x9000, 0x5000)?;
-            migrated = if public || eeprom.is_some() {
-                Some(crate::legacy::preferences(&nvs))
+            // The table may already be complete after an interrupted legacy install.
+            if !managed {
+                let nvs = read_region(
+                    &mut flasher,
+                    manifest.settings.offset,
+                    manifest.settings.size,
+                )?;
+                migrated = crate::legacy::migrated_preferences(&nvs);
+            }
+            // A save fault is repaired live after boot; reinstalling never clears it.
+            if storage == InstallStorage::Current
+                && managed
+                && app_fits(
+                    &table,
+                    app.offset,
+                    app_bytes.len(),
+                    (manifest.settings.offset, manifest.settings.size),
+                )
+            {
+                writes.push((*app, app_bytes));
             } else {
-                crate::legacy::migrated_preferences(&nvs)
-            };
-            // A cut during the final sector can expose the marker early. The
-            // legacy source is still intact then, even if its table entry is gone.
-            if let Some(image) = eeprom {
-                let staged = if raw_intake {
-                    Some(read_region(&mut flasher, save::WALKER, save::EEPROM)?)
-                } else {
-                    None
-                };
-                write_intake(&image, staged.as_deref(), |offset, bytes| {
-                    flasher.write_bin_to_flash(
-                        offset as u32,
-                        bytes,
-                        &mut Progress {
-                            report: progress,
-                            units: 0,
-                            region: bytes.len(),
-                            previous: saved,
-                            total: image_size + save::EEPROM,
-                            label: "Transferring save",
-                        },
-                    )?;
-                    saved += bytes.len();
-                    Ok(())
-                })?;
+                writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
             }
-            // Only these markers block the firmware's raw intake. Usually both
-            // public checkpoint copies can stay intact until the first boot.
-            for header in [0x620000, 0x621000, 0x700000, 0x701000] {
-                let magic = read_region(&mut flasher, header + 68, 4)?;
-                if magic.starts_with(b"SWK") && (b'0'..=b'6').contains(&magic[3]) {
-                    flasher.erase_region(header as u32, 4096)?;
-                }
-            }
-            // Keep the original NVS pages readable until the new firmware confirms them.
-            flasher.erase_region(0xe000, 4096)?;
         }
-        writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
+        InstallStorage::Legacy { public, raw_intake } => {
+            // A torn table may lack the spiffs entry while the old save is intact.
+            progress("Reading the existing save", None);
+            let raw = read_region(&mut flasher, 0x670000, 0x180000)?;
+            let eeprom = match save::classify_public_partition(&raw) {
+                save::PublicPartition::StickwalkerSave(image) => Some(image),
+                // The completed intake survives retirement of the old filesystem.
+                _ if raw_intake => None,
+                save::PublicPartition::EmptyOrForeign => {
+                    flasher.erase_region(
+                        manifest.settings.offset as u32,
+                        manifest.settings.size as u32,
+                    )?;
+                    flasher
+                        .erase_region(manifest.state.offset as u32, manifest.state.size as u32)?;
+                    None
+                }
+                save::PublicPartition::DamagedSave(error) => {
+                    return Err(error.context("The older save is damaged. Nothing was erased. Use Device → Erase and Install for a fresh walker."));
+                }
+            };
+            if eeprom.is_some() || raw_intake {
+                check_storage()?;
+                let nvs = read_region(&mut flasher, 0x9000, 0x5000)?;
+                migrated = if public || eeprom.is_some() {
+                    Some(crate::legacy::preferences(&nvs))
+                } else {
+                    crate::legacy::migrated_preferences(&nvs)
+                };
+                // A cut during the final sector can expose the marker early. The
+                // legacy source is still intact then, even if its table entry is gone.
+                if let Some(image) = eeprom {
+                    let staged = if raw_intake {
+                        Some(read_region(&mut flasher, save::WALKER, save::EEPROM)?)
+                    } else {
+                        None
+                    };
+                    write_intake(&image, staged.as_deref(), |offset, bytes| {
+                        flasher.write_bin_to_flash(
+                            offset as u32,
+                            bytes,
+                            &mut Progress {
+                                report: progress,
+                                units: 0,
+                                region: bytes.len(),
+                                previous: saved,
+                                total: image_size + save::EEPROM,
+                                label: "Transferring save",
+                            },
+                        )?;
+                        saved += bytes.len();
+                        Ok(())
+                    })?;
+                }
+                // Only these markers block the firmware's raw intake. Usually both
+                // public checkpoint copies can stay intact until the first boot.
+                for header in [0x620000, 0x621000, 0x700000, 0x701000] {
+                    let magic = read_region(&mut flasher, header + 68, 4)?;
+                    if magic.starts_with(b"SWK") && (b'0'..=b'6').contains(&magic[3]) {
+                        flasher.erase_region(header as u32, 4096)?;
+                    }
+                }
+                // Keep the original NVS pages readable until the new firmware confirms them.
+                flasher.erase_region(0xe000, 4096)?;
+            }
+            writes.extend(images.iter().map(|(image, bytes)| (*image, bytes)));
+        }
     }
     writes.sort_by_key(|(image, _)| image.kind == ImageKind::Partitions);
     let total = saved + writes.iter().map(|(_, b)| b.len()).sum::<usize>();
@@ -368,6 +408,32 @@ pub fn install(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_public_table_migrates_its_save_even_with_a_leftover_native_bank() {
+        let mut table = [0u8; 32];
+        table[..2].copy_from_slice(&[0xaa, 0x50]);
+        table[4..8].copy_from_slice(&0x670000u32.to_le_bytes());
+        table[8..12].copy_from_slice(&0x180000u32.to_le_bytes());
+        table[12..18].copy_from_slice(b"spiffs");
+        let signature = |at, _| {
+            Ok(if at == save::WALKER {
+                b"nintendo".to_vec()
+            } else {
+                b"SWK6".to_vec()
+            })
+        };
+        assert_eq!(
+            install_storage(false, &table, signature).unwrap(),
+            InstallStorage::Legacy {
+                public: true,
+                raw_intake: false
+            }
+        );
+        assert_eq!(
+            install_storage(false, &[], signature).unwrap(),
+            InstallStorage::NativeBanks
+        );
+    }
     #[test]
     fn interrupted_intake_publishes_its_header_after_the_body() {
         let mut source = vec![0x56; save::EEPROM];

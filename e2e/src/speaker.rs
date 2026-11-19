@@ -152,16 +152,20 @@ pub fn sequence(rig: &mut Rig, output: &Path) -> Result<(), Box<dyn std::error::
                 .collect();
             // Timer W's 32768 Hz clock and retail compare values 23, 40, 81, 54.
             // Count actual output periods, rather than observing host tone calls.
+            const BACK_FIRST_COMPARE: i32 = 40;
+            let matches_pitch = |a: usize, b: usize, compare: i32| {
+                let expected = f64::from(speaker.rate) * f64::from(compare + 1) / 32768.0;
+                ((b - a) as f64 - expected).abs() < 1.5
+            };
             for (compare, minimum_ms, maximum_ms) in [
                 (23, 20.0, 85.0),
-                (40, 27.0, 40.0),
+                (BACK_FIRST_COMPARE, 27.0, 40.0),
                 (81, 24.0, 36.0),
                 (54, 65.0, 80.0),
             ] {
-                let expected = f64::from(speaker.rate) * f64::from(compare + 1) / 32768.0;
                 let periods = crossings
                     .windows(2)
-                    .filter(|p| ((p[1] - p[0]) as f64 - expected).abs() < 1.5)
+                    .filter(|p| matches_pitch(p[0], p[1], compare))
                     .count();
                 let duration = periods as f64 * f64::from(compare + 1) * 1000.0 / 32768.0;
                 if !(minimum_ms..=maximum_ms).contains(&duration) {
@@ -175,17 +179,21 @@ pub fn sequence(rig: &mut Rig, output: &Path) -> Result<(), Box<dyn std::error::
                     32768.0 / f64::from(compare + 1)
                 );
             }
-            let first = pcm.iter().position(|&s| s != 0).ok_or("Silent score")?;
+            // Back can interrupt Confirm at any point, including during a rest.
+            let back = crossings
+                .windows(3)
+                .find(|p| {
+                    matches_pitch(p[0], p[1], BACK_FIRST_COMPARE)
+                        && matches_pitch(p[1], p[2], BACK_FIRST_COMPARE)
+                })
+                .ok_or("Missing first Back note")?[0];
             let last = pcm.iter().rposition(|&s| s != 0).unwrap();
-            let gaps: Vec<_> = pcm[first..=last]
+            let gaps: Vec<_> = pcm[back..=last]
                 .split(|&s| s != 0)
                 .filter(|gap| gap.len() > 48)
                 .map(|gap| gap.len() as f64 * 1000.0 / f64::from(speaker.rate))
                 .collect();
-            // Confirm has two notes. Depending on input/tick phase, either or
-            // both separators can precede the two required Back separators.
-            if !(2..=4).contains(&gaps.len()) || gaps.iter().any(|&ms| !(7.0..=13.0).contains(&ms))
-            {
+            if gaps.len() != 2 || gaps.iter().any(|&ms| !(7.0..=13.0).contains(&ms)) {
                 return Err(format!("Back lost its Timer W separators: {gaps:?} ms").into());
             }
             println!("Back separators: {gaps:?} ms");

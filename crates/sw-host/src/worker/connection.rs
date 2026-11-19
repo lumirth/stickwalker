@@ -308,18 +308,28 @@ fn a_late_boot_promotes_the_same_port_without_rediscovery() {
     };
     assert!(*next_probe > Instant::now() + Duration::from_secs(4));
     *next_probe = Instant::now();
-    let status = protocol::frame(protocol::STATUS, 1, &[]);
-    let mut request = vec![0; status.len()];
-    wire.read_exact(&mut request).unwrap();
-    assert_eq!(request, status);
+    let read_probe = |wire: &mut TTYPort| {
+        let mut decoder = protocol::Decoder::default();
+        let mut byte = [0];
+        loop {
+            wire.read_exact(&mut byte).unwrap();
+            if let Some(raw) = decoder.push(byte[0]) {
+                assert_eq!(raw[3], protocol::STATUS);
+                return u16::from_le_bytes([raw[4], raw[5]]);
+            }
+        }
+    };
+    let stale = read_probe(&mut wire);
     let peer = std::thread::spawn(move || {
         wire.set_timeout(Duration::from_secs(2)).unwrap();
-        wire.read_exact(&mut request).unwrap();
-        assert_eq!(request, status);
+        let sequence = read_probe(&mut wire);
+        assert_ne!(sequence, stale);
         let mut reply = vec![0; 75];
-        reply[65..71].copy_from_slice(&[0x30, 0xed, 0xa0, 0, 0x1a, 0x20]);
         reply.extend(crate::DeviceSettings::default().to_bytes());
-        wire.write_all(&protocol::frame(protocol::STATUS, 1, &reply))
+        wire.write_all(&protocol::frame(protocol::STATUS, stale, &reply))
+            .unwrap();
+        reply[65..71].copy_from_slice(&[0x30, 0xed, 0xa0, 0, 0x1a, 0x20]);
+        wire.write_all(&protocol::frame(protocol::STATUS, sequence, &reply))
             .unwrap();
         wire
     });

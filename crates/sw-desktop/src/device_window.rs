@@ -1,10 +1,14 @@
+mod install;
 pub(crate) mod render;
+#[cfg(all(test, debug_assertions))]
+mod tests;
 use crate::palette_window::selector::{PaletteSelected, PaletteSelector};
 use crate::palette_window::{PaletteAction, PaletteChanged, PaletteEditor};
 use crate::updater::{AppUpdate, Updates};
 use crate::*;
 
-use host::worker::{Command, ConnectionState, Presentation, Worker};
+use host::worker::{Command, Presentation, Worker};
+use install::PendingInstall;
 use std::{sync::atomic::Ordering, time::Duration};
 
 #[derive(Clone, Copy)]
@@ -22,7 +26,13 @@ pub(crate) enum PendingExit {
 enum ExitState {
     Running,
     Draining(PendingExit),
-    Exiting,
+    Exiting(PendingExit),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CheckFeedback {
+    App,
+    Firmware,
 }
 
 pub struct StickView {
@@ -43,7 +53,10 @@ pub struct StickView {
     exit: ExitState,
     local_error: Option<String>,
     device_mac: Option<String>,
-    local_revision: u64,
+    next_revision: u64,
+    pending_revision: Option<u64>,
+    pending_install: Option<PendingInstall>,
+    latest_check: CheckFeedback,
     pub(super) updates: Updates,
     _subscriptions: Vec<Subscription>,
 }
@@ -143,7 +156,7 @@ impl StickView {
         window.on_window_should_close(cx, move |_, cx| {
             owner
                 .update(cx, |view, cx| {
-                    if view.exit == ExitState::Exiting {
+                    if matches!(view.exit, ExitState::Exiting(_)) {
                         return true;
                     }
                     view.request_exit(PendingExit::Quit, cx);
@@ -179,7 +192,10 @@ impl StickView {
             exit: ExitState::Running,
             local_error: None,
             device_mac: None,
-            local_revision: 0,
+            next_revision: 0,
+            pending_revision: None,
+            pending_install: None,
+            latest_check: CheckFeedback::Firmware,
             updates,
             _subscriptions: subscriptions,
         }
@@ -188,13 +204,14 @@ impl StickView {
         if self.exit != ExitState::Running || self.locked() {
             return;
         }
+        self.pending_install = None;
         self.exit = ExitState::Draining(exit);
         if let Some((handle, editor)) = self.editor.clone()
             && let Ok(settings) = handle.update(cx, |_, w, cx| {
                 editor.update(cx, |editor, cx| editor.take_committed_settings(w, cx))
             })
         {
-            self.change_palette(settings, cx);
+            self.submit_palette(settings, cx);
         }
         self.finish_exit(cx);
     }
@@ -202,10 +219,10 @@ impl StickView {
         let ExitState::Draining(exit) = self.exit else {
             return;
         };
-        if self.locked() || (self.editable() && self.state.acked_revision < self.local_revision) {
+        if self.locked() || self.pending_revision.is_some() {
             return;
         }
-        self.exit = ExitState::Exiting;
+        self.exit = ExitState::Exiting(exit);
         match exit {
             PendingExit::Quit => cx.defer(|cx| cx.quit()),
             PendingExit::Restart => {
@@ -235,24 +252,27 @@ impl StickView {
         let device_changed = incoming.is_some() && self.device_mac != incoming;
         if device_changed {
             self.device_mac = incoming;
-            self.local_revision = state.acked_revision;
             if let Some((handle, _)) = self.editor.take() {
                 self._editor_subscription = None;
                 let _ = handle.update(cx, |_, w, _| w.remove_window());
             }
         }
-        if state.failed_revision == Some(self.local_revision) || state.connection.info().is_none() {
-            self.local_revision = state.acked_revision;
+        if device_changed
+            || state.connection.info().is_none()
+            || self
+                .pending_revision
+                .is_some_and(|r| state.acked_revision >= r || state.failed_revision == Some(r))
+        {
+            self.pending_revision = None;
         }
-        if !device_changed
-            && state.acked_revision < self.local_revision
+        if self.pending_revision.is_some()
             && let Some(previous) = self.state.connection.info()
             && let Some(next) = state.connection.info_mut()
         {
             next.settings.active_palette = previous.settings.active_palette;
             next.settings.slots = previous.settings.slots;
         }
-        let settings = if device_changed || state.acked_revision >= self.local_revision {
+        let settings = if self.pending_revision.is_none() {
             state.connection.info().map(|i| i.settings)
         } else {
             None
@@ -278,9 +298,16 @@ impl StickView {
         if !self.worker.hardware_busy.load(Ordering::SeqCst) {
             self.updates.install_downloaded();
         }
+        if self.exit == ExitState::Exiting(PendingExit::Restart)
+            && !matches!(self.updates.state, AppUpdate::Restarting)
+        {
+            self.exit = ExitState::Running;
+        }
+        self.resume_install();
         let access = self.state.connection.access();
         let locked = self.locked();
         let can_install = access.can_install()
+            && self.pending_install.is_none()
             && !locked
             && (access == DeviceAccess::InstallOnly || self.offer_update());
         let install_label = self.install_label();
@@ -289,6 +316,7 @@ impl StickView {
             update_label: self.updates.action_label(),
             updates_supported: self.updates.can_act(),
             checking_firmware: self.state.checking_firmware,
+            preparing_install: self.pending_install.is_some(),
             access,
             can_install,
             install_label,
@@ -336,13 +364,14 @@ impl StickView {
         if self.state.connection.port() == Some(&port) || self.locked() {
             return;
         }
+        self.pending_install = None;
         #[cfg(debug_assertions)]
         if self.preview == Some(8) {
             let mut next = self.state.clone();
             let Some(info) = next.connection.info().cloned() else {
                 return;
             };
-            next.connection = ConnectionState::Ready {
+            next.connection = host::worker::ConnectionState::Ready {
                 info: host::usb::Info {
                     mac: port.serial.clone(),
                     ..info
@@ -354,12 +383,24 @@ impl StickView {
         }
         self.send(Command::Select(port));
     }
-    pub(super) fn send(&self, command: Command) {
+    fn previewing(&self) -> bool {
         #[cfg(debug_assertions)]
-        if self.preview.is_some() {
+        {
+            self.preview.is_some()
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            false
+        }
+    }
+
+    pub(super) fn send(&self, command: Command) {
+        if self.previewing() {
             return;
         }
-        if !self.locked() && command.allowed(&self.state.connection) {
+        if (matches!(command, Command::DismissError) || !self.locked())
+            && command.allowed(&self.state.connection)
+        {
             let _ = self
                 .worker
                 .commands
@@ -371,14 +412,21 @@ impl StickView {
         if self.locked() {
             return;
         }
-        #[cfg(debug_assertions)]
-        if self.preview.is_some() {
+        if self.previewing() {
             return;
         }
         match self.updates.state {
             AppUpdate::ReadyToRestart { .. } => self.request_exit(PendingExit::Restart, cx),
             AppUpdate::Available(_) => self.updates.install(),
-            _ => self.updates.check(false),
+            _ => {
+                self.updates.check(false);
+                if matches!(
+                    self.updates.state,
+                    AppUpdate::Checking { background: false }
+                ) {
+                    self.latest_check = CheckFeedback::App;
+                }
+            }
         }
         self.refresh_shell(cx);
     }
@@ -397,6 +445,10 @@ impl StickView {
         };
         if self.locked() || !available {
             return;
+        }
+        if matches!(action, FileAction::Package) {
+            self.pending_install = None;
+            self.refresh_shell(cx);
         }
         let directory = directories::UserDirs::new()
             .map(|dirs| dirs.document_dir().unwrap_or(dirs.home_dir()).to_owned())
@@ -494,7 +546,10 @@ impl StickView {
         } else {
             Command::Reset
         };
-        if self.locked() || !command.allowed(&self.state.connection) {
+        if self.locked()
+            || (erase && self.pending_install.is_some())
+            || !command.allowed(&self.state.connection)
+        {
             return;
         }
         self.confirm(
@@ -533,8 +588,19 @@ impl StickView {
         );
         cx.spawn_in(w, async move |view, cx| {
             if answer.await == Ok(1) {
-                let _ = view.update(cx, |v, _| {
-                    if v.state.connection.target() == target && !v.locked() {
+                let _ = view.update(cx, |v, cx| {
+                    if !target
+                        .as_ref()
+                        .zip(v.state.connection.target().as_ref())
+                        .is_some_and(|(expected, current)| expected.matches(current))
+                        || v.locked()
+                        || !command.allowed(&v.state.connection)
+                    {
+                        return;
+                    }
+                    if matches!(command, Command::Update | Command::CleanInstall) {
+                        v.start_install(command, cx);
+                    } else {
                         v.send(command);
                     }
                 });
@@ -544,44 +610,64 @@ impl StickView {
     }
     fn change_palette(&mut self, settings: host::DeviceSettings, cx: &mut Context<Self>) {
         if self.editable()
-            && self
+            && let Some((handle, editor)) = self.editor.clone()
+        {
+            let _ = handle.update(cx, |_, w, cx| {
+                editor.update(cx, |e, cx| e.receive(Some(settings), true, w, cx))
+            });
+        }
+        self.submit_palette(settings, cx);
+    }
+    fn issue_palette_revision(&mut self) -> u64 {
+        self.next_revision += 1;
+        self.pending_revision = Some(self.next_revision);
+        self.next_revision
+    }
+
+    fn submit_palette(&mut self, settings: host::DeviceSettings, cx: &mut Context<Self>) {
+        if !self.editable()
+            || self
                 .state
                 .connection
                 .info()
-                .is_some_and(|i| i.settings != settings)
+                .is_none_or(|i| i.settings == settings)
         {
-            self.clear_local_error(cx);
-            self.local_revision += 1;
-            if let Some(info) = self.state.connection.info_mut() {
-                info.settings = settings;
-            }
-            let picker = self.palette.clone();
-            let handle = self.window;
-            let owner = cx.weak_entity();
-            cx.defer(move |cx| {
-                let Some(entity) = owner.upgrade() else {
-                    return;
-                };
-                let view = entity.read(cx);
-                if let Some(info) = view.state.connection.info() {
-                    let latest = info.settings;
-                    let enabled = view.editable();
-                    let _ = handle.update(cx, |_, w, cx| {
-                        picker.update(cx, |p, cx| p.receive(Some(latest), enabled, w, cx))
-                    });
-                }
-            });
-            #[cfg(debug_assertions)]
-            if self.preview.is_some() {
-                self.state.acked_revision = self.local_revision;
-                cx.notify();
-                return;
-            }
-            self.send(Command::SetSettings {
-                revision: self.local_revision,
-                settings,
-            });
+            return;
         }
+        self.clear_local_error(cx);
+        let revision = self.issue_palette_revision();
+        if self.previewing() {
+            self.state.acked_revision = revision;
+            self.pending_revision = None;
+        } else if let Err(error) = self.worker.commands.send(
+            self.state.connection.target(),
+            Command::SetSettings { revision, settings },
+        ) {
+            self.pending_revision = None;
+            self.local_error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        if let Some(info) = self.state.connection.info_mut() {
+            info.settings = settings;
+        }
+        let picker = self.palette.clone();
+        let handle = self.window;
+        let owner = cx.weak_entity();
+        cx.defer(move |cx| {
+            let Some(entity) = owner.upgrade() else {
+                return;
+            };
+            let view = entity.read(cx);
+            if let Some(info) = view.state.connection.info() {
+                let latest = info.settings;
+                let enabled = view.editable();
+                let _ = handle.update(cx, |_, w, cx| {
+                    picker.update(cx, |p, cx| p.receive(Some(latest), enabled, w, cx))
+                });
+            }
+        });
+        cx.notify();
     }
     pub(super) fn palette_file(
         &mut self,
@@ -687,7 +773,7 @@ impl StickView {
             Ok((handle, editor)) => {
                 self._editor_subscription =
                     Some(cx.subscribe(&editor, |v, _, event: &PaletteChanged, cx| {
-                        v.change_palette(event.0, cx)
+                        v.submit_palette(event.0, cx)
                     }));
                 self.editor = Some((handle, editor));
             }
@@ -745,16 +831,5 @@ impl StickView {
         } else {
             "Firmware Up to Date".into()
         }
-    }
-    pub(super) fn install(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        self.clear_local_error(cx);
-        if !cx.global::<AppState>().menu.can_install {
-            return;
-        }
-        if matches!(self.state.connection, ConnectionState::Unmanaged { .. }) {
-            self.confirm(&format!("Install Stickwalker on {}?",self.device_label()), "This replaces the device’s current software. Existing Stickwalker saves and settings are kept.", "Install", Command::Update, w, cx);
-            return;
-        }
-        self.send(Command::Update);
     }
 }

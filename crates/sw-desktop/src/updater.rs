@@ -33,6 +33,7 @@ pub enum AppUpdate {
     #[cfg(not(target_os = "macos"))]
     ReadyToInstall(Artifact),
     Installing,
+    Restarting,
     ReadyToRestart {
         path: Option<PathBuf>,
     },
@@ -204,7 +205,7 @@ impl Updates {
         {
             return true;
         }
-        matches!(self.state, AppUpdate::Installing)
+        matches!(self.state, AppUpdate::Installing | AppUpdate::Restarting)
     }
     pub fn action_label(&self) -> String {
         match &self.state {
@@ -330,6 +331,20 @@ impl Updates {
                     }
                 };
                 self.state = match *event {
+                    DriverEvent::Checking
+                    | DriverEvent::Found(_)
+                    | DriverEvent::Downloading { .. }
+                    | DriverEvent::Installing
+                        if matches!(self.state, AppUpdate::Restarting) =>
+                    {
+                        return;
+                    }
+                    DriverEvent::Failed(error) if matches!(self.state, AppUpdate::Restarting) => {
+                        AppUpdate::failed("Couldn’t restart to update.", error)
+                    }
+                    DriverEvent::Settled if matches!(self.state, AppUpdate::Restarting) => {
+                        AppUpdate::Idle
+                    }
                     // Sparkle repeats discovery when the user accepts an offered update.
                     DriverEvent::Checking | DriverEvent::Found(_)
                         if matches!(
@@ -378,7 +393,7 @@ impl Updates {
             }
         }
     }
-    pub fn defer_restart(&self, cx: &mut gpui_kit::App) -> bool {
+    pub fn defer_restart(&mut self, cx: &mut gpui_kit::App) -> bool {
         let AppUpdate::ReadyToRestart { path } = &self.state else {
             return false;
         };
@@ -395,6 +410,7 @@ impl Updates {
             UpdateBackend::Native(_) => cx.defer(|cx| cx.restart()),
             UpdateBackend::Unavailable => return false,
         }
+        self.state = AppUpdate::Restarting;
         true
     }
 }

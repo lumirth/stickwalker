@@ -236,12 +236,21 @@ impl PaletteEditor {
                 }
             }
             let slot_changed = settings.active_palette != self.settings.active_palette;
+            let old_slot = self.settings.slots[self.settings.active_palette.index()];
+            let new_slot = settings.slots[settings.active_palette.index()];
+            let old_shade = self.shade;
             self.settings = settings;
             self.sync(w, cx);
-            if slot_changed {
+            if slot_changed
+                || old_shade != self.shade
+                || old_slot.colors[self.shade] != new_slot.colors[self.shade]
+            {
                 self.sync_hex(w, cx);
             }
-            if slot_changed || !self.name.read(cx).focus_handle(cx).is_focused(w) {
+            if slot_changed
+                || old_slot.name != new_slot.name
+                || !self.name.read(cx).focus_handle(cx).is_focused(w)
+            {
                 self.sync_name(w, cx);
             }
             changed = true;

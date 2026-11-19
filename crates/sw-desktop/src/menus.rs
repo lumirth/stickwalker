@@ -59,7 +59,7 @@ pub(crate) fn refresh_menus(cx: &mut App) {
                 MenuItem::action("Reset Walker…", ResetWalker)
                     .disabled(!state.access.can_write_save() || locked),
                 MenuItem::action("Erase and Install…", EraseInstall)
-                    .disabled(!state.access.can_install() || locked),
+                    .disabled(!state.access.can_install() || locked || state.preparing_install),
             ],
         },
     ]);

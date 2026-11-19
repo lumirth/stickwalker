@@ -1,5 +1,5 @@
 use crate::{
-    device_window::{FileAction, PendingExit, StickView},
+    device_window::{CheckFeedback, FileAction, PendingExit, StickView},
     updater::AppUpdate,
     *,
 };
@@ -154,7 +154,7 @@ impl StickView {
                         Button::new("install")
                             .primary()
                             .label(self.install_label())
-                            .disabled(self.locked())
+                            .disabled(!cx.global::<AppState>().menu.can_install)
                             .on_click(cx.listener(|v, _, w, cx| v.install(w, cx))),
                     )
                 })
@@ -228,7 +228,7 @@ impl StickView {
                                 .primary()
                                 .small()
                                 .label(self.install_label())
-                                .disabled(self.locked() || linking)
+                                .disabled(!cx.global::<AppState>().menu.can_install)
                                 .on_click(cx.listener(|v, _, w, cx| v.install(w, cx))),
                         )
                     }),
@@ -326,7 +326,7 @@ impl Render for StickView {
         let content = self.device_panel(cx);
         let update = &self.updates.state;
         let banner = match update {
-            AppUpdate::UpToDate => Some("Stickwalker Desktop is up to date".into()),
+            AppUpdate::Restarting => Some("Restarting to update…".into()),
             AppUpdate::Available(release) => Some(format!(
                 "Stickwalker Desktop {} is available",
                 release.version
@@ -348,18 +348,27 @@ impl Render for StickView {
             .local_error
             .as_ref()
             .or(self.state.error.as_ref())
-            .or(self.state.status.as_ref())
-            .or(self
-                .state
-                .firmware_feedback
-                .as_ref()
-                .filter(|_| self.state.checking_firmware));
+            .or(self.state.status.as_ref());
         let has_error =
             device_error || (device_message.is_none() && matches!(update, AppUpdate::Failed(_)));
-        let message = device_message
-            .cloned()
-            .or(banner)
-            .or_else(|| self.state.firmware_feedback.clone());
+        let message = device_message.cloned().or(banner).or_else(|| {
+            if let Some(install) = &self.pending_install {
+                return Some(install.status().into());
+            }
+            match (self.latest_check, update) {
+                (CheckFeedback::App, AppUpdate::Checking { background: false }) => {
+                    Some("Checking for app updates…".into())
+                }
+                (CheckFeedback::App, AppUpdate::UpToDate) => {
+                    Some("Stickwalker Desktop is up to date".into())
+                }
+                (CheckFeedback::Firmware, _) if self.state.checking_firmware => {
+                    Some("Checking for firmware updates…".into())
+                }
+                (CheckFeedback::Firmware, _) => self.state.firmware_feedback.clone(),
+                _ => None,
+            }
+        });
         let show_update = device_message.is_none()
             && matches!(
                 update,
@@ -447,8 +456,12 @@ impl Render for StickView {
             .on_action(cx.listener(|v, _: &EraseInstall, w, cx| v.reset(true, w, cx)))
             .on_action(cx.listener(|v, _: &OpenPackage, w, cx| v.files(FileAction::Package, w, cx)))
             .on_action(cx.listener(|v, _: &CheckFirmware, _, cx| {
-                v.clear_local_error(cx);
-                v.send(Command::CheckFirmware)
+                if !v.locked() && !v.state.checking_firmware {
+                    v.clear_local_error(cx);
+                    v.latest_check = CheckFeedback::Firmware;
+                    v.send(Command::CheckFirmware);
+                    cx.notify();
+                }
             }))
             .on_action(cx.listener(|v, _: &Install, w, cx| v.install(w, cx)))
             .on_action(cx.listener(|v, _: &CheckAppUpdates, _, cx| v.app_update(cx)))
@@ -663,7 +676,7 @@ mod tests {
         cx.update_window(handle, |_, w, cx| {
             view.update(cx, |v, cx| {
                 v.show_state(5, w, cx);
-                v.local_revision = v.state.acked_revision + 1;
+                v.pending_revision = Some(v.state.acked_revision + 1);
                 v.request_exit(PendingExit::Restart, cx);
                 v.request_exit(PendingExit::Quit, cx);
                 assert_eq!(v.exit, ExitState::Draining(PendingExit::Restart));

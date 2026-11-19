@@ -25,6 +25,11 @@ APP_ID = (root / "crates/sw-desktop/app-id").read_text().strip()
 APPCAST_NAME = "appcast-{arch}.xml"
 RELEASE_URL = "https://github.com/lumirth/stickwalker/releases/download"
 DESKTOP_ENTRY = f"{APP_ID}.desktop"
+FIRMWARE_IMAGES = {
+    "bootloader.bin": "bootloader",
+    "partition-table.bin": "partitions",
+    "stickwalker.bin": "application",
+}
 
 def required(name):
     value = os.environ.get(name, "").strip()
@@ -116,28 +121,41 @@ def firmware():
     print(out / "firmware.json")
 
 
-def check_firmware():
-    firmware_dir = root / "dist/firmware"
+def check_firmware(firmware_dir=None):
+    if firmware_dir is None:
+        firmware_dir = root / "dist/firmware"
     manifest_file = firmware_dir / "firmware.json"
     if not manifest_file.is_file():
-        raise SystemExit(
-            "Build and package firmware first: tools/build.sh build && python3 tools/package.py firmware"
-        )
+        raise SystemExit(f"Missing firmware manifest: {manifest_file}")
     manifest = json.loads(manifest_file.read_bytes())
+    if (manifest.get("schema"), manifest.get("product"), manifest.get("storage")) != (1, "StickS3", "SWK6"):
+        raise SystemExit("Invalid Stickwalker firmware manifest.")
     if manifest["version"] != (root / "VERSION").read_text().strip():
         raise SystemExit("Firmware version does not match VERSION.")
     images = manifest["images"]
-    expected = ["bootloader.bin", "partition-table.bin", "stickwalker.bin"]
-    if sorted(image["file"] for image in images) != expected:
+    if (len(images) != len(FIRMWARE_IMAGES)
+            or {image["file"]: image["kind"] for image in images} != FIRMWARE_IMAGES):
         raise SystemExit("The firmware package must include the bootloader, partition table, and application.")
+    layout = partitions()
+    regions = {"bootloader": (0, 0x8000), "partitions": (0x8000, 0x1000),
+               "application": (layout["factory"]["offset"], layout["factory"]["size"])}
     for image in images:
         path = firmware_dir / image["file"]
         if not path.is_file() or path.stat().st_size == 0:
             raise SystemExit(f"Missing or empty firmware image: {path.name}")
-        if hashlib.sha256(path.read_bytes()).hexdigest() != image["sha256"]:
+        kind = image["kind"]
+        offset, capacity = regions[kind]
+        if image["offset"] != offset or path.stat().st_size > capacity:
+            raise SystemExit(f"{path.name} does not fit its flash region.")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != image["sha256"].lower():
             raise SystemExit(f"Checksum mismatch for firmware image: {path.name}")
+        if kind == "application":
+            if len(data) < 208 or data[0] != 0xe9 or struct.unpack_from("<I", data, 32)[0] != 0xabcd5432:
+                raise SystemExit("Invalid ESP application descriptor in stickwalker.bin.")
+            if data[48:80].rstrip(b"\0") != manifest["version"].encode("ascii"):
+                raise SystemExit("The version in stickwalker.bin does not match firmware.json.")
 
-    layout = partitions()
     table = (firmware_dir / "partition-table.bin").read_bytes()
     actual = {}
     for at in range(0, len(table) - 31, 32):
@@ -145,10 +163,8 @@ def check_firmware():
         if magic != 0x50AA:
             break
         actual[label.rstrip(b"\0").decode("ascii")] = dict(offset=offset, size=size)
-    app = next(i for i in images if i["kind"] == "application")
     if (actual != layout or manifest["state"] != layout["walker2"]
-            or manifest["settings"] != layout["nvs"] or app["offset"] != layout["factory"]["offset"]
-            or (firmware_dir / app["file"]).stat().st_size > layout["factory"]["size"]):
+            or manifest["settings"] != layout["nvs"]):
         raise SystemExit("The firmware package and partition table disagree.")
 
 

@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     release::{FEED, hash},
     usb::Port,
-    worker::{ActiveDevice, Command, HardwareOperation, Presentation, WorkerState},
+    worker::{ActiveDevice, Command, Presentation, Work, WorkerState},
 };
 use std::{
     collections::BTreeMap,
@@ -93,7 +93,7 @@ fn offline_restart_uses_the_newest_complete_package() {
         })
     });
     inbox.recv_timeout(Duration::from_secs(5)).unwrap();
-    let Some((Request::Check, Err(error))) = updates.finish() else {
+    let Some((true, Err(error))) = updates.finish() else {
         panic!("accepted a damaged firmware image");
     };
     assert!(error.to_string().contains("stickwalker.bin"));
@@ -121,15 +121,24 @@ fn opening_local_firmware_during_a_check_keeps_it_selected() {
     let (wake, inbox) = mpsc::channel();
     let mut firmware = FirmwareUpdates::new(Some(cache.clone()));
     firmware.request(Request::Background, &wake, |_| Ok(Some(release("0.2.0"))));
-    firmware.open(&files.join("0.1.3/firmware.json")).unwrap();
+    let local = files.join("0.1.3/firmware.json");
     firmware.request(Request::Check, &wake, |_| panic!("duplicate download"));
+    firmware.open(&local).unwrap();
     inbox.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(matches!(firmware.finish(), Some((Request::Check, Ok(())))));
+    assert!(matches!(firmware.finish(), Some((false, Ok(())))));
     assert_eq!(
         firmware.selected().unwrap().manifest.version,
         Version::new(0, 1, 3)
     );
     assert!(matches!(firmware.selection(), Some(Firmware::Local(_))));
+    firmware.request(Request::Check, &wake, |_| anyhow::bail!("offline"));
+    inbox.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(firmware.finish(), Some((true, Err(_)))));
+    assert!(matches!(firmware.selection(), Some(Firmware::Local(_))));
+    firmware.request(Request::Check, &wake, |_| Ok(None));
+    inbox.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(firmware.finish(), Some((true, Ok(())))));
+    assert!(matches!(firmware.selection(), Some(Firmware::Release(v)) if v == "0.2.0"));
     assert_eq!(
         FirmwareUpdates::new(Some(cache)).release_version(),
         Some(&Version::new(0, 2, 0))
@@ -179,41 +188,54 @@ fn download_feedback_depends_on_who_requested_it() {
         Some("Couldn’t check for firmware updates.")
     );
 
-    let install = || {
-        Box::new(Work {
-            command: Command::Update,
-            target: target.clone(),
-            operation: Some(HardwareOperation::begin(&busy).unwrap()),
-        })
+    let (reply, result) = async_channel::bounded(1);
+    let commands = crate::worker::Commands {
+        tx: wake.clone(),
+        busy: busy.clone(),
     };
-    worker.firmware.request(Request::Background, &wake, offline);
-    worker.handle_command(install());
-    assert_eq!(
-        worker.state.status.as_deref(),
-        Some("Downloading firmware…")
-    );
+    let (finish_fetch, wait) = mpsc::channel();
+    worker
+        .firmware
+        .request(Request::Background, &wake, move |_| {
+            wait.recv().unwrap();
+            panic!("downloader unwound")
+        });
+    commands
+        .send(None, Command::DownloadFirmware(reply))
+        .unwrap();
+    assert!(!busy.load(std::sync::atomic::Ordering::Acquire));
+    let Message::Command(work) = inbox.recv().unwrap() else {
+        panic!("expected download command")
+    };
+    worker.handle_command(work);
+    commands
+        .send(target.clone(), Command::Export("test.bin".into()))
+        .unwrap();
+    assert!(busy.load(std::sync::atomic::Ordering::Acquire));
+    drop(inbox.recv().unwrap());
+    finish_fetch.send(()).unwrap();
     inbox.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(worker.firmware_ready().is_none());
-    assert_eq!(
-        worker.state.error.as_deref(),
-        Some(
-            "Couldn’t download firmware. Check your internet connection or open a local firmware file."
-        )
-    );
+    worker.firmware_ready();
+    assert!(result.recv_blocking().is_err());
 
+    let (reply, result) = async_channel::bounded(1);
     worker
         .firmware
         .request(Request::Background, &wake, |_| Ok(Some(release("0.1.0"))));
-    worker.handle_command(install());
+    worker.execute(Command::DownloadFirmware(reply)).unwrap();
     inbox.recv_timeout(Duration::from_secs(5)).unwrap();
-    let retry = worker.firmware_ready().unwrap();
+    worker.firmware_ready();
+    assert!(result.try_recv().is_ok());
+    assert!(!busy.load(std::sync::atomic::Ordering::Acquire));
     worker.active = ActiveDevice::Disconnected;
     worker.publish();
-    worker.handle_command(retry);
-    worker.publish();
+    worker.handle_command(Box::new(Work {
+        command: Command::Update,
+        target,
+        operation: None,
+    }));
     assert_eq!(
         worker.state.error.as_deref(),
         Some("The Stick is no longer available for this action.")
     );
-    assert!(!worker.state.hardware_busy);
 }

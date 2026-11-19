@@ -9,7 +9,7 @@ import secrets
 import subprocess
 import tempfile
 
-from package import APPCAST_NAME, APP_ID, RELEASE_URL, desktop_version, update_key, root
+from package import APPCAST_NAME, APP_ID, FIRMWARE_IMAGES, RELEASE_URL, check_firmware, desktop_version, update_key, root
 
 
 def run(*args):
@@ -197,7 +197,9 @@ def publish(tag):
             run("gh", "release", "edit", tag, "--latest")
         elif tag == "firmware-v" + (root / "VERSION").read_text().strip():
             assets = folder / "firmware"
-            run("gh", "release", "download", tag, "--dir", str(assets))
+            patterns = [arg for name in ("firmware.json", *FIRMWARE_IMAGES) for arg in ("--pattern", name)]
+            run("gh", "release", "download", tag, "--dir", str(assets), *patterns)
+            check_firmware(assets)
             run("gh", "release", "edit", tag, "--draft=false", "--latest=false")
             exists = subprocess.run(["gh", "release", "view", "firmware-feed"], cwd=root,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0

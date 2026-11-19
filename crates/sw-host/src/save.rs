@@ -72,6 +72,17 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
+    #[cfg(windows)]
+    for delay_ms in [25, 75] {
+        match temp.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(e) if e.error.kind() == std::io::ErrorKind::PermissionDenied => {
+                temp = e.file;
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
     temp.persist(path)?;
     Ok(())
 }

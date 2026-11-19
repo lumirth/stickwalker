@@ -1,4 +1,4 @@
-use super::{Firmware, Message, Work};
+use super::{Firmware, Message};
 use crate::release::{Package, Version};
 use anyhow::Result;
 use std::{
@@ -10,11 +10,12 @@ use std::{
 pub(super) enum Request {
     Background,
     Check,
-    Install(Box<Work>),
+    Install(async_channel::Sender<()>),
 }
 
 struct Download {
-    reason: Request,
+    explicit_check: bool,
+    install: Option<async_channel::Sender<()>>,
     result: Receiver<Result<Option<Package>>>,
 }
 
@@ -38,6 +39,10 @@ impl FirmwareUpdates {
 
     pub fn open(&mut self, path: &Path) -> Result<()> {
         self.local = Some(Package::open(path)?);
+        if let Some(download) = &mut self.download {
+            download.explicit_check = false;
+            download.install = None;
+        }
         Ok(())
     }
 
@@ -65,36 +70,40 @@ impl FirmwareUpdates {
         wake: &Sender<Message>,
         fetch: impl FnOnce(Option<&Version>) -> Result<Option<Package>> + Send + 'static,
     ) {
-        if let Some(task) = &mut self.download {
-            if matches!(reason, Request::Install(_))
-                || matches!(
-                    (&task.reason, &reason),
-                    (Request::Background, Request::Check)
-                )
-            {
-                task.reason = reason;
-            }
-            return;
-        }
-        let wake = wake.clone();
-        let version = self.release_version().cloned();
-        let cache = self.cache.clone();
-        let (sender, result) = mpsc::channel();
-        self.download = Some(Download { reason, result });
-        thread::spawn(move || {
-            let package = fetch(version.as_ref());
-            if let (Ok(Some(p)), Some(dir)) = (&package, cache)
-                && let Err(error) = p.store(&dir)
-            {
-                eprintln!("Couldn’t store firmware for offline use: {error:#}");
-            }
-            if sender.send(package).is_ok() {
-                let _ = wake.send(Message::FirmwareReady);
+        let download = self.download.get_or_insert_with(|| {
+            let wake = wake.clone();
+            let version = self.release.as_ref().map(|p| p.manifest.version.clone());
+            let cache = self.cache.clone();
+            let (sender, result) = mpsc::channel();
+            thread::spawn(move || {
+                let package = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let package = fetch(version.as_ref())?;
+                    if let (Some(p), Some(dir)) = (&package, cache)
+                        && let Err(error) = p.store(&dir)
+                    {
+                        eprintln!("Couldn’t store firmware for offline use: {error:#}");
+                    }
+                    Ok(package)
+                }))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("Firmware download interrupted")));
+                if sender.send(package).is_ok() {
+                    let _ = wake.send(Message::FirmwareReady);
+                }
+            });
+            Download {
+                explicit_check: false,
+                install: None,
+                result,
             }
         });
+        match reason {
+            Request::Background => {}
+            Request::Check => download.explicit_check = true,
+            Request::Install(reply) => download.install = Some(reply),
+        }
     }
 
-    pub fn finish(&mut self) -> Option<(Request, Result<()>)> {
+    pub fn finish(&mut self) -> Option<(bool, Result<()>)> {
         let result = match self.download.as_ref()?.result.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return None,
@@ -102,15 +111,21 @@ impl FirmwareUpdates {
                 Err(anyhow::anyhow!("Firmware download interrupted"))
             }
         };
-        let reason = self.download.take()?.reason;
-        Some((
-            reason,
-            result.map(|package| {
-                if let Some(p) = package {
-                    self.release = Some(p);
-                }
-            }),
-        ))
+        let download = self.download.take()?;
+        let result = result.and_then(|package| {
+            if let Some(p) = package {
+                self.release = Some(p);
+            }
+            anyhow::ensure!(self.release.is_some(), "No verified firmware available");
+            if download.explicit_check {
+                self.local = None;
+            }
+            if let Some(reply) = download.install {
+                let _ = reply.try_send(());
+            }
+            Ok(())
+        });
+        Some((download.explicit_check, result))
     }
 }
 
