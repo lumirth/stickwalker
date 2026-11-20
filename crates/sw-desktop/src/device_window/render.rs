@@ -216,10 +216,10 @@ impl StickView {
                             .min_w_0()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(if self.offer_update() {
-                                version
-                            } else {
+                            .child(if self.state.firmware.is_some() && !self.offer_update() {
                                 format!("{version} · Up to date")
+                            } else {
+                                version
                             }),
                     )
                     .when(self.offer_update(), |d| {
@@ -711,7 +711,7 @@ mod tests {
                 state.firmware = None;
                 v.present(state, w, cx);
                 let menu = &cx.global::<crate::AppState>().menu;
-                assert!(menu.can_install);
+                assert!(!menu.can_install);
                 assert_eq!(menu.install_label, "Update Firmware");
             });
         })

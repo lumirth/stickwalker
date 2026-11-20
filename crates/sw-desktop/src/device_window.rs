@@ -846,7 +846,7 @@ impl StickView {
             self.state
                 .firmware
                 .as_ref()
-                .is_none_or(|f| f.newer_than(&info.version))
+                .is_some_and(|f| f.newer_than(&info.version))
         })
     }
     pub(super) fn device_label(&self) -> String {
