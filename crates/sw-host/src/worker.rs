@@ -30,10 +30,7 @@ pub enum Command {
     DownloadFirmware(async_channel::Sender<()>),
     Update,
     CleanInstall,
-    InstallPackage {
-        package: Box<Package>,
-        fresh: bool,
-    },
+    InstallPackage(Box<Package>),
     Export(PathBuf),
     Reset,
     Import(save::EepromImage),
@@ -48,7 +45,7 @@ impl Command {
         match self {
             Self::SetSettings { .. } | Self::Export(_) => access == DeviceAccess::Ready,
             Self::Import(_) | Self::Reset => access.can_write_save(),
-            Self::Update | Self::CleanInstall | Self::InstallPackage { .. } => access.can_install(),
+            Self::Update | Self::CleanInstall | Self::InstallPackage(_) => access.can_install(),
             _ => true,
         }
     }
@@ -60,7 +57,7 @@ impl Command {
             self,
             Self::Update
                 | Self::CleanInstall
-                | Self::InstallPackage { .. }
+                | Self::InstallPackage(_)
                 | Self::Export(_)
                 | Self::Import(_)
                 | Self::Reset
@@ -514,7 +511,7 @@ impl WorkerState<'_> {
             })?,
             Command::Update => self.flash(None, false)?,
             Command::CleanInstall => self.flash(None, true)?,
-            Command::InstallPackage { package, fresh } => self.flash(Some(&package), fresh)?,
+            Command::InstallPackage(package) => self.flash(Some(&package), false)?,
         }
         Ok(())
     }

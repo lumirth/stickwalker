@@ -7,7 +7,7 @@ use crate::palette_window::{PaletteAction, PaletteChanged, PaletteEditor};
 use crate::updater::{AppUpdate, Updates};
 use crate::*;
 
-use host::worker::{Command, ConnectionState, DeviceTarget, Presentation, Worker};
+use host::worker::{Command, ConnectionState, Presentation, Worker};
 use install::PendingInstall;
 use std::{sync::atomic::Ordering, time::Duration};
 
@@ -608,52 +608,14 @@ impl StickView {
         } else {
             "Existing Stickwalker saves and settings are kept."
         };
-        let target = self.state.connection.target();
-        let epoch = self.connection_epoch;
-        let answer = w.prompt(
-            PromptLevel::Info,
+        self.confirm(
             &title,
-            Some(detail),
-            &["Cancel", "Erase and Install…", "Install"],
+            detail,
+            "Install",
+            Command::InstallPackage(Box::new(package)),
+            w,
             cx,
         );
-        cx.spawn_in(w, async move |view, cx| {
-            let fresh = match answer.await {
-                Ok(1) => true,
-                Ok(2) => false,
-                _ => return,
-            };
-            let command = Command::InstallPackage {
-                package: Box::new(package),
-                fresh,
-            };
-            let _ = view.update_in(cx, |v, w, cx| {
-                if !v.still_targets(target.as_ref(), epoch, &command) {
-                    return;
-                }
-                if fresh {
-                    v.confirm(
-                        "Erase and install Stickwalker?",
-                        "Clears the save and device settings on this StickS3.",
-                        "Erase and install",
-                        command,
-                        w,
-                        cx,
-                    );
-                } else {
-                    v.send(command);
-                }
-            });
-        })
-        .detach();
-    }
-    fn still_targets(&self, target: Option<&DeviceTarget>, epoch: u64, command: &Command) -> bool {
-        target
-            .zip(self.state.connection.target().as_ref())
-            .is_some_and(|(expected, current)| expected.matches(current))
-            && epoch == self.connection_epoch
-            && !self.locked()
-            && command.allowed(&self.state.connection)
     }
     fn confirm(
         &self,
@@ -676,7 +638,14 @@ impl StickView {
         cx.spawn_in(w, async move |view, cx| {
             if answer.await == Ok(1) {
                 let _ = view.update(cx, |v, cx| {
-                    if !v.still_targets(target.as_ref(), epoch, &command) {
+                    if !target
+                        .as_ref()
+                        .zip(v.state.connection.target().as_ref())
+                        .is_some_and(|(expected, current)| expected.matches(current))
+                        || epoch != v.connection_epoch
+                        || v.locked()
+                        || !command.allowed(&v.state.connection)
+                    {
                         return;
                     }
                     if matches!(command, Command::Update | Command::CleanInstall) {
