@@ -97,7 +97,7 @@ fn offline_restart_uses_the_newest_complete_package() {
         panic!("accepted a damaged firmware image");
     };
     assert!(error.to_string().contains("stickwalker.bin"));
-    assert_eq!(updates.release_version(), Some(&cached.manifest.version));
+    assert!(updates.selection().is_some_and(|f| f.version == cached.manifest.version));
     assert!(!cache.join("0.1.11").exists());
 
     fs::write(cache.join("0.1.10/stickwalker.bin"), b"partial").unwrap();
@@ -113,36 +113,25 @@ fn offline_restart_uses_the_newest_complete_package() {
 }
 
 #[test]
-fn opening_local_firmware_during_a_check_keeps_it_selected() {
-    let dir = tempfile::tempdir().unwrap();
-    let cache = dir.path().join("cache");
-    let files = dir.path().join("local");
-    release("0.1.3").store(&files).unwrap();
-    let (wake, inbox) = mpsc::channel();
-    let mut firmware = FirmwareUpdates::new(Some(cache.clone()));
-    firmware.request(Request::Background, &wake, |_| Ok(Some(release("0.2.0"))));
-    let local = files.join("0.1.3/firmware.json");
-    firmware.request(Request::Check, &wake, |_| panic!("duplicate download"));
-    firmware.open(&local).unwrap();
-    inbox.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(matches!(firmware.finish(), Some((false, Ok(())))));
-    assert_eq!(
-        firmware.selected().unwrap().manifest.version,
-        Version::new(0, 1, 3)
-    );
-    assert!(matches!(firmware.selection(), Some(Firmware::Local(_))));
-    firmware.request(Request::Check, &wake, |_| anyhow::bail!("offline"));
-    inbox.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(matches!(firmware.finish(), Some((true, Err(_)))));
-    assert!(matches!(firmware.selection(), Some(Firmware::Local(_))));
-    firmware.request(Request::Check, &wake, |_| Ok(None));
-    inbox.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(matches!(firmware.finish(), Some((true, Ok(())))));
-    assert!(matches!(firmware.selection(), Some(Firmware::Release(v)) if v == "0.2.0"));
-    assert_eq!(
-        FirmwareUpdates::new(Some(cache)).release_version(),
-        Some(&Version::new(0, 2, 0))
-    );
+fn only_a_newer_release_is_offered() {
+    for (release, installed, offered) in [
+        ("0.2.0", "0.1.0", true),
+        ("0.1.0", "0.1.0", false),
+        ("0.1.0", "0.2.0", false),
+        ("0.1.0", "0.1.0-dev+g1234abcd.dirty", true),
+        ("0.1.0", "0.2.0-dev+g1234abcd", false),
+        ("0.1.0", "candidate-2026-10-30", true),
+    ] {
+        let release = Firmware {
+            version: release.parse().unwrap(),
+        };
+        assert_eq!(
+            release.newer_than(installed),
+            offered,
+            "{} over {installed}",
+            release.version
+        );
+    }
 }
 
 #[test]

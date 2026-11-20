@@ -220,6 +220,18 @@ impl Package {
         ensure!(ranges.windows(2).all(|w| w[0].1 <= w[1].0), INVALID_PACKAGE);
         Ok(p)
     }
+    pub fn build(&self) -> String {
+        let app = self
+            .manifest
+            .images
+            .iter()
+            .find(|i| i.kind == ImageKind::Application)
+            .expect("validated package has an application");
+        self.images[&app.file.0][176..208]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
     pub fn image(&self, image: &Image) -> Result<&[u8]> {
         self.images
             .get(&image.file.0)

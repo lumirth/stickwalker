@@ -67,9 +67,9 @@ impl StickView {
         };
         let mut state = Presentation {
             ports: vec![port.clone()],
-            firmware: Some(host::worker::Firmware::Release(
-                env!("CARGO_PKG_VERSION").into(),
-            )),
+            firmware: Some(host::worker::Firmware {
+                version: env!("CARGO_PKG_VERSION").parse().unwrap(),
+            }),
             ..Default::default()
         };
         state.connection = match number {
@@ -103,7 +103,7 @@ impl StickView {
         if number == 5 {
             let current = host::release::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
             let newer = host::release::Version::new(current.major, current.minor + 1, 0);
-            state.firmware = Some(host::worker::Firmware::Release(newer.to_string()));
+            state.firmware = Some(host::worker::Firmware { version: newer });
         }
         if number == 8 {
             state.ports.push(Port {

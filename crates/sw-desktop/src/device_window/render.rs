@@ -667,11 +667,11 @@ mod tests {
             })
             .unwrap()
         });
-        for (state, install, export, caption) in [
-            (1, false, false, "No Device Connected"),
-            (2, true, false, "Install Stickwalker "),
-            (4, false, true, "Firmware Up to Date"),
-            (5, true, true, "Update Firmware to "),
+        for (state, install, open, export, caption) in [
+            (1, false, false, false, "No Device Connected"),
+            (2, true, true, false, "Install Stickwalker "),
+            (4, false, true, true, "Firmware Up to Date"),
+            (5, true, true, true, "Update Firmware to "),
         ] {
             cx.update_window(window, |_, w, cx| {
                 view.update(cx, |v, cx| v.show_state(state, w, cx));
@@ -698,7 +698,7 @@ mod tests {
                 let (name, enabled) = item("Device", &crate::Install);
                 assert!(name.starts_with(caption), "{name}");
                 assert_eq!(enabled, install);
-                assert!(item("Device", &crate::OpenPackage).1);
+                assert_eq!(item("Device", &crate::OpenPackage).1, open);
                 assert_eq!(item("File", &crate::ExportEeprom).1, export);
                 assert_eq!(item("Edit", &crate::EditPalette).1, export);
             })

@@ -190,10 +190,7 @@ pub fn install(
         .iter()
         .find(|(image, _)| image.kind == ImageKind::Application)
         .unwrap();
-    let build: String = app_bytes[176..208]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let build = package.build();
     let mut expected_mac = crate::usb::mac_id(&port.serial);
     let mut managed = false;
     if let Some(mut session) = session {

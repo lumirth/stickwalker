@@ -2,7 +2,7 @@ use super::{Firmware, Message};
 use crate::release::{Package, Version};
 use anyhow::Result;
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread,
 };
@@ -22,7 +22,6 @@ struct Download {
 pub(super) struct FirmwareUpdates {
     cache: Option<PathBuf>,
     release: Option<Package>,
-    local: Option<Package>,
     download: Option<Download>,
 }
 
@@ -32,36 +31,18 @@ impl FirmwareUpdates {
         Self {
             cache,
             release,
-            local: None,
             download: None,
         }
     }
 
-    pub fn open(&mut self, path: &Path) -> Result<()> {
-        self.local = Some(Package::open(path)?);
-        if let Some(download) = &mut self.download {
-            download.explicit_check = false;
-            download.install = None;
-        }
-        Ok(())
-    }
-
-    pub fn selected(&self) -> Option<&Package> {
-        self.local.as_ref().or(self.release.as_ref())
+    pub fn release(&self) -> Option<&Package> {
+        self.release.as_ref()
     }
 
     pub fn selection(&self) -> Option<Firmware> {
-        if let Some(p) = &self.local {
-            Some(Firmware::Local(p.manifest.version.to_string()))
-        } else {
-            self.release
-                .as_ref()
-                .map(|p| Firmware::Release(p.manifest.version.to_string()))
-        }
-    }
-
-    pub fn release_version(&self) -> Option<&Version> {
-        self.release.as_ref().map(|p| &p.manifest.version)
+        self.release.as_ref().map(|p| Firmware {
+            version: p.manifest.version.clone(),
+        })
     }
 
     pub fn request(
@@ -117,9 +98,6 @@ impl FirmwareUpdates {
                 self.release = Some(p);
             }
             anyhow::ensure!(self.release.is_some(), "No verified firmware available");
-            if download.explicit_check {
-                self.local = None;
-            }
             if let Some(reply) = download.install {
                 let _ = reply.try_send(());
             }

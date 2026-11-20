@@ -28,9 +28,12 @@ pub enum Command {
     DismissError,
     CheckFirmware,
     DownloadFirmware(async_channel::Sender<()>),
-    OpenPackage(PathBuf),
     Update,
     CleanInstall,
+    InstallPackage {
+        package: Box<Package>,
+        fresh: bool,
+    },
     Export(PathBuf),
     Reset,
     Import(save::EepromImage),
@@ -45,7 +48,7 @@ impl Command {
         match self {
             Self::SetSettings { .. } | Self::Export(_) => access == DeviceAccess::Ready,
             Self::Import(_) | Self::Reset => access.can_write_save(),
-            Self::Update | Self::CleanInstall => access.can_install(),
+            Self::Update | Self::CleanInstall | Self::InstallPackage { .. } => access.can_install(),
             _ => true,
         }
     }
@@ -55,7 +58,12 @@ impl Command {
     fn hardware_operation(&self) -> bool {
         matches!(
             self,
-            Self::Update | Self::CleanInstall | Self::Export(_) | Self::Import(_) | Self::Reset
+            Self::Update
+                | Self::CleanInstall
+                | Self::InstallPackage { .. }
+                | Self::Export(_)
+                | Self::Import(_)
+                | Self::Reset
         )
     }
 }
@@ -211,26 +219,14 @@ impl ConnectionState {
     }
 }
 #[derive(Clone, PartialEq, Eq)]
-pub enum Firmware {
-    Release(String),
-    Local(String),
+pub struct Firmware {
+    pub version: Version,
 }
 impl Firmware {
-    pub fn version(&self) -> &str {
-        match self {
-            Self::Release(v) | Self::Local(v) => v,
-        }
-    }
-    pub fn installable_on(&self, installed: &str) -> bool {
-        self.local()
-            || Version::parse(self.version())
-                .ok()
-                .zip(Version::parse(installed).ok())
-                .is_none_or(|(next, current)| next.cmp_precedence(&current).is_gt())
-    }
-
-    pub fn local(&self) -> bool {
-        matches!(self, Self::Local(_))
+    pub fn newer_than(&self, installed: &str) -> bool {
+        Version::parse(installed)
+            .ok()
+            .is_none_or(|current| self.version.cmp_precedence(&current).is_gt())
     }
 }
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -418,15 +414,12 @@ impl WorkerState<'_> {
                 self.state.firmware_feedback = None;
                 self.state.error = Some("Couldn’t check for firmware updates.".into());
             }
-        } else if explicit_check && let Some(latest) = self.firmware.release_version() {
+        } else if explicit_check && let Some(latest) = self.firmware.selection() {
             self.state.firmware_feedback = Some(match self.state.connection.info() {
-                Some(info)
-                    if Version::parse(&info.version)
-                        .is_ok_and(|v| !latest.cmp_precedence(&v).is_gt()) =>
-                {
+                Some(info) if !latest.newer_than(&info.version) => {
                     format!("Firmware {} is up to date", info.version)
                 }
-                _ => format!("Firmware {latest} is available"),
+                _ => format!("Firmware {} is available", latest.version),
             });
         }
     }
@@ -487,16 +480,11 @@ impl WorkerState<'_> {
                 self.fetch(Request::Check);
             }
             Command::DownloadFirmware(reply) => {
-                if self.firmware.selected().is_some() {
+                if self.firmware.release().is_some() {
                     let _ = reply.try_send(());
                 } else {
                     self.fetch(Request::Install(reply));
                 }
-            }
-            Command::OpenPackage(path) => {
-                self.firmware.open(&path)?;
-                self.state.checking_firmware = false;
-                self.state.firmware_feedback = None;
             }
             Command::SetSettings { revision, settings } => {
                 self.active.with_session(|session, info| {
@@ -524,32 +512,37 @@ impl WorkerState<'_> {
                 *info = Info::read(session)?;
                 Ok(())
             })?,
-            Command::Update => self.flash(false)?,
-            Command::CleanInstall => self.flash(true)?,
+            Command::Update => self.flash(None, false)?,
+            Command::CleanInstall => self.flash(None, true)?,
+            Command::InstallPackage { package, fresh } => self.flash(Some(&package), fresh)?,
         }
         Ok(())
     }
 
-    fn flash(&mut self, fresh: bool) -> Result<()> {
-        let package = self
-            .firmware
-            .selected()
-            .context("Choose a firmware file to install.")?;
+    fn flash(&mut self, local: Option<&Package>, fresh: bool) -> Result<()> {
         let info = self.state.connection.info();
-        if !fresh
+        if local.is_none()
+            && !fresh
             && let Some(info) = info
             && self
                 .firmware
                 .selection()
-                .is_some_and(|f| !f.installable_on(&info.version))
+                .is_some_and(|f| !f.newer_than(&info.version))
         {
             self.state.firmware_feedback = Some(format!("Firmware {} is up to date", info.version));
             return Ok(());
         }
+        let package = match local {
+            Some(package) => package,
+            None => self
+                .firmware
+                .release()
+                .context("Choose a firmware file to install.")?,
+        };
         let expected = info.and_then(|i| usb::mac_id(&i.mac));
         let title = if fresh || info.is_none() {
             "Installing Stickwalker…"
-        } else if info.is_some_and(|i| i.version == package.manifest.version.to_string()) {
+        } else if info.is_some_and(|i| i.build == package.build()) {
             "Reinstalling Stickwalker…"
         } else {
             "Updating Stickwalker…"

@@ -7,7 +7,7 @@ use crate::palette_window::{PaletteAction, PaletteChanged, PaletteEditor};
 use crate::updater::{AppUpdate, Updates};
 use crate::*;
 
-use host::worker::{Command, ConnectionState, Presentation, Worker};
+use host::worker::{Command, ConnectionState, DeviceTarget, Presentation, Worker};
 use install::PendingInstall;
 use std::{sync::atomic::Ordering, time::Duration};
 
@@ -452,7 +452,7 @@ impl StickView {
         self.clear_local_error(cx);
         let access = self.state.connection.access();
         let available = match action {
-            FileAction::Package => true,
+            FileAction::Package => access.can_install(),
             FileAction::Export => access == DeviceAccess::Ready,
             FileAction::Import => access.can_write_save(),
         };
@@ -510,15 +510,22 @@ impl StickView {
                 } else {
                     None
                 };
+                let package = if matches!(action, FileAction::Package) {
+                    let source = path.clone();
+                    Some(
+                        cx.background_executor()
+                            .spawn(async move { host::release::Package::open(&source) })
+                            .await,
+                    )
+                } else {
+                    None
+                };
                 let _ = view.update_in(cx, |view, window, cx| {
-                    if view.locked()
-                        || (!matches!(action, FileAction::Package)
-                            && target != view.state.connection.target())
-                    {
+                    if view.locked() || target != view.state.connection.target() {
                         return;
                     }
-                    match image {
-                        Some(Ok(image)) => {
+                    match (image, package) {
+                        (Some(Ok(image)), _) => {
                             let command = Command::Import(image);
                             if command.allowed(&view.state.connection) {
                                 let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -532,14 +539,12 @@ impl StickView {
                                 );
                             }
                         }
-                        Some(Err(error)) => {
+                        (Some(Err(error)), _) | (_, Some(Err(error))) => {
                             view.local_error = Some(error.to_string());
                             cx.notify();
                         }
-                        None if matches!(action, FileAction::Package) => {
-                            view.send(Command::OpenPackage(path))
-                        }
-                        None => view.send(Command::Export(path)),
+                        (_, Some(Ok(package))) => view.confirm_package(package, window, cx),
+                        _ => view.send(Command::Export(path)),
                     }
                 });
             } else if let Ok(Err(error)) = result {
@@ -582,6 +587,74 @@ impl StickView {
             cx,
         );
     }
+    fn confirm_package(
+        &self,
+        package: host::release::Package,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let installed = self
+            .state
+            .connection
+            .info()
+            .is_some_and(|info| info.build == package.build());
+        let title = format!(
+            "Install {} on {}?",
+            package.manifest.version,
+            self.device_label()
+        );
+        let detail = if installed {
+            "This build is already on the Stick. Existing Stickwalker saves and settings are kept."
+        } else {
+            "Existing Stickwalker saves and settings are kept."
+        };
+        let target = self.state.connection.target();
+        let epoch = self.connection_epoch;
+        let answer = w.prompt(
+            PromptLevel::Info,
+            &title,
+            Some(detail),
+            &["Cancel", "Erase and Install…", "Install"],
+            cx,
+        );
+        cx.spawn_in(w, async move |view, cx| {
+            let fresh = match answer.await {
+                Ok(1) => true,
+                Ok(2) => false,
+                _ => return,
+            };
+            let command = Command::InstallPackage {
+                package: Box::new(package),
+                fresh,
+            };
+            let _ = view.update_in(cx, |v, w, cx| {
+                if !v.still_targets(target.as_ref(), epoch, &command) {
+                    return;
+                }
+                if fresh {
+                    v.confirm(
+                        "Erase and install Stickwalker?",
+                        "Clears the save and device settings on this StickS3.",
+                        "Erase and install",
+                        command,
+                        w,
+                        cx,
+                    );
+                } else {
+                    v.send(command);
+                }
+            });
+        })
+        .detach();
+    }
+    fn still_targets(&self, target: Option<&DeviceTarget>, epoch: u64, command: &Command) -> bool {
+        target
+            .zip(self.state.connection.target().as_ref())
+            .is_some_and(|(expected, current)| expected.matches(current))
+            && epoch == self.connection_epoch
+            && !self.locked()
+            && command.allowed(&self.state.connection)
+    }
     fn confirm(
         &self,
         title: &str,
@@ -603,14 +676,7 @@ impl StickView {
         cx.spawn_in(w, async move |view, cx| {
             if answer.await == Ok(1) {
                 let _ = view.update(cx, |v, cx| {
-                    if !target
-                        .as_ref()
-                        .zip(v.state.connection.target().as_ref())
-                        .is_some_and(|(expected, current)| expected.matches(current))
-                        || epoch != v.connection_epoch
-                        || v.locked()
-                        || !command.allowed(&v.state.connection)
-                    {
+                    if !v.still_targets(target.as_ref(), epoch, &command) {
                         return;
                     }
                     if matches!(command, Command::Update | Command::CleanInstall) {
@@ -811,7 +877,7 @@ impl StickView {
             self.state
                 .firmware
                 .as_ref()
-                .is_none_or(|f| f.installable_on(&info.version))
+                .is_none_or(|f| f.newer_than(&info.version))
         })
     }
     pub(super) fn device_label(&self) -> String {
@@ -825,24 +891,17 @@ impl StickView {
         if self.state.connection.port().is_none() {
             return "No Device Connected".into();
         }
-        let Some(info) = self.state.connection.info() else {
+        if self.state.connection.info().is_none() {
             return self.state.firmware.as_ref().map_or_else(
                 || "Install Stickwalker".into(),
-                |f| format!("Install Stickwalker {}", f.version()),
+                |f| format!("Install Stickwalker {}", f.version),
             );
-        };
+        }
         let Some(firmware) = &self.state.firmware else {
             return "Update Firmware".into();
         };
-        let version = firmware.version();
-        if firmware.local() {
-            if info.version == version {
-                format!("Reinstall {version}")
-            } else {
-                format!("Install {version}")
-            }
-        } else if self.offer_update() {
-            format!("Update Firmware to {version}")
+        if self.offer_update() {
+            format!("Update Firmware to {}", firmware.version)
         } else {
             "Firmware Up to Date".into()
         }
