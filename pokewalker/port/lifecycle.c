@@ -87,7 +87,7 @@ bool pw_save(void)
 bool pw_save_changes(void)
 {
   pw_checkpoint();
-  if (!pw_eeprom_dirty()) {
+  if (!pw_eeprom_dirty() && g_state.save.totalSteps == saved_steps) {
     return true;
   }
   return pw_save();

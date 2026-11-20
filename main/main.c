@@ -319,6 +319,8 @@ static void draw_page(void)
 
 static void close_settings(bool timed_out)
 {
+    // A power-on reset discards the retained checkpoint, so keep recent steps.
+    pw_save_changes();
     enter_view(VIEW_PLAY);
     style();
     display_game(game_frame);
