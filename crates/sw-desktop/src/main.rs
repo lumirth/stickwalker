@@ -129,7 +129,7 @@ fn main() {
             if let Err(error) = gpui_kit::open_window(options, cx, |w, cx| {
                 cx.new(|cx| device_window::StickView::new(w, cx))
             }) {
-                eprintln!("Could not open Stickwalker: {error}");
+                eprintln!("Couldn’t open Stickwalker: {error}");
                 cx.quit();
             }
             cx.activate(true);

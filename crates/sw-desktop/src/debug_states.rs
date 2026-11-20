@@ -111,7 +111,7 @@ impl StickView {
                 serial: "70:04:1D:DC:8B:04".into(),
             });
             state.error =
-                Some("Export interrupted. Reconnect your Stickwalker and try again.".into());
+                Some("Export interrupted. Reconnect your Stick and try again.".into());
         }
         self.present(state, w, cx);
     }

@@ -103,7 +103,7 @@ fn engine() -> anyhow::Result<UpdateEngine<StaticManifestSource>> {
 fn linux_bundle_root(exe: &std::path::Path) -> anyhow::Result<&std::path::Path> {
     let root = exe
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("Cannot locate Stickwalker."))?;
+        .ok_or_else(|| anyhow::anyhow!("Couldn’t locate Stickwalker Desktop."))?;
     let expected = [
         "stickwalker",
         "icon.png",

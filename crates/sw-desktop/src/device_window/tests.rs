@@ -56,7 +56,7 @@ fn erasing_a_reused_port_requires_a_fresh_confirmation(cx: &mut TestAppContext) 
             );
         }
         present(cx, connected.clone());
-        cx.simulate_prompt_answer("Erase and install");
+        cx.simulate_prompt_answer("Erase and Install");
         cx.run_until_parked();
         // The preview worker has a closed command channel. Only a valid approval reaches it.
         cx.update(|cx| {

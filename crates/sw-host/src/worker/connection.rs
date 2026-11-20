@@ -243,7 +243,7 @@ impl ActiveDevice {
             info,
         } = self
         else {
-            anyhow::bail!("Connect a Stickwalker first.")
+            anyhow::bail!("Connect your Stick first.")
         };
         let result = f(session, info);
         if result
@@ -270,7 +270,7 @@ impl ActiveDevice {
     }
 
     pub fn start_flash(&mut self, title: String) -> Result<(Port, Option<Session>)> {
-        let port = self.port().context("Connect a StickS3 first")?.clone();
+        let port = self.port().context("Connect your Stick first.")?.clone();
         let flashing = Self::Flashing {
             port: port.clone(),
             title,

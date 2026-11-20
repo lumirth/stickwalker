@@ -203,7 +203,7 @@ fn receive(
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        "Stickwalker did not reply. Reconnect it and try again.",
+        "Your Stick didn’t reply. Reconnect it and try again.",
     )
     .into())
 }

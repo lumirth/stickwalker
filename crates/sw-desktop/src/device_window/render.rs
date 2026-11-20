@@ -161,7 +161,6 @@ impl StickView {
         let linking = matches!(self.state.connection, ConnectionState::LinkingInGame { .. });
         let fault = matches!(self.state.connection, ConnectionState::SaveFault { .. });
         let version = format!("Firmware {}", info.version);
-        let voltage = format!("Battery voltage: {:.2} V", info.millivolts as f32 / 1000.);
         let header = div()
             .v_flex()
             .px_4()
@@ -200,8 +199,7 @@ impl StickView {
                             .text_xs()
                             .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("{}%", info.battery_percent()))
-                            .tooltip(move |w, cx| Tooltip::new(voltage.clone()).build(w, cx)),
+                            .child(format!("{}%", info.battery_percent())),
                     ),
             )
             .child(
@@ -409,7 +407,7 @@ impl Render for StickView {
                         .label(if kind == Some(FooterKind::Restart) {
                             "Restart"
                         } else {
-                            "Update app"
+                            "Update App"
                         })
                         .disabled(self.locked())
                         .on_click(cx.listener(|v, _, _, cx| v.app_update(cx))),

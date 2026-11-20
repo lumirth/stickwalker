@@ -71,7 +71,7 @@ impl Volume<'_> {
         if status == lfs::lfs_error_LFS_ERR_NOENT {
             return Ok(None);
         }
-        ensure!(status == 0, "Cannot open the older save file");
+        ensure!(status == 0, "Couldn’t open the older save file.");
         let result = (|| {
             let size = unsafe { lfs::lfs_file_size(self.0, &mut file) };
             ensure!(
@@ -82,7 +82,7 @@ impl Volume<'_> {
             let count = unsafe {
                 lfs::lfs_file_read(self.0, &mut file, bytes.as_mut_ptr().cast(), size as u32)
             };
-            ensure!(count == size, "Cannot read the older save file");
+            ensure!(count == size, "Couldn’t read the older save file.");
             Ok(Some(bytes))
         })();
         unsafe { lfs::lfs_file_close(self.0, &mut file) };

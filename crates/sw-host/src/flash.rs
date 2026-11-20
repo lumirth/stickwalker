@@ -196,7 +196,7 @@ pub fn install(
     if let Some(mut session) = session {
         let info = Info::read(&mut session)?;
         let connected_mac =
-            crate::usb::mac_id(&info.mac).context("Could not identify this Stick")?;
+            crate::usb::mac_id(&info.mac).context("Couldn’t identify this Stick.")?;
         ensure!(
             expected_mac.as_ref().is_none_or(|id| id == &connected_mac),
             "The selected Stick changed. Select it again."
@@ -224,7 +224,7 @@ pub fn install(
         .mac_address
         .as_deref()
         .and_then(mac_id)
-        .context("Cannot identify this Stick")?;
+        .context("Couldn’t identify this Stick.")?;
     ensure!(
         expected_mac.is_none_or(|id| id == chip_id),
         "The connected Stick changed. Select it again before installing."
@@ -243,7 +243,7 @@ pub fn install(
                 && app.offset == 0x10000
                 && manifest.settings.offset == 0x9000
                 && manifest.settings.size == 0x6000,
-            "This firmware package cannot use the installed storage."
+            "This firmware needs a different version of Stickwalker Desktop."
         );
         Ok(())
     };
@@ -396,7 +396,7 @@ pub fn install(
         }
     }
     reset.context(
-        "Firmware was written, but the Stick could not restart. Reconnect it and try again.",
+        "Firmware was written, but the Stick couldn’t restart. Reconnect it and try again.",
     )?;
     anyhow::bail!("Firmware was written. Reconnect the Stick to check its version.")
 }

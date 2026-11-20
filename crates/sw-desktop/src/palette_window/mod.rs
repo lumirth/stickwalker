@@ -461,7 +461,7 @@ impl PaletteEditor {
                     PromptLevel::Warning,
                     "Restore all palette defaults?",
                     Some("Replaces the names and colors of all six palettes."),
-                    &["Cancel", "Restore defaults"],
+                    &["Cancel", "Restore Defaults"],
                     cx,
                 );
                 cx.spawn_in(w, async move |view, cx| {

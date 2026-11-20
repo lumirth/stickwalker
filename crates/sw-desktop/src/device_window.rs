@@ -583,7 +583,7 @@ impl StickView {
             } else {
                 "Clears this save and its DS pairing."
             },
-            if erase { "Erase and install" } else { "Reset" },
+            if erase { "Erase and Install" } else { "Reset" },
             command,
             w,
             cx,
