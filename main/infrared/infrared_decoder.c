@@ -70,9 +70,18 @@ void infrared_decoder_measure_noise(InfraredDecoder *decoder,
         }
         if (untrimmed_quiet) {
             int64_t n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+            unsigned least = UINT16_MAX;
+            for (unsigned i = start; i < start + 64; ++i) {
+                unsigned floating = observations[i].floating_cycles;
+                if (floating && floating < least) least = floating;
+            }
             for (unsigned i = start; i < start + 64; ++i) {
                 const InfraredObservation *sample = &observations[i];
                 if (!sample->floating_cycles) continue;
+                // A delayed write can leave the pin already below threshold at the
+                // first pulled read. Its signal is the measurement floor, not a slope.
+                if (sample->floating_cycles > least &&
+                    sample->sample_gap_cycles > sample->floating_cycles - least) continue;
                 int64_t x = sample->floating_cycles, y = sample->signal_duration;
                 n++; sx += x; sy += y; sxx += x * x; sxy += x * y;
             }
