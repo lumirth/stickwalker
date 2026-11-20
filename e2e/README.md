@@ -50,7 +50,7 @@ python3 e2e/connections.py .deps/idf-tools/tools/esp-rom-elfs/20241011/esp32s3_r
 
 Each scenario runs against weak, slow-pad, and bright optical paths. Hot startup must accept the first reply at a 140 µs turnaround. Other scenarios use 380 µs and exercise delayed alignment, a damaged burst, or an absent peer. After a failed transfer, the next attempt must succeed in the same boot. Return starts from the flash produced by send. The runner reboots again to check the pairing and course after return.
 
-Use `--story hot|delayed|glitch|retry` and `--path weak|slow-pad|bright` to select a case. The seed controls bus delays and optical noise. A failure preserves traces under `build/connection-failure-*` and prints the seed.
+Scenarios run in parallel, one per CPU core by default (`--jobs N`), and each result prints as it finishes. Use `--story hot|delayed|glitch|retry` and `--path weak|slow-pad|bright`, each repeatable, to select cases. The seed controls bus delays and optical noise. A failure preserves traces under `build/connection-failure-*` and prints the seed.
 
 ## Buffered motion and pocket energy
 
