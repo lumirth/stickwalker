@@ -11,6 +11,7 @@
 #define MINIMUM_BIT_CYCLES 2062u
 #define MAXIMUM_BIT_CYCLES 2105u
 #define PULSE_SAMPLES 8u
+#define PULSE_GAP_CYCLES 14u
 
 static inline bool later(uint32_t first, uint32_t second)
 {
@@ -30,8 +31,8 @@ void infrared_decoder_measure_noise(InfraredDecoder *decoder,
 {
     // A peer may already be transmitting. Measure short quiet windows and
     // trim the upper quarter: partial pulses can fit below the span limit too.
-    // Each window also ignores its shortest samples. A weak discovery probe
-    // shortens only a few, by less than the span limit.
+    // A weak discovery probe shortens only a few samples, by less than the
+    // span limit, so a window drops samples that stand apart from the rest.
     unsigned spans[MAXIMUM_QUIET_VARIATION + 1] = {0};
     unsigned windows = 0;
     int64_t variance_by_span[MAXIMUM_QUIET_VARIATION + 1] = {0};
@@ -57,7 +58,10 @@ void infrared_decoder_measure_noise(InfraredDecoder *decoder,
             if (j <= PULSE_SAMPLES) lowest[j] = sample->signal_duration;
             if (lower > highest_lower) highest_lower = lower;
         }
-        uint32_t lowest_upper = valid ? lowest[PULSE_SAMPLES] : 0;
+        // A peer flash shortens a few samples far below the rest. Smooth noise,
+        // ripple and bus stalls keep the window's true minimum.
+        uint32_t lowest_upper = !valid ? 0
+            : lowest[PULSE_SAMPLES] - lowest[0] >= PULSE_GAP_CYCLES ? lowest[PULSE_SAMPLES] : lowest[0];
         unsigned span = highest_lower > lowest_upper ? highest_lower - lowest_upper : 0;
         bool untrimmed_quiet = valid && highest_lower <= lowest[0] + MAXIMUM_QUIET_VARIATION;
         if (valid && span <= MAXIMUM_QUIET_VARIATION) {

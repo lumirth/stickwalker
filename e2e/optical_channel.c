@@ -11,6 +11,8 @@ typedef struct { double on, off; } Pulse;
 typedef struct {
     double capacitance, resistance, trip, ambient, signal, bit, width;
     unsigned seed, stalls;
+    // Room light can change between calibration and a transfer, and during it.
+    double shift, shift_start, shift_cycles;
     Pulse pulses[MAX_PULSES];
     unsigned count, cursor;
     double now, traffic_start;
@@ -28,7 +30,8 @@ static double ambient_at(const Channel *c, double at)
 {
     // Room-light ripple plus a hand moving into and then out of the light.
     double ramp = fmax(0, 1 - fabs((at - c->traffic_start) / 480000 - 1));
-    return c->ambient + (c->ambient >= 15 ? 2.5 : 0.3) * (1 + sin(at * (6.28318530718 * 120 / 240000000)))
+    double drift = c->shift_cycles ? fmin(1, fmax(0, (at - c->shift_start) / c->shift_cycles)) : 0;
+    return c->ambient * (1 + c->shift * drift) + (c->ambient >= 15 ? 2.5 : 0.3) * (1 + sin(at * (6.28318530718 * 120 / 240000000)))
         + 0.4 * ramp;
 }
 
@@ -133,6 +136,13 @@ static bool run(Channel c, unsigned number)
     infrared_decoder_rearm(&decoder);
     c.count = c.cursor = 0;
     c.traffic_start = c.now + 60000 + number * 73 % 2083;
+    if (c.shift_cycles == 120000) {
+        // A lamp or a shadow settles a few milliseconds before the reply.
+        c.shift_start = c.now;
+        c.traffic_start += 1000000;
+    } else if (c.shift_cycles) {
+        c.shift_start = c.traffic_start;
+    }
     send(&c, bytes, PAYLOAD, c.traffic_start);
     double end = c.traffic_start + PAYLOAD * 10 * c.bit + 300000;
     unsigned received = 0, errors = 0;
@@ -141,13 +151,17 @@ static bool run(Channel c, unsigned number)
         InfraredDecodedByte byte;
         unsigned consumed;
         if (infrared_decoder_consume(&decoder, &o, 1, &consumed, &byte)) {
+            // The startup probe can land after calibration. The packet layer
+            // separates it and other idle bursts from the payload.
+            if (c.now < c.traffic_start) continue;
             if (byte.errors || received >= PAYLOAD || byte.value != (bytes[received] ^ 0xaa)) errors++;
             received++;
         }
     }
     if (received == PAYLOAD && !errors) return true;
-    printf("channel %u: C=%.0f R=%.0f trip=%.3f ambient=%.1f signal=%.1f bit=%.0f stalls=%u: %u/%u bytes, %u errors (allowance=%u float=%u)\n",
-           number, c.capacitance, c.resistance, c.trip, c.ambient, c.signal, c.bit, c.stalls,
+    printf("channel %u: C=%.0f R=%.0f trip=%.3f ambient=%.1f%+.0f%%%s signal=%.1f bit=%.0f stalls=%u: %u/%u bytes, %u errors (allowance=%u float=%u)\n",
+           number, c.capacitance, c.resistance, c.trip, c.ambient, c.shift * 100,
+           c.shift_cycles == 120000 ? " before" : c.shift_cycles ? " during" : "", c.signal, c.bit, c.stalls,
            received, PAYLOAD, errors, decoder.jitter_allowance_q8 / 256, calibration.floating_blocks);
     return false;
 }
@@ -165,6 +179,14 @@ int main(void)
             .bit = environment & 1 ? 2100 : 2065, .width = environment & 1 ? 390 : 350,
             .stalls = environment & 1, .seed = 0x9e3779b9u + cases};
         if (!run(channel, cases++)) failures++;
+        const double changes[][2] = {{0.1, 120000}, {-0.1, 120000}, {0.2, 3000000}, {-0.2, 3000000}};
+        for (unsigned k = 0; k < 4; k++) {
+            Channel changed = channel;
+            changed.shift = changes[k][0];
+            changed.shift_cycles = changes[k][1];
+            changed.seed ^= 0x5a5a + k;
+            if (!run(changed, cases++)) failures++;
+        }
     }
     // Exercise the sensitivity paths separately from the independent component
     // extremes above: the same received current does not yield the same voltage
