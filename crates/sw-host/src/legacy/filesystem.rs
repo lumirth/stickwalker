@@ -65,7 +65,7 @@ impl Volume<'_> {
                 self.0,
                 &mut file,
                 name.as_ptr(),
-                lfs::lfs_open_flags_LFS_O_RDONLY as i32,
+                lfs::lfs_open_flags_LFS_O_RDONLY as _,
             )
         };
         if status == lfs::lfs_error_LFS_ERR_NOENT {
