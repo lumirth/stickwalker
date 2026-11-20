@@ -120,15 +120,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          notes="docs/releases/$TAG.md"
           case "$TAG" in
             firmware-v*) title="Stickwalker Firmware v${TAG#firmware-v}" ;;
             desktop-v*) title="Stickwalker Desktop v${TAG#desktop-v}" ;;
           esac
-          [[ -f "$notes" ]] || notes=/dev/null
           if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
             [[ "$draft" == true ]] || { echo "This release is already published."; exit 1; }
             gh release upload "$TAG" artifacts/* --clobber
           else
-            gh release create "$TAG" artifacts/* --verify-tag --draft --title "$title" --notes-file "$notes"
+            gh release create "$TAG" artifacts/* --verify-tag --draft --title "$title" --notes ""
           fi

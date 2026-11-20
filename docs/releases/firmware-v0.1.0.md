@@ -1,5 +1,0 @@
-This is the first stable Stickwalker firmware for the M5Stack StickS3. The firmware has essentially been rewritten from the ground up. IR communication is an order of magnitude more reliable. You should see it working better across different lighting, different distances, and different hardware tolerances. This version should also consume significantly less battery.
-
-Along with this release, there's now a desktop app for Stickwalker. [Stickwalker Desktop](https://github.com/lumirth/stickwalker/releases/latest) can be used to both install and update the Stickwalker without having to tinker with terminal commands. It can also be used to export and import EEPROMs, and edit color palettes. The Stickwalker firmware has 6 color palette slots. Palettes can be imported/exported and shared too.
-
-Stoked to finally solve some long-standing issues as well as make installing and using the Stickwalker a lot easier! This version also opens the door to the desktop app serving as an IR bridge in the future, although that functionality is not included in this initial version.
