@@ -253,7 +253,7 @@ impl StickView {
                                 .child(
                                     Button::new("recovery-import")
                                         .small()
-                                        .label("Import")
+                                        .label("Import EEPROM")
                                         .disabled(self.locked())
                                         .on_click(cx.listener(|v, _, w, cx| {
                                             v.files(FileAction::Import, w, cx)
@@ -301,7 +301,7 @@ impl StickView {
                         Button::new("export")
                             .debug_selector(|| "export-save".into())
                             .small()
-                            .label("Export")
+                            .label("Export EEPROM")
                             .disabled(!self.editable())
                             .on_click(
                                 cx.listener(|v, _, w, cx| v.files(FileAction::Export, w, cx)),
@@ -310,7 +310,7 @@ impl StickView {
                     .child(
                         Button::new("import")
                             .small()
-                            .label("Import")
+                            .label("Import EEPROM")
                             .disabled(!self.editable())
                             .on_click(
                                 cx.listener(|v, _, w, cx| v.files(FileAction::Import, w, cx)),
