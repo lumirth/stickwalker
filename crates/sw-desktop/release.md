@@ -1,6 +1,6 @@
 # Release Stickwalker
 
-Firmware and Desktop have independent versions. Set the firmware version in `VERSION` or the Desktop version in `crates/sw-desktop/Cargo.toml`. Update Cargo.lock when the crate version changes. The release workflow creates a draft titled `Stickwalker Firmware v<version>` or `Stickwalker Desktop v<version>`. Write its notes in the draft before publishing, for players and in short paragraphs: what changed and what it means for them, anything they need (such as a data-capable USB-C cable or a supported platform), and how to install. The published 0.1.0 releases are the model.
+Firmware and Desktop have independent versions. Set the firmware version in `VERSION` or the Desktop version in `crates/sw-desktop/Cargo.toml`. Update Cargo.lock when the crate version changes. The release workflow creates a draft titled `Stickwalker Firmware v<version>` or `Stickwalker Desktop v<version>`. Write its notes in the draft before publishing, for players and in short paragraphs: what changed and what it means for them, anything they need (such as a data-capable USB-C cable or a supported platform), and how to install. The published 0.1.0 releases are the model. For a patch release, open with a short paragraph on what changed, then a `---` rule and the previous release's notes.
 
 Pushes to main and pull requests run Clippy and workspace tests on macOS, Windows, and Linux. Ubuntu also runs the flash journal tests with sanitizers.
 
