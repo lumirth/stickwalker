@@ -284,7 +284,7 @@ pub fn install(
         }
         InstallStorage::Legacy { public, raw_intake } => {
             // A torn table may lack the spiffs entry while the old save is intact.
-            progress("Reading the existing save", None);
+            progress("Checking for an existing save", None);
             let raw = read_region(&mut flasher, 0x670000, 0x180000)?;
             let eeprom = match save::classify_public_partition(&raw) {
                 save::PublicPartition::StickwalkerSave(image) => Some(image),

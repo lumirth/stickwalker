@@ -126,10 +126,8 @@ impl StickView {
             };
             let explanation = if let Some(message) = unavailable {
                 message
-            } else if reconnecting {
+            } else if reconnecting || connected {
                 ""
-            } else if connected {
-                "Existing Stickwalker saves and settings are kept."
             } else {
                 "Use a USB data cable to get started."
             };

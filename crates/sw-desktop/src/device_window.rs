@@ -61,6 +61,8 @@ pub struct StickView {
     pub(super) updates: Updates,
     _subscriptions: Vec<Subscription>,
 }
+pub(super) const REPLACES_SOFTWARE: &str = "This replaces the software on the Stick.\n\n(If it runs an earlier Stickwalker, its save and settings are kept.)";
+
 impl StickView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         #[cfg(debug_assertions)]
@@ -603,10 +605,12 @@ impl StickView {
             package.manifest.version,
             self.device_label()
         );
-        let detail = if installed {
-            "This build is already on the Stick. Existing Stickwalker saves and settings are kept."
+        let detail = if matches!(self.state.connection, ConnectionState::Unmanaged { .. }) {
+            REPLACES_SOFTWARE
+        } else if installed {
+            "This build is already on the Stick. Your save and settings are kept."
         } else {
-            "Existing Stickwalker saves and settings are kept."
+            "Your save and settings are kept."
         };
         self.confirm(
             &title,

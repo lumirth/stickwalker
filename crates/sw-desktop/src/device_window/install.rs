@@ -29,7 +29,7 @@ impl StickView {
         if matches!(self.state.connection, ConnectionState::Unmanaged { .. }) {
             self.confirm(
                 &format!("Install Stickwalker on {}?", self.device_label()),
-                "This replaces the device’s current software. Existing Stickwalker saves and settings are kept.",
+                super::REPLACES_SOFTWARE,
                 "Install", Command::Update, w, cx,
             );
             return;
