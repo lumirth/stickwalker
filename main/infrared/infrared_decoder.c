@@ -10,6 +10,7 @@
 #define LOOKAHEAD_CYCLES INFRARED_BIT_CYCLES
 #define MINIMUM_BIT_CYCLES 2062u
 #define MAXIMUM_BIT_CYCLES 2105u
+#define PULSE_SAMPLES 8u
 
 static inline bool later(uint32_t first, uint32_t second)
 {
@@ -29,12 +30,15 @@ void infrared_decoder_measure_noise(InfraredDecoder *decoder,
 {
     // A peer may already be transmitting. Measure short quiet windows and
     // trim the upper quarter: partial pulses can fit below the span limit too.
+    // Each window also ignores its shortest samples. A weak discovery probe
+    // shortens only a few, by less than the span limit.
     unsigned spans[MAXIMUM_QUIET_VARIATION + 1] = {0};
     unsigned windows = 0;
     int64_t variance_by_span[MAXIMUM_QUIET_VARIATION + 1] = {0};
     int64_t covariance_by_span[MAXIMUM_QUIET_VARIATION + 1] = {0};
     for (unsigned start = 0; start + 64 <= count; start += 64) {
-        uint32_t lowest_upper = UINT16_MAX;
+        uint16_t lowest[PULSE_SAMPLES + 1];
+        unsigned kept = 0;
         uint32_t highest_lower = 0;
         bool valid = true;
         for (unsigned i = start; i < start + 64; ++i) {
@@ -46,13 +50,21 @@ void infrared_decoder_measure_noise(InfraredDecoder *decoder,
                 break;
             }
             uint32_t lower = sample->signal_duration - sample->sample_gap_cycles;
-            if (sample->signal_duration < lowest_upper) lowest_upper = sample->signal_duration;
+            unsigned j = kept < PULSE_SAMPLES + 1 ? kept++ : PULSE_SAMPLES + 1;
+            for (; j && lowest[j - 1] > sample->signal_duration; --j) {
+                if (j <= PULSE_SAMPLES) lowest[j] = lowest[j - 1];
+            }
+            if (j <= PULSE_SAMPLES) lowest[j] = sample->signal_duration;
             if (lower > highest_lower) highest_lower = lower;
         }
+        uint32_t lowest_upper = valid ? lowest[PULSE_SAMPLES] : 0;
         unsigned span = highest_lower > lowest_upper ? highest_lower - lowest_upper : 0;
+        bool untrimmed_quiet = valid && highest_lower <= lowest[0] + MAXIMUM_QUIET_VARIATION;
         if (valid && span <= MAXIMUM_QUIET_VARIATION) {
             spans[span]++;
             windows++;
+        }
+        if (untrimmed_quiet) {
             int64_t n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
             for (unsigned i = start; i < start + 64; ++i) {
                 const InfraredObservation *sample = &observations[i];
