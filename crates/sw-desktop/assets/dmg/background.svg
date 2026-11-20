@@ -8,5 +8,5 @@
   <rect width="640" height="420" fill="url(#paper)"/>
   <image x="192" y="32" width="256" height="42" xlink:href="../wordmark.svg"/>
   <text x="320" y="113" text-anchor="middle" font-family="IBM Plex Sans" font-size="17" fill="#36536B">Drag Stickwalker to Applications</text>
-  <path d="M288 220h64m-12-12 12 12-12 12" fill="none" stroke="#157BCB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M288 220h64m-12-12 12 12-12 12" fill="none" stroke="#1586E8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
