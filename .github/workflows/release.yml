@@ -19,6 +19,8 @@ jobs:
       - name: Check firmware tag
         run: test "$GITHUB_REF_NAME" = "firmware-v$(cat VERSION)"
       - uses: ./.github/actions/build-firmware
+      - name: Check release firmware version
+        run: python3 tools/package.py check-firmware --release
       - uses: actions/upload-artifact@v4
         with:
           name: firmware

@@ -107,7 +107,7 @@ def firmware():
             dict(
                 schema=1,
                 product="StickS3",
-                version=(root / "VERSION").read_text().strip(),
+                version=json.loads((build / "project_description.json").read_bytes())["project_version"],
                 storage="SWK6",
                 state=layout["walker2"],
                 settings=layout["nvs"],
@@ -121,7 +121,7 @@ def firmware():
     print(out / "firmware.json")
 
 
-def check_firmware(firmware_dir=None):
+def check_firmware(firmware_dir=None, release=False):
     if firmware_dir is None:
         firmware_dir = root / "dist/firmware"
     manifest_file = firmware_dir / "firmware.json"
@@ -130,8 +130,9 @@ def check_firmware(firmware_dir=None):
     manifest = json.loads(manifest_file.read_bytes())
     if (manifest.get("schema"), manifest.get("product"), manifest.get("storage")) != (1, "StickS3", "SWK6"):
         raise SystemExit("Invalid Stickwalker firmware manifest.")
-    if manifest["version"] != (root / "VERSION").read_text().strip():
-        raise SystemExit("Firmware version does not match VERSION.")
+    expected = (root / "VERSION").read_text().strip()
+    if manifest["version"] != expected and (release or not manifest["version"].startswith(expected + "-dev")):
+        raise SystemExit(f"Firmware version {manifest['version']} does not match {expected}.")
     images = manifest["images"]
     if (len(images) != len(FIRMWARE_IMAGES)
             or {image["file"]: image["kind"] for image in images} != FIRMWARE_IMAGES):
@@ -335,7 +336,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("firmware", help="package the existing ESP-IDF build")
-    commands.add_parser("check-firmware", help="verify the firmware version and image checksums")
+    check = commands.add_parser("check-firmware", help="verify the firmware version and image checksums")
+    check.add_argument("--release", action="store_true", help="require the exact VERSION")
     release = commands.add_parser("check-desktop-release", help="verify inputs for a desktop release")
     release.add_argument("tag")
     app = commands.add_parser("desktop", help="build and package the native app")
@@ -350,6 +352,6 @@ if __name__ == "__main__":
     elif args.command == "check-desktop-release":
         check_desktop_release(args.tag)
     elif args.command == "check-firmware":
-        check_firmware()
+        check_firmware(release=args.release)
     else:
         desktop(args)

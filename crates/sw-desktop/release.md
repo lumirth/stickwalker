@@ -6,7 +6,7 @@ Pushes to main and pull requests run Clippy and workspace tests on macOS, Window
 
 ## Prepare a release
 
-A `firmware-v*` tag builds firmware with the pinned ESP-IDF SDK. A `desktop-v*` tag builds Desktop for Apple silicon, Windows x86-64, and Linux x86-64. Each desktop job runs the workspace tests before packaging. Both workflows create a draft release.
+A `firmware-v*` tag builds firmware with the pinned ESP-IDF SDK and rejects a build that doesn't report exactly `VERSION`. A `desktop-v*` tag builds Desktop for Apple silicon, Windows x86-64, and Linux x86-64. Each desktop job runs the workspace tests before packaging. Both workflows create a draft release.
 
 For the first stable launch, publish the firmware first so new installs can download it. Test the desktop installer, USB reconnection after flashing, and an app update on each supported OS. On Windows, SmartScreen can prompt when opening the unsigned executable. [Windows download instructions](README.md#windows)
 

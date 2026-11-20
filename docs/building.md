@@ -15,6 +15,8 @@ tools/build.sh build
 python3 tools/package.py firmware
 ```
 
+A build from a clean checkout of the `firmware-v<VERSION>` tag reports `VERSION`. Other builds report `<VERSION>-dev+g<commit>`, with `.dirty` for uncommitted changes.
+
 In Stickwalker Desktop, choose **Device → Open Firmware…** and open `dist/firmware/firmware.json`. The manifest and its three binaries belong together.
 
 ### Flash a local build over USB

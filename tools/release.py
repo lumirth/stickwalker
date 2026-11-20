@@ -199,7 +199,7 @@ def publish(tag):
             assets = folder / "firmware"
             patterns = [arg for name in ("firmware.json", *FIRMWARE_IMAGES) for arg in ("--pattern", name)]
             run("gh", "release", "download", tag, "--dir", str(assets), *patterns)
-            check_firmware(assets)
+            check_firmware(assets, release=True)
             run("gh", "release", "edit", tag, "--draft=false", "--latest=false")
             exists = subprocess.run(["gh", "release", "view", "firmware-feed"], cwd=root,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
