@@ -28,7 +28,7 @@ build/dmg-tools/bin/python tools/package.py desktop --sign
 
 The packager signs the embedded Sparkle framework first, then the app with hardened runtime and a timestamp. It notarizes and staples both the app and its disk image.
 
-For CI, set the repository variables `STICKWALKER_UPDATE_KEY` and `STICKWALKER_SIGN_IDENTITY`. Store the exported certificate and private key as the base64 secret `APPLE_CERTIFICATE_P12`, with its password in `APPLE_CERTIFICATE_PASSWORD`. Store the notarization key in `APPLE_API_KEY` and its identifiers in `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID`. The workflow imports the credentials into the runner's keychain.
+For CI, set the repository variables `STICKWALKER_UPDATE_KEY` and `STICKWALKER_SIGN_IDENTITY`. Store the exported certificate and private key as the base64 secret `APPLE_CERTIFICATE_P12`, with its password in `APPLE_CERTIFICATE_PASSWORD`. Export it with legacy SHA-1/3DES encryption: the runner's `security import` rejects OpenSSL 3's default PKCS#12 format. Store the notarization key in `APPLE_API_KEY` and its identifiers in `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID`. The workflow imports the credentials into the runner's keychain.
 
 ## Publish a draft
 
@@ -41,8 +41,8 @@ python3 tools/release.py publish firmware-v0.1.0
 Firmware publication uploads the versioned images before replacing `firmware-feed/firmware.json`. Desktop retrieves them over HTTPS and verifies their SHA-256 hashes.
 
 ```sh
-export STICKWALKER_UPDATE_KEY='<public half>'
-export SPARKLE_PRIVATE_KEY='<release signing key>'
+export STICKWALKER_UPDATE_KEY="$(op read 'op://Developer/Stickwalker Sparkle update key/public key')"
+export SPARKLE_PRIVATE_KEY="$(op read 'op://Developer/Stickwalker Sparkle update key/private key')"
 python3 tools/release.py publish desktop-v0.1.0
 ```
 
