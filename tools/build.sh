@@ -7,7 +7,7 @@ export IDF_TARGET=esp32s3
 export IDF_COMPONENT_MANAGER=0
 release=$(head -n 1 "$project/VERSION")
 version="$release-dev"
-if commit=$(git -C "$project" rev-parse --short=12 HEAD 2>/dev/null); then
+if commit=$(git -C "$project" rev-parse --short=8 HEAD 2>/dev/null); then
     if [[ -n $(git -C "$project" status --porcelain) ]]; then
         version+="+g$commit.dirty"
     elif git -C "$project" tag --points-at HEAD | grep -qx "firmware-v$release"; then
