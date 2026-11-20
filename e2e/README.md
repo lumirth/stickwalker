@@ -1,13 +1,14 @@
 # Test Stickwalker end to end
 
-Build the firmware with the resident artwork. For the full run, supply the ESP32-S3 mask ROM ELF from Espressif's `esp-rom-elfs` package, a paired empty save, a save with a Pokémon on a stroll, and the HGSS peer sources used by `bench/tests/hgss_driver.c` in IR Lab. [Build instructions](../docs/building.md)
+Build the firmware with the resident artwork. The ESP-IDF installation provides the ESP32-S3 mask ROM ELF. Put two of your own native EEPROM dumps in `e2e/local/`, which Git ignores: `registered.eeprom`, a paired walker with no Pokémon on a stroll, and `course.eeprom`, a walker with a Pokémon on a stroll. [Build instructions](../docs/building.md)
 
 ```sh
 python3 e2e/journeys.py \
-  /path/to/esp32s3_rev0_rom.elf build/firmware \
-  /path/to/registered-empty.bin /path/to/course.bin \
-  /path/to/hgss-dataset-reference
+  .deps/idf-tools/tools/esp-rom-elfs/20241011/esp32s3_rev0_rom.elf build/firmware \
+  e2e/local/registered.eeprom e2e/local/course.eeprom
 ```
+
+`src/peer.rs` plays the game's side of a send or return. It follows `pokewalker_ir.c` in the [pokeheartgold decompilation](https://github.com/ctrl-cheeb-del/pokeheartgold): the packet framing, the handshake, the walker identity checks, the 128-byte page transfers, LZ10-compressed course pages, and the 100 ms link timeout.
 
 Use `--output DIRECTORY` to keep the screens and packet traces. Add `--pair BEFORE TRACE PREDICTED` to replay a recorded pairing and compare the resulting save against the captured page writes. Flash timing defaults to typical values. Use `--timing maximum` for the datasheet’s worst-case program and erase times at −40 to 85 °C.
 
@@ -43,7 +44,8 @@ The peer journey links two firmware instances through their simulated emitters a
 For changes to cartridge discovery, retries, or IR timing, run the HGSS connection scenarios.
 
 ```sh
-python3 e2e/connections.py ROM.elf build/firmware registered.bin course.bin ../bench --seed 1
+python3 e2e/connections.py .deps/idf-tools/tools/esp-rom-elfs/20241011/esp32s3_rev0_rom.elf \
+  build/firmware e2e/local/registered.eeprom e2e/local/course.eeprom --seed 1
 ```
 
 Each scenario runs against weak, slow-pad, and bright optical paths. Hot startup must accept the first reply at a 140 µs turnaround. Other scenarios use 380 µs and exercise delayed alignment, a damaged burst, or an absent peer. After a failed transfer, the next attempt must succeed in the same boot. Return starts from the flash produced by send. The runner reboots again to check the pairing and course after return.

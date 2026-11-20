@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the StickS3 firmware with local retail EEPROMs and the HGSS peer."""
+"""Run the StickS3 firmware with local retail EEPROMs and the simulated HGSS game."""
 
 import argparse
 import os
@@ -37,12 +37,10 @@ def run(args, output: Path) -> None:
     subprocess.run([ROOT / "e2e/run", args.rom, args.firmware, args.empty, "clock", output / "clock"],
                    cwd=ROOT, check=True)
 
-    def boot(name, journey, seed, *, peer=False, trace=None, carry=False, **options):
+    def boot(name, journey, seed, *, trace=None, carry=False, **options):
         directory = output / name
         directory.mkdir(exist_ok=True)
         command = [ROOT / "e2e/run", args.rom, args.firmware, seed, journey, directory]
-        if peer:
-            command.append(args.peer)
         if trace:
             command.append(trace)
         environment = {key: value for key, value in os.environ.items() if not key.startswith("STICK_")}
@@ -62,7 +60,7 @@ def run(args, output: Path) -> None:
         return image, runtime
 
     def send(name, seed=args.empty, *, carry=False, **options):
-        return boot(name, "send", seed, peer=True, carry=carry, STICK_COURSE_EEPROM=str(args.course),
+        return boot(name, "send", seed, carry=carry, STICK_COURSE_EEPROM=str(args.course),
                     STICK_PEER_EEPROM=str(args.empty), **options)
 
     def sent_course(eeprom):
@@ -99,7 +97,7 @@ def run(args, output: Path) -> None:
 
     trainer = output / "trainer.eeprom"
     trainer.write_bytes(walked)
-    returned, _ = boot("return", "return", output / "pocket-walk/flash.bin", peer=True,
+    returned, _ = boot("return", "return", output / "pocket-walk/flash.bin",
                        STICK_PEER_EEPROM=str(trainer), STICK_POWER="battery", STICK_IR_PATH="weak")
     assert flags(returned) == 1 and returned[PAIRING] == sent[PAIRING]
     reply = (output / "return/walker.txt").read_text().splitlines()
@@ -160,7 +158,7 @@ def run(args, output: Path) -> None:
     rebooted, _ = boot("inventory-reboot", "inventory", output / "gameplay/flash.bin", carry=True)
     assert played[0xce8c:0xcecc] == rebooted[0xce8c:0xcecc]
     trainer.write_bytes(played)
-    finished, _ = boot("expedition-return", "return", output / "gameplay/flash.bin", peer=True,
+    finished, _ = boot("expedition-return", "return", output / "gameplay/flash.bin",
                        STICK_PEER_EEPROM=str(trainer))
     assert flags(finished) == 1 and finished[PAIRING] == sent[PAIRING]
 
@@ -189,7 +187,6 @@ if __name__ == "__main__":
     parser.add_argument("firmware", type=Path, help="directory holding the built Stick firmware")
     parser.add_argument("empty", type=Path, help="registered, empty Pokéwalker EEPROM dump")
     parser.add_argument("course", type=Path, help="original-format EEPROM dump holding the Pokémon to send")
-    parser.add_argument("peer", type=Path, help="local HGSS protocol peer executable")
     parser.add_argument("--pair", type=Path, nargs=3, metavar=("BEFORE", "TRACE", "PREDICTED"))
     parser.add_argument("--timing", choices=("typical", "maximum"), default="typical",
                         help="GD25Q64E program and erase timing profile")
@@ -197,7 +194,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not __debug__:
         parser.error("Run the journeys with Python assertions enabled")
-    for name in ("rom", "firmware", "empty", "course", "peer"):
+    for name in ("rom", "firmware", "empty", "course"):
         setattr(args, name, getattr(args, name).resolve())
     if args.pair:
         args.pair = [path.resolve() for path in args.pair]

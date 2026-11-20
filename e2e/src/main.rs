@@ -1274,7 +1274,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             env::var("STICK_SEED").unwrap_or("1".into()).parse()?;
     }
     if matches!(journey, "send" | "return") {
-        let program = args.get(6).ok_or("Pass the HGSS peer executable")?;
         let course = if journey == "send" {
             let data = fs::read(env::var("STICK_COURSE_EEPROM")?)?;
             if data.len() != 65536 {
@@ -1300,7 +1299,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
         };
         let peer = peer::Peer::open(
-            Path::new(program),
             if journey == "send" { "put" } else { "back" },
             status,
             course.as_ref().map(|image| &image[0x8f00..0x8f00 + 10430]),
@@ -1998,7 +1996,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(fs::read)
                     .transpose()?;
                 let peer = peer::Peer::open(
-                    Path::new(args.get(6).unwrap()),
                     if journey == "send" { "put" } else { "back" },
                     &status,
                     course

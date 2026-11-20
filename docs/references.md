@@ -8,6 +8,6 @@ Dmitry Grinberg's [Pokéwalker research](https://dmitry.gr/?r=05.Projects&proj=2
 
 Thanks to the [Pokéwalker Hacking community](https://discord.gg/ymbTMsS), including mamba2410, zenithknight, mriankamp and porocyon.
 
-The port uses [M5Stack's Stick S3 hardware and libraries](https://docs.m5stack.com/en/core/StickS3). Firmware tests use [esp32sim](https://github.com/mikroverk/esp32sim), by Joakim Eriksson and Alice.
+The port uses [M5Stack's Stick S3 hardware and libraries](https://docs.m5stack.com/en/core/StickS3). Firmware tests use [esp32sim](https://github.com/mikroverk/esp32sim), by Joakim Eriksson and Alice. Their game side follows ctrl-cheeb-del's [pokeheartgold decompilation](https://github.com/ctrl-cheeb-del/pokeheartgold).
 
 [Third-party notices](../NOTICE.md).

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 from storage_reader import decode
 
 parser = argparse.ArgumentParser(description=__doc__)
-for name in ('rom', 'firmware', 'empty', 'course', 'bench'):
+for name in ('rom', 'firmware', 'empty', 'course'):
     parser.add_argument(name, type=lambda p: Path(p).resolve())
 parser.add_argument('--seed', type=int, default=1)
 parser.add_argument('--story', choices=('hot', 'delayed', 'glitch', 'retry'))
@@ -25,11 +25,6 @@ if not 0 < args.seed <= 0xffffffff:
 
 with tempfile.TemporaryDirectory(prefix='stick-connections-') as temporary:
     work = Path(temporary)
-    peer = work / 'peer'
-    subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
-        *['-I' + str(args.bench / p) for p in ('include', 'include/hgss', 'vendor/hgss')],
-        *[args.bench / 'source' / p for p in ('hgss_irc.c', 'hgss_phc.c', 'hgss_peer.c')],
-        ROOT / 'e2e/peer.c', '-o', peer], check=True)
     stories = [args.story] if args.story else ['hot', 'delayed', 'glitch', 'retry']
     paths = [args.path] if args.path else ['weak', 'slow-pad', 'bright']
     for path, story in ((path, story) for path in paths for story in stories):
@@ -47,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix='stick-connections-') as temporary:
             try:
                 with (out / 'run.log').open('w') as log:
                     subprocess.run([ROOT / 'e2e/run', args.rom, args.firmware, seed,
-                        direction, out, peer], env=environment, cwd=ROOT,
+                        direction, out], env=environment, cwd=ROOT,
                         stdout=log, stderr=subprocess.STDOUT, check=True)
                 image, _ = decode((out / 'flash.bin').read_bytes()[0x610000:])
                 assert image == (out / 'live-eeprom.bin').read_bytes(), 'Persisted EEPROM differs from game RAM'
