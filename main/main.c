@@ -13,6 +13,7 @@
 #include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_cpu.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "infrared/infrared.h"
@@ -94,9 +95,37 @@ static const esp_pm_config_t link_clock = {.max_freq_mhz = 240, .min_freq_mhz = 
 static uint8_t game_frame[PW_SCREEN_PIXELS];
 static const unsigned brightness_steps[] = {2, 5, 10, 18, 28, 42, 64, 96, 155, 255};
 
+// esp_timer runs from IRAM, and CPU0 instruction fetches from IRAM delay the
+// receiver's pin writes on CPU1. The CPU clock is fixed at 240 MHz while the
+// receiver is open, so the game's clock counts cycles then.
+static bool cycle_clock;
+static uint64_t clock_us, last_us;
+static uint32_t clock_cycle, clock_remainder;
+
+void pw_host_cycle_clock(bool enabled)
+{
+    if (enabled && !cycle_clock) {
+        clock_us = pw_host_now_us();
+        clock_cycle = esp_cpu_get_cycle_count();
+        clock_remainder = 0;
+    }
+    cycle_clock = enabled;
+}
+
 uint64_t pw_host_now_us(void)
 {
-    return esp_timer_get_time();
+    uint64_t now = esp_timer_get_time();
+    if (cycle_clock) {
+        uint32_t cycle = esp_cpu_get_cycle_count();
+        uint64_t elapsed = (uint64_t)(uint32_t)(cycle - clock_cycle) + clock_remainder;
+        clock_cycle = cycle;
+        clock_us += elapsed / 240u;
+        clock_remainder = elapsed % 240u;
+        now = clock_us;
+    }
+    if (now < last_us) now = last_us;
+    last_us = now;
+    return now;
 }
 
 uint64_t pw_host_calendar_us(void)

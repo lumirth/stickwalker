@@ -10,6 +10,8 @@
 extern "C" {
 #endif
 
+void pw_host_cycle_clock(bool enabled);
+
 #define INFRARED_MAX_FRAME 136u
 
 enum {

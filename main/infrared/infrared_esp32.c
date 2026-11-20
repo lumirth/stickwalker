@@ -2,6 +2,7 @@
 #include "../board.h"
 #include "../display.h"
 #include "diode.h"
+#include "esp_rom_sys.h"
 #include "infrared_decoder.h"
 #include "infrared_capture.h"
 #include "infrared_calibration.h"
@@ -363,6 +364,9 @@ static void measure_receiver_noise(void)
             if (receiver.observations[scanned].flags) clean_start = scanned + 1;
         }
         if (published - clean_start >= NOISE_CALIBRATION_SAMPLES) break;
+        // A tight loop on the shared cursor contends with the sampler on CPU1
+        // and lengthens some measurements, which inflates the noise allowance.
+        esp_rom_delay_us(200);
     } while (esp_timer_get_time() < deadline);
     if (published > clean_start) {
         infrared_decoder_measure_noise(&decoder, receiver.observations + clean_start,
@@ -653,11 +657,13 @@ bool pw_host_infrared_open(void)
         infrared_stop();
         return false;
     }
+    pw_host_cycle_clock(true);
     return true;
 }
 
 void infrared_stop(void)
 {
+    pw_host_cycle_clock(false);
     infrared_close();
     board_ir_power(false);
 }
