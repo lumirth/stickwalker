@@ -32,7 +32,12 @@ pub fn rgb888(c: u16) -> u32 {
     let c = u32::from(c);
     (((c >> 11) * 255 / 31) << 16) | ((((c >> 5) & 63) * 255 / 63) << 8) | ((c & 31) * 255 / 31)
 }
-pub fn data_dir() -> Option<std::path::PathBuf> {
+fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("me", "kukas", "Stickwalker")
-        .map(|dirs| dirs.data_dir().to_owned())
+}
+pub fn data_dir() -> Option<std::path::PathBuf> {
+    project_dirs().map(|dirs| dirs.data_dir().to_owned())
+}
+pub fn cache_dir() -> Option<std::path::PathBuf> {
+    project_dirs().map(|dirs| dirs.cache_dir().to_owned())
 }

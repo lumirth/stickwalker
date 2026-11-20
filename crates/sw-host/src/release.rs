@@ -9,7 +9,7 @@ pub const FEED: &str =
     "https://github.com/lumirth/stickwalker/releases/download/firmware-feed/firmware.json";
 const INVALID_PACKAGE: &str = "This firmware package is invalid or damaged. Download it again.";
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String")]
 pub struct AssetName(String);
 
@@ -46,19 +46,19 @@ pub enum ImageKind {
     Partitions,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Image {
     pub kind: ImageKind,
     pub offset: usize,
     pub file: AssetName,
     pub sha256: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Region {
     pub offset: usize,
     pub size: usize,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub schema: u32,
     pub product: String,
@@ -240,14 +240,26 @@ impl Package {
     }
     /// A version becomes available offline once its verified manifest is in place.
     pub(super) fn store(&self, cache: &Path) -> Result<()> {
-        let dir = cache.join(self.manifest.version.to_string());
+        let version = self.manifest.version.to_string();
+        let dir = cache.join(&version);
         for (name, bytes) in &self.images {
             atomic_write(&dir.join(name), bytes)?;
         }
         atomic_write(
             &dir.join("firmware.json"),
             &serde_json::to_vec(&self.manifest)?,
-        )
+        )?;
+        for entry in fs::read_dir(cache)? {
+            let entry = entry?;
+            if entry.file_name() != version.as_str() {
+                if entry.file_type()?.is_dir() {
+                    fs::remove_dir_all(entry.path())?;
+                } else {
+                    fs::remove_file(entry.path())?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn cached(cache: &Path) -> Option<Self> {
@@ -267,16 +279,16 @@ impl Package {
         })
     }
 
-    pub(super) fn latest(current: Option<&Version>) -> Result<Option<Self>> {
+    pub(super) fn latest(current: Option<&Manifest>) -> Result<Option<Self>> {
         Self::fetch(current, get)
     }
 
     pub(super) fn fetch(
-        current: Option<&Version>,
+        current: Option<&Manifest>,
         mut read: impl FnMut(&str, usize) -> Result<Vec<u8>>,
     ) -> Result<Option<Self>> {
         let manifest = Manifest::parse(&read(FEED, MANIFEST_LIMIT)?)?;
-        if current.is_some_and(|version| !manifest.version.cmp_precedence(version).is_gt()) {
+        if current == Some(&manifest) {
             return Ok(None);
         }
 

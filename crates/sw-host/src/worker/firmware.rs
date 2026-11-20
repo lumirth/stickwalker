@@ -1,5 +1,5 @@
 use super::{Firmware, Message};
-use crate::release::{Package, Version};
+use crate::release::{Manifest, Package};
 use anyhow::Result;
 use std::{
     path::PathBuf,
@@ -49,16 +49,16 @@ impl FirmwareUpdates {
         &mut self,
         reason: Request,
         wake: &Sender<Message>,
-        fetch: impl FnOnce(Option<&Version>) -> Result<Option<Package>> + Send + 'static,
+        fetch: impl FnOnce(Option<&Manifest>) -> Result<Option<Package>> + Send + 'static,
     ) {
         let download = self.download.get_or_insert_with(|| {
             let wake = wake.clone();
-            let version = self.release.as_ref().map(|p| p.manifest.version.clone());
+            let current = self.release.as_ref().map(|p| p.manifest.clone());
             let cache = self.cache.clone();
             let (sender, result) = mpsc::channel();
             thread::spawn(move || {
                 let package = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let package = fetch(version.as_ref())?;
+                    let package = fetch(current.as_ref())?;
                     if let (Some(p), Some(dir)) = (&package, cache)
                         && let Err(error) = p.store(&dir)
                     {

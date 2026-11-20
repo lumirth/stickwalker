@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    release::{FEED, hash},
+    release::{FEED, Version, hash},
     usb::Port,
     worker::{ActiveDevice, Command, Presentation, Work, WorkerState},
 };
@@ -64,24 +64,26 @@ fn release(version: &str) -> Package {
 }
 
 #[test]
-fn offline_restart_uses_the_newest_complete_package() {
+fn the_cache_holds_only_the_package_the_feed_lists() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path();
     for version in ["0.1.9", "0.1.10"] {
         release(version).store(cache).unwrap();
     }
+    let names = || {
+        fs::read_dir(cache)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(), ["0.1.10"]);
     let cached = Package::cached(cache).unwrap();
     assert_eq!(cached.manifest.version, Version::new(0, 1, 10));
-    for version in ["0.1.10", "0.1.9"] {
-        let result = Package::fetch(Some(&cached.manifest.version), |url, _| {
-            assert_eq!(
-                url, FEED,
-                "an unchanged or older release must not fetch images"
-            );
-            Ok(assets(version).remove("firmware.json").unwrap())
-        });
-        assert!(result.unwrap().is_none());
-    }
+    let unchanged = Package::fetch(Some(&cached.manifest), |url, _| {
+        assert_eq!(url, FEED, "an unchanged feed must not fetch images");
+        Ok(assets("0.1.10").remove("firmware.json").unwrap())
+    });
+    assert!(unchanged.unwrap().is_none());
 
     let mut damaged = assets("0.1.11");
     damaged.get_mut("stickwalker.bin").unwrap().truncate(32);
@@ -98,18 +100,21 @@ fn offline_restart_uses_the_newest_complete_package() {
     };
     assert!(error.to_string().contains("stickwalker.bin"));
     assert!(updates.selection().is_some_and(|f| f.version == cached.manifest.version));
-    assert!(!cache.join("0.1.11").exists());
+    assert_eq!(names(), ["0.1.10"]);
 
-    fs::write(cache.join("0.1.10/stickwalker.bin"), b"partial").unwrap();
-    assert_eq!(
-        Package::cached(cache).unwrap().manifest.version,
-        Version::new(0, 1, 9)
-    );
-    release("0.1.10").store(cache).unwrap();
-    assert_eq!(
-        Package::cached(cache).unwrap().manifest.version,
-        Version::new(0, 1, 10)
-    );
+    let mut rollback = assets("0.1.9");
+    updates.request(Request::Check, &wake, |current| {
+        Package::fetch(current, move |url, _| {
+            Ok(rollback.remove(url.rsplit('/').next().unwrap()).unwrap())
+        })
+    });
+    inbox.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(updates.finish(), Some((true, Ok(())))));
+    assert!(updates.selection().is_some_and(|f| f.version == Version::new(0, 1, 9)));
+    assert_eq!(names(), ["0.1.9"]);
+
+    fs::write(cache.join("0.1.9/stickwalker.bin"), b"partial").unwrap();
+    assert!(Package::cached(cache).is_none());
 }
 
 #[test]
@@ -159,7 +164,7 @@ fn download_feedback_depends_on_who_requested_it() {
     };
     worker.publish();
     let target = worker.state.connection.target();
-    fn offline(_: Option<&Version>) -> Result<Option<Package>> {
+    fn offline(_: Option<&Manifest>) -> Result<Option<Package>> {
         anyhow::bail!("offline")
     }
     worker.firmware.request(Request::Background, &wake, offline);

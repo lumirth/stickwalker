@@ -590,7 +590,7 @@ fn run(
 ) {
     let mut worker = WorkerState {
         active: ActiveDevice::Disconnected,
-        firmware: FirmwareUpdates::new(crate::data_dir().map(|d| d.join("firmware"))),
+        firmware: FirmwareUpdates::new(crate::cache_dir().map(|d| d.join("firmware"))),
         state: Presentation::default(),
         last_sent: None,
         discover: Instant::now(),
