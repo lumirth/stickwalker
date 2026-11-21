@@ -252,7 +252,7 @@ int main(void)
                 for (unsigned phase = 0; phase < 16; phase++) {
                     Channel link = {.capacitance = 19, .resistance = 45, .trip = 1.55,
                         .ambient = phase & 1 ? 1.5 : 0.1, .signal = current,
-                        .tail = current > 50 ? 0.04 : 0, .tail_cycles = 300,
+                        .tail = 0.17, .tail_cycles = 300,
                         .bit = (double[]){2065, 2083, 2100, 2071}[phase % 4], .width = phase & 2 ? 390 : 350,
                         .stalls = 1, .seed = 0x2545f491u + phase * 977 + d};
                     passed += run(link, 100000 + phase);
