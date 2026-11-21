@@ -1449,6 +1449,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rig.center()?;
                     rig.press("side")?; // Palette.
                 }
+                rig.press("side")?; // Sound.
                 rig.press("side")?; // Back to game.
                 rig.center()?;
                 let frame = rig.frame();
@@ -1571,7 +1572,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| format!("{e:?}"))?;
             for phase in 0..8 {
                 rig.open_settings()?;
-                for _ in 0..3 {
+                for _ in 0..4 {
                     rig.press("side")?;
                 }
                 rig.run(phase * 8)?;
@@ -1917,7 +1918,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("Fresh Power hold did not open Settings".into());
             }
             let before_restart = rig.machine.bus.read32(state).map_err(|e| format!("{e:?}"))?;
-            for _ in 0..3 { rig.press("side")?; }
+            for _ in 0..4 { rig.press("side")?; }
             rig.center()?; // Return to the expedition.
             management::request(&mut rig, host::protocol::PREPARE, &[])?;
             rig.machine.reboot();
@@ -2235,7 +2236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if rig.machine.bus.read32(ui).map_err(|e| format!("{e:?}"))? != 1 {
                     return Err("The completed connection left controls unresponsive".into());
                 }
-                for _ in 0..3 {
+                for _ in 0..4 {
                     rig.press("side")?;
                 }
                 rig.center()?;
@@ -2308,6 +2309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rig.press("side")?;
         rig.press("power")?; // Palette.
         let game_shade = rig.machine.bus.pwm_output(38);
+        rig.press("side")?; // Sound.
         rig.press("side")?; // Back to game.
         rig.press("power")?;
         rig.machine.reboot();
@@ -2346,7 +2348,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         speaker::observe(&mut rig);
         rig.open_settings()?;
-        for _ in 0..3 { rig.press("side")?; } // Back to game.
+        for _ in 0..4 { rig.press("side")?; } // Back to game.
         rig.press("power")?;
         rig.run(65000)?;
         rig.press("front")?;

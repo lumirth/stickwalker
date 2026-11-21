@@ -25,7 +25,7 @@
 
 enum {
     SETTINGS_HOLD_US = 1500000, SETTINGS_IDLE_US = 90000000,
-    SETTINGS_ROWS = 4,
+    SETTINGS_ROWS = 5,
 };
 
 typedef struct {
@@ -61,6 +61,8 @@ static const uint8_t permutations[][3] = {
     {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0},
 };
 static Preferences settings = {.layout = 1, .mappings = {1, 0, 4, 1}};
+static uint8_t sound_mode = SOUND_PIEZO;
+static const char *const sound_names[SOUND_MODES] = {"Piezo", "Piezo+", "Speaker"};
 static struct {
     View view;
     Preferences draft;
@@ -156,17 +158,19 @@ static bool palette_name_valid(const char name[16])
     return false;
 }
 
+static bool preferences_valid(const Preferences *saved)
+{
+    return saved->palette < PALETTES && saved->reverse <= 1 &&
+           saved->layout < sizeof(layouts) / sizeof(*layouts) &&
+           saved->mappings[0] < 6 && saved->mappings[1] < 6 && saved->mappings[2] < 6 && saved->mappings[3] < 6;
+}
+
 static void prefs_load(void)
 {
     nvs_handle_t nvs;
     if (nvs_open("stick", NVS_READONLY, &nvs) != ESP_OK) {
         return;
     }
-    // The former eighth byte was a host brightness override. Ignore it on upgrade.
-    uint8_t bytes[sizeof(Preferences) + 1];
-    size_t length = sizeof(bytes);
-    Preferences saved;
-    esp_err_t result = nvs_get_blob(nvs, "choices", bytes, &length);
     uint16_t table[PALETTES][4];
     size_t table_size = sizeof(table);
     if (nvs_get_blob(nvs, "palettes", table, &table_size) == ESP_OK && table_size == sizeof(table))
@@ -180,14 +184,18 @@ static void prefs_load(void)
             }
         }
     }
+    Preferences saved = settings;
+    size_t mappings_size = sizeof(saved.mappings);
+    bool keyed = nvs_get_u8(nvs, "palette", &saved.palette) == ESP_OK &&
+                 nvs_get_u8(nvs, "orientation", &saved.reverse) == ESP_OK &&
+                 nvs_get_u8(nvs, "layout", &saved.layout) == ESP_OK &&
+                 nvs_get_blob(nvs, "mappings", saved.mappings, &mappings_size) == ESP_OK &&
+                 mappings_size == sizeof(saved.mappings);
+    uint8_t mode;
+    if (nvs_get_u8(nvs, "sound", &mode) == ESP_OK && mode < SOUND_MODES) sound_mode = mode;
     nvs_close(nvs);
-    if (result != ESP_OK || (length != sizeof(saved) && length != sizeof(bytes))) return;
-    memcpy(&saved, bytes, sizeof(saved));
-    if (saved.palette < PALETTES && saved.reverse <= 1 &&
-        saved.layout < sizeof(layouts) / sizeof(*layouts) &&
-        saved.mappings[0] < 6 && saved.mappings[1] < 6 && saved.mappings[2] < 6 && saved.mappings[3] < 6) {
-        settings = saved;
-    }
+    if (keyed && preferences_valid(&saved)) settings = saved;
+    audio_mode(sound_mode);
 }
 
 static bool prefs_save(void)
@@ -196,7 +204,11 @@ static bool prefs_save(void)
     if (nvs_open("stick", NVS_READWRITE, &nvs) != ESP_OK) return false;
     uint16_t table[PALETTES][4];
     display_palette_table(table, false);
-    bool ok = nvs_set_blob(nvs, "choices", &settings, sizeof(settings)) == ESP_OK &&
+    bool ok = nvs_set_u8(nvs, "palette", settings.palette) == ESP_OK &&
+              nvs_set_u8(nvs, "orientation", settings.reverse) == ESP_OK &&
+              nvs_set_u8(nvs, "layout", settings.layout) == ESP_OK &&
+              nvs_set_blob(nvs, "mappings", settings.mappings, sizeof(settings.mappings)) == ESP_OK &&
+              nvs_set_u8(nvs, "sound", sound_mode) == ESP_OK &&
               nvs_set_blob(nvs, "palettes", table, sizeof(table)) == ESP_OK &&
               nvs_set_blob(nvs, "names", palette_names, sizeof(palette_names)) == ESP_OK &&
               nvs_commit(nvs) == ESP_OK;
@@ -332,7 +344,8 @@ static void draw_page(void)
         row(0, ui.menu_row, "Controls", layouts[settings.layout].name, true);
         row(1, ui.menu_row, "Orientation", settings.reverse ? "Right side down" : "Left side down", false);
         row(2, ui.menu_row, "Palette", palette_names[settings.palette], false);
-        row(3, ui.menu_row, "Back to game", NULL, false);
+        row(3, ui.menu_row, "Sound", sound_names[sound_mode], false);
+        row(4, ui.menu_row, "Back to game", NULL, false);
     }
     char battery[24];
     battery_text(battery);
@@ -418,6 +431,12 @@ static void menu_action(uint8_t action)
             prefs_save();
             break;
         case 3:
+            sound_mode = (sound_mode + 1) % SOUND_MODES;
+            audio_mode(sound_mode);
+            prefs_save();
+            if (pw_sound_enabled()) audio_preview();
+            break;
+        case 4:
             close_settings(false);
             break;
         }

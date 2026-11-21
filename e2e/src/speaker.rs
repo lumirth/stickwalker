@@ -63,6 +63,30 @@ impl Speaker {
     }
 }
 
+/// Milliseconds of output whose waveform repeats every `period` samples.
+/// Autocorrelation recognizes the pitch whatever the sound mode's timbre;
+/// a Piezo-shaped note has several zero crossings per period.
+fn pitched_ms(pcm: &[i16], rate: u32, period: f64) -> f64 {
+    let window = (rate / 400) as usize;
+    let lag = period.round() as usize;
+    let correlation = |at: usize, lag: usize| {
+        let (mut product, mut a, mut b) = (0f64, 0f64, 0f64);
+        for i in at..at + window {
+            let (x, y) = (f64::from(pcm[i]), f64::from(pcm[i + lag]));
+            product += x * y;
+            a += x * x;
+            b += y * y;
+        }
+        if a > 0.0 && b > 0.0 { product / (a * b).sqrt() } else { 0.0 }
+    };
+    // A note also repeats at twice its period; reject a lag whose half matches.
+    let matched = (0..pcm.len().saturating_sub(window + lag))
+        .step_by(window)
+        .filter(|&at| correlation(at, lag) > 0.8 && correlation(at, lag / 2) < 0.5)
+        .count();
+    matched as f64 * window as f64 * 1000.0 / f64::from(rate)
+}
+
 pub fn chirp(rig: &mut Rig, output: &Path) -> Result<f64, Box<dyn std::error::Error>> {
     let pos = rig.speaker.borrow().samples.len();
     rig.switch("power", true);
@@ -82,11 +106,6 @@ pub fn chirp(rig: &mut Rig, output: &Path) -> Result<f64, Box<dyn std::error::Er
     // 240, non-legato. Nintendo subtracts the 0x140-clock separator and
     // mutes one period early: (floor((2048-320)/45)-1)*46 / 32768
     // is 51.94 ms of pitched output.
-    let periods: Vec<usize> = waveform
-        .windows(2)
-        .enumerate()
-        .filter_map(|(i, pair)| (pair[0] < 0 && pair[1] > 0).then_some(i))
-        .collect();
     let active = waveform.iter().filter(|&&mv| mv != 0).count();
     let duration_ms = active as f64 * 1000.0 / f64::from(speaker.rate.max(1));
     let peak = waveform
@@ -94,16 +113,10 @@ pub fn chirp(rig: &mut Rig, output: &Path) -> Result<f64, Box<dyn std::error::Er
         .map(|mv| mv.unsigned_abs())
         .max()
         .unwrap_or(0);
-    let correct_periods = periods
-        .windows(2)
-        .filter(|pair| {
-            let us = (pair[1] - pair[0]) as f64 * 1e6 / f64::from(speaker.rate);
-            (1350.0..1460.0).contains(&us)
-        })
-        .count();
-    if !(49.0..57.0).contains(&duration_ms) || !(100..=2828).contains(&peak) || correct_periods < 35
+    let pitched = pitched_ms(waveform, speaker.rate, f64::from(speaker.rate) * 46.0 / 32768.0);
+    if !(49.0..57.0).contains(&duration_ms) || !(100..=2828).contains(&peak) || pitched < 45.0
     {
-        return Err(format!("Bad first chirp at the speaker: {duration_ms:.1} ms, peak {peak} mV, {correct_periods} periods, elapsed {:.0} ms",
+        return Err(format!("Bad first chirp at the speaker: {duration_ms:.1} ms, peak {peak} mV, {pitched:.1} ms at 712 Hz, elapsed {:.0} ms",
             (rig.machine.bus.cycles() - now) as f64 / CYCLES_PER_MS as f64).into());
     }
     println!("Speaker: {duration_ms:.1} ms, modeled peak {peak} mV");
@@ -145,29 +158,17 @@ pub fn sequence(rig: &mut Rig, output: &Path) -> Result<(), Box<dyn std::error::
                 output.join(format!("confirm-back-{attempt}.pcm")),
                 pcm.iter().flat_map(|s| s.to_le_bytes()).collect::<Vec<_>>(),
             )?;
-            let crossings: Vec<_> = pcm
-                .windows(2)
-                .enumerate()
-                .filter_map(|(i, p)| (p[0] < 0 && p[1] > 0).then_some(i))
-                .collect();
             // Timer W's 32768 Hz clock and retail compare values 23, 40, 81, 54.
-            // Count actual output periods, rather than observing host tone calls.
+            // Measure actual output pitch, rather than observing host tone calls.
             const BACK_FIRST_COMPARE: i32 = 40;
-            let matches_pitch = |a: usize, b: usize, compare: i32| {
-                let expected = f64::from(speaker.rate) * f64::from(compare + 1) / 32768.0;
-                ((b - a) as f64 - expected).abs() < 1.5
-            };
+            let period = |compare: i32| f64::from(speaker.rate) * f64::from(compare + 1) / 32768.0;
             for (compare, minimum_ms, maximum_ms) in [
                 (23, 20.0, 85.0),
                 (BACK_FIRST_COMPARE, 27.0, 40.0),
                 (81, 24.0, 36.0),
                 (54, 65.0, 80.0),
             ] {
-                let periods = crossings
-                    .windows(2)
-                    .filter(|p| matches_pitch(p[0], p[1], compare))
-                    .count();
-                let duration = periods as f64 * f64::from(compare + 1) * 1000.0 / 32768.0;
+                let duration = pitched_ms(pcm, speaker.rate, period(compare));
                 if !(minimum_ms..=maximum_ms).contains(&duration) {
                     return Err(format!(
                         "Confirm/Back compare {compare}: {duration:.2} ms of output"
@@ -180,20 +181,22 @@ pub fn sequence(rig: &mut Rig, output: &Path) -> Result<(), Box<dyn std::error::
                 );
             }
             // Back can interrupt Confirm at any point, including during a rest.
-            let back = crossings
-                .windows(3)
-                .find(|p| {
-                    matches_pitch(p[0], p[1], BACK_FIRST_COMPARE)
-                        && matches_pitch(p[1], p[2], BACK_FIRST_COMPARE)
-                })
-                .ok_or("Missing first Back note")?[0];
+            let lag = period(BACK_FIRST_COMPARE).round() as usize;
+            let window = (speaker.rate / 400) as usize;
+            let back = (0..pcm.len().saturating_sub(window + lag))
+                .step_by(window / 2)
+                .find(|&at| pitched_ms(&pcm[at..at + window + lag + 1], speaker.rate, period(BACK_FIRST_COMPARE)) > 0.0)
+                .ok_or("Missing first Back note")?;
             let last = pcm.iter().rposition(|&s| s != 0).unwrap();
+            // A Piezo-shaped note is quiet between its edges for up to half a
+            // period, so only silences over 3 ms count. Each note's 1.5 ms fade
+            // and 1 ms ring-out take about 2.5 ms from a 10 ms separator.
             let gaps: Vec<_> = pcm[back..=last]
                 .split(|&s| s != 0)
-                .filter(|gap| gap.len() > 48)
+                .filter(|gap| gap.len() > speaker.rate as usize * 3 / 1000)
                 .map(|gap| gap.len() as f64 * 1000.0 / f64::from(speaker.rate))
                 .collect();
-            if gaps.len() != 2 || gaps.iter().any(|&ms| !(7.0..=13.0).contains(&ms)) {
+            if gaps.len() != 2 || gaps.iter().any(|&ms| !(5.5..=12.0).contains(&ms)) {
                 return Err(format!("Back lost its Timer W separators: {gaps:?} ms").into());
             }
             println!("Back separators: {gaps:?} ms");
