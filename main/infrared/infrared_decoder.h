@@ -6,12 +6,9 @@
 #include <stdint.h>
 #include "infrared_timing.h"
 
-#ifdef ESP_PLATFORM
-#include "esp_attr.h"
-#define INFRARED_FAST_CODE IRAM_ATTR
-#else
+// The decoder runs from flash through the instruction cache: CPU0 fetches from
+// IRAM delay the pin writes of the sampler on CPU1.
 #define INFRARED_FAST_CODE
-#endif
 
 enum {
     INFRARED_OBSERVATION_RECONFIGURE = 0x40u,
