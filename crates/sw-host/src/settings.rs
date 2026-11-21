@@ -129,3 +129,17 @@ impl DeviceSettings {
         self.slots[self.active_palette.index()].colors
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_from_newer_firmware_pass_through_unchanged() {
+        let mut bytes = DeviceSettings::default().to_bytes();
+        bytes[2] = 7;
+        bytes[3..7].copy_from_slice(&[9, 9, 9, 9]);
+        let settings = DeviceSettings::from_bytes(&bytes).unwrap();
+        assert_eq!(settings.to_bytes(), bytes);
+    }
+}

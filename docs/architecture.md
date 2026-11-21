@@ -36,6 +36,13 @@ The 64 KiB EEPROM working image lives in internal SRAM. The save service journal
 
 The host worker owns the selected serial port. A palette edit updates the screen immediately and the Stick saves the settings after 300 ms of inactivity. Palette edits preserve the physical controls selected on the Stick.
 
+Firmware and Desktop update independently, so neither may require the other to update:
+
+- Desktop changes only firmware, saves and palettes. Everything else is set on the Stick, and Desktop carries the Stick's own settings through without interpreting their values.
+- The status reply keeps its first 225 bytes. New fields go after them, and Desktop ignores bytes it doesn't know.
+- A new Stick-only setting gets its own NVS key, not a field in the 151-byte settings block.
+- A capability Desktop needs from firmware is a new command. Firmware answers commands it doesn't know with an error, which Desktop reads as "not supported".
+
 ## Installation and updates
 
 A routine firmware update flushes the current game and preferences, then flashes the application. The save banks and NVS stay in place. A fresh install initializes both.
