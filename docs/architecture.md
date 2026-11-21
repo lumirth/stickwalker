@@ -10,7 +10,13 @@ The game runs the Pokéwalker menus, pedometer, clock, and cartridge protocol. T
 
 The Stick transmits with its built-in emitter. A BPV10NF photodiode on G5 receives the light pulses. Core 1 samples the floating pin and its discharge under pull-down. The driver keeps separate measurements for light level and pulse timing. Before each connection, it measures 4,096 settled samples and chooses a sampling window and noise allowance. The receiver tracks changes in ambient light during the exchange.
 
-The game receives timed byte and quiet events in `pokewalker/port/drivers/ir.c`. The board pauses LCD transfers during communication. The game replies to the cartridge before committing the completed exchange to flash. The [optical fixtures](../e2e/fixtures/README.md) include recordings of a quiet receiver, a split data pulse, and noise during memory traffic.
+The game receives timed byte and quiet events in `pokewalker/port/drivers/ir.c`. The board pauses LCD transfers during communication. The game replies to the cartridge before committing the completed exchange to flash. The [optical fixtures](../e2e/fixtures/README.md) include recordings of a quiet receiver, a split data pulse, noise during memory traffic, and saturating flashes from a DS held against the Stick.
+
+A flash strong enough to discharge the pin within the floating phase saturates the receiver, and the diode keeps conducting briefly afterwards. The decoder treats light that only fades after such a flash, or that can be neither the same flash nor the next bit's, as recovery. That rule uses only the protocol's timing and whether the line itself saturates, so it does not depend on a particular emitter, diode or Stick.
+
+CPU1's sampler times the pin by counting instructions. CPU0 fetching code from IRAM at the same time delays those instructions, so the decoder runs from flash and the game's clock counts CPU cycles while the receiver is open. Calibration waits between polls of the sample ring for the same reason.
+
+`e2e/optical_channel.c` sweeps the receiver circuit, ambient light, clock error and these recovery tails. It assumes peers send IrDA SIR timing; their brightness spans weak flashes to sixty times a DS measured at contact. A tail that keeps the pin saturated until the next bit can begin carries no information, so those cases only have to produce no false bytes. `STICK_RANGE=1` reports the distances at which the weakest and strongest IrDA transmitters decode.
 
 ## Motion and sleep
 
