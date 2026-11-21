@@ -83,13 +83,9 @@ impl Default for DeviceSettings {
 }
 impl DeviceSettings {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        ensure!(
-            bytes.len() == SETTINGS_SIZE
-                && bytes[1] < 2
-                && bytes[2] < 4
-                && bytes[3..7].iter().all(|b| *b < 6),
-            "Unsupported device settings"
-        );
+        // Orientation, layout and mappings belong to the Stick. Desktop carries
+        // them through unchanged, so a newer firmware's values are not an error.
+        ensure!(bytes.len() == SETTINGS_SIZE, "Unsupported device settings");
         let mut slots = Self::default().slots;
         for (index, slot) in slots.iter_mut().enumerate() {
             let name = &bytes[55 + index * 16..55 + (index + 1) * 16];

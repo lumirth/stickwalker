@@ -111,9 +111,10 @@ impl Info {
 
     pub fn read(session: &mut Session) -> Result<Self> {
         let bytes = session.request(protocol::STATUS, &[])?;
+        // Newer firmware may append fields. Read the ones this Desktop knows.
         let base = 74 + crate::settings::SETTINGS_SIZE;
         ensure!(
-            bytes.len() == base,
+            bytes.len() >= base,
             "Couldn’t read the status of this Stick."
         );
         let mut remaining = bytes.as_slice();
