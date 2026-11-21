@@ -37,10 +37,7 @@
 #define OBSERVATION_CAPACITY INFRARED_CAPTURE_RING_CAPACITY
 #define PUBLISH_INTERVAL INFRARED_CAPTURE_BATCH
 #define DMA_SYMBOL_CAPACITY 1536u
-// The Stick's own flashes can saturate its diode, which then recovers like it
-// does after a DS flash at close range, over a few microseconds. Listen again
-// after 20 us, well before the fastest reply at 140 us.
-#define TRANSMIT_RECOVERY_CYCLES 4800u
+#define TRANSMIT_RECOVERY_CYCLES 480u
 #define MODE_CHANGE_TIMEOUT_US 25000u
 // Cover quiet ripple over several milliseconds, not just one locally quiet
 // portion. Short windows admitted false bytes on the physical Stick.
@@ -532,8 +529,6 @@ static void discard_observations(void)
     rearm_receive_turn(available);
 }
 
-static bool listen_failed;
-
 bool infrared_transmit(const uint8_t *bytes, size_t length, uint64_t *ended_us)
 {
     if (!opened || !bytes || !length || length > INFRARED_MAX_FRAME) {
@@ -574,26 +569,14 @@ bool infrared_transmit(const uint8_t *bytes, size_t length, uint64_t *ended_us)
     if (acquire_word(&receiver.transmit_started) != 1) {
         return false;
     }
-    /* The packet has left the emitter, so the peer may act on it: a final
-     * acknowledgement commits a transfer on the cartridge. Report it as sent
-     * even if the receiver is slow to listen again; the next receive turn
-     * fails instead. */
-    *ended_us = transmit_ended_us ? transmit_ended_us : esp_timer_get_time();
-    listen_failed = !wait_for_mode(RECEIVE_LISTEN, MODE_CHANGE_TIMEOUT_US);
-    return true;
+    *ended_us = transmit_ended_us;
+    return *ended_us && wait_for_mode(RECEIVE_LISTEN, MODE_CHANGE_TIMEOUT_US);
 }
 
 bool infrared_receive(InfraredEvent *event)
 {
     if (!opened || !event) {
         return false;
-    }
-    if (listen_failed) {
-        listen_failed = false;
-        *event = (InfraredEvent){.time_us = esp_timer_get_time(), .errors = INFRARED_ERROR_OVERRUN,
-                                 .kind = INFRARED_EVENT_BYTE};
-        last_event_us = event->time_us;
-        return true;
     }
     if (acquire_word(&receiver.overflow_turn) == receiver.receive_turn) {
         discard_observations();

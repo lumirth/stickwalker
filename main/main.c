@@ -3,7 +3,6 @@
 #include <sys/time.h>
 
 #include "audio.h"
-#include "diagnostics.h"
 #include "management.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_app_desc.h"
@@ -115,17 +114,10 @@ void pw_host_cycle_clock(bool enabled)
     cycle_clock = enabled;
 }
 
-void pw_host_link_report(uint8_t result, uint8_t phase, uint8_t last_command, uint16_t packets, uint16_t damaged)
-{
-    diagnostics_link(result, phase, last_command, packets, damaged);
-}
-
 uint64_t pw_host_now_us(void)
 {
-    uint64_t now;
-    if (!cycle_clock) {
-        now = esp_timer_get_time();
-    } else {
+    uint64_t now = esp_timer_get_time();
+    if (cycle_clock) {
         uint32_t cycle = esp_cpu_get_cycle_count();
         uint64_t elapsed = (uint64_t)(uint32_t)(cycle - clock_cycle) + clock_remainder;
         clock_cycle = cycle;
@@ -598,7 +590,6 @@ bool pw_host_battery_low(void)
 
 bool pw_host_commit(void)
 {
-    diagnostics_mark(ACTIVITY_SAVE);
     return save_commit();
 }
 
@@ -779,7 +770,7 @@ unsigned management_request(unsigned op, const uint8_t *in, size_t count,
         status.external_power = battery.external;
         read_settings(&status.settings);
         memcpy(out, &status, sizeof(status));
-        *length = sizeof(status) + diagnostics_status(out + sizeof(status));
+        *length = sizeof(status);
         return MANAGE_OK;
     }
     if (eeprom_owner == OWNER_IR ||
@@ -907,7 +898,6 @@ void app_main(void)
     }
     if (nvs_error == ESP_OK) {
         prefs_load();
-        diagnostics_init();
     }
     style();
     board_motion(MOTION_LIVE);
@@ -923,8 +913,6 @@ void app_main(void)
 
     for (;;) {
         uint64_t now = pw_host_now_us();
-        diagnostics_mark(eeprom_owner == OWNER_IR ? ACTIVITY_LINK : usb_owns_eeprom() ? ACTIVITY_USB
-                         : screen_asleep ? ACTIVITY_SLEEP : ACTIVITY_GAME);
         management_poll();
         // Fresh requests extend the transfer deadline. The USB SOF monitor can
         // briefly report disconnected during flash writes, even with a live host.

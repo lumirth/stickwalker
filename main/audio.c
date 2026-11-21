@@ -35,20 +35,18 @@ static uint32_t preview_left;
 // StickS3 speaker cavity and a +7 dB peak at 6.2 kHz for the piezo, fitted
 // to a recording of a Pokéwalker against a StickS3. Speaker mode keeps the
 // speaker's own tone above 800 Hz.
-// The I2S interrupt keeps running while flash writes disable the cache, so
-// everything it reads lives in internal RAM.
-static const DRAM_ATTR int32_t piezo_filter[4][5] = {
+static const int32_t piezo_filter[4][5] = {
     {357617758, -715235516, 357617758, -674010907, 219589214},
     {432478782, -864957563, 432478782, -815103303, 377940912},
     {474975483, -727877409, 400435234, -727877409, 338539805},
     {595652981, -673784968, 383181172, -673784968, 441963241},
 };
-static const DRAM_ATTR int32_t speaker_filter[1][5] = {
+static const int32_t speaker_filter[1][5] = {
     {498550765, -997101531, 498550765, -994362916, 462969233},
 };
 // Q15 output gains: the piezo chain matches the Pokéwalker at -3 dB, and
 // Piezo+ is 6 dB louder.
-static const DRAM_ATTR int32_t mode_gain[SOUND_MODES] = {23198, 46396, 32768};
+static const int32_t mode_gain[SOUND_MODES] = {23198, 46396, 32768};
 // Fade each note in and out over 1.5 ms so the amplifier doesn't thump.
 enum { RAMP_SAMPLES = RATE * 3 / 2000 };
 static uint64_t warm_until;
@@ -123,7 +121,7 @@ static bool IRAM_ATTR fill_audio(i2s_chan_handle_t channel, i2s_event_data_t *ev
         // silence; integer feedback would otherwise settle at -1, not 0.
         silent = level ? 0 : silent + (silent < RATE / 1000u);
         if (silent >= RATE / 1000u) {
-            for (unsigned k = 0; k < 4; k++) history[k][0] = history[k][1] = history[k][2] = history[k][3] = 0;
+            memset(history, 0, sizeof(history));
             samples[i] = samples[i + 1] = 0;
             continue;
         }
@@ -263,8 +261,6 @@ void audio_preview(void)
     if (!tx && !audio_on()) return;
     Battery battery = board_battery();
     amplitude = battery.known && !battery.external && battery.low ? 1600 : 3200;
-    // Stop any preview in progress before rewriting it under the interrupt.
-    preview_note = 2;
     for (unsigned i = 0; i < 2; ++i) {
         preview[i][0] = ((uint64_t)notes[i][0] << 32) / (RATE * 1000u);
         preview[i][1] = note_duty(notes[i][0]);

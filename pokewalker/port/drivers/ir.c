@@ -45,8 +45,6 @@ static IrTurn ir_turn;
 static uint64_t ir_turn_deadline;
 static bool ir_burst_corrupt;
 static bool ir_completion_sent;
-static uint8_t link_last_command;
-static uint16_t link_packets, link_damaged;
 static uint64_t ir_probe_deadline;
 static uint64_t ir_transmit_ended;
 static uint64_t ir_reference_us;
@@ -153,8 +151,6 @@ void IrHardwareStart(void)
 {
   ir_failed = false;
   ir_completion_sent = false;
-  link_last_command = 0;
-  link_packets = link_damaged = 0;
   ir_turn = IR_LISTEN;
   ir_has_byte = false;
   ir_observed_us = 0;
@@ -459,12 +455,6 @@ void IrProtocolTick(void)
       return;
     }
     u16 gap = (u16)(ir_ticks_at(ir_event.time_us) - g_state.irTimerReference);
-    /* A damaged burst holds no bytes, but a later byte past the frame gap
-     * starts the next packet rather than joining the damaged one. */
-    if (ir_burst_corrupt && !receivedBytes && gap > PW_IR_FRAME_GAP_TICKS) {
-      if (link_damaged < UINT16_MAX) link_damaged++;
-      ir_burst_corrupt = false;
-    }
     if (!receivedBytes || gap <= PW_IR_FRAME_GAP_TICKS) {
       ir_has_byte = false;
       ir_turn = IR_BURST;
@@ -482,7 +472,6 @@ void IrProtocolTick(void)
   if (elapsedTicks <= PW_IR_FRAME_GAP_TICKS) return;
   ir_turn = IR_LISTEN;
   if (ir_burst_corrupt) {
-    if (link_damaged < UINT16_MAX) link_damaged++;
     ir_burst_corrupt = false;
     g_state.irReceivedBytes = 0;
     return;
@@ -523,7 +512,6 @@ void IrProtocolTick(void)
   computedChecksum = PacketChecksum(g_work.irc.packet, receivedBytes);
   if (receivedChecksum != computedChecksum) {
     g_work.irc.work.checksumFailureCount++;
-    if (link_damaged < UINT16_MAX) link_damaged++;
     if (g_work.irc.work.checksumFailureCount < PW_IR_CHECKSUM_FAIL_LIMIT) {
       return;
     }
@@ -547,8 +535,6 @@ void IrProtocolTick(void)
   if (!packet_payload_valid(command, argument, payload, payloadLength)) {
     return;
   }
-  link_last_command = command;
-  if (link_packets < UINT16_MAX) link_packets++;
   pw_host_infrared_detected();
   ir_turn = IR_LISTEN;
   switch (command) {
@@ -1242,7 +1228,6 @@ packetDone:
 void IrFinish(void)
 {
   pw_host_infrared_close();
-  pw_host_link_report(g_state.irResult, g_work.irc.work.handshakePhase, link_last_command, link_packets, link_damaged);
   if (!ir_completion_sent) g_work.irc.work.completionAction = IR_ACTION_NONE;
   if (g_work.irc.work.completionAction != IR_ACTION_NONE) {
     IrComplete();
