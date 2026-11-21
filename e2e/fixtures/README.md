@@ -107,3 +107,12 @@ the calibrated minimum floating time, and padding. Each record is then a
 and the diode's recovery shortens the next reading by about 90 cycles and the
 one after by about 10. The first two bytes of the packet are `fa 01`; the third
 was the one the released decoder rejected.
+
+## Weak Stick-to-Stick packet
+
+`gpio5-stick-peer.bin` holds 240 observations, in the same format, from one
+StickS3 receiving another's handshake reply on 2026-11-20. Its pulses dim the
+reading by only 10 to 26 cycles and often split across two measurements. The
+receiver then calibrated an 11-cycle allowance, inflated by its own polling,
+and rejected the packet. Replayed at the 5-cycle allowance both Sticks
+calibrate to now, it decodes as `fa 02 f0 91 f3 c0`.

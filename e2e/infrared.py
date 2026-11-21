@@ -29,6 +29,44 @@ static unsigned read_capture(FILE *file, InfraredObservation *out, unsigned limi
     return count;
 }
 
+/* A capture that holds the decoder's state ahead of its samples: allowance,
+ * floating compensation and minimum floating time, then a padding word. */
+static bool replay_state(const char *name, const char *path, uint32_t allowance,
+                         const unsigned *expected, unsigned count)
+{
+    static InfraredObservation observations[8192];
+    FILE *file = fopen(path, "rb");
+    uint32_t state[4];
+    if (!file || fread(state, sizeof(state), 1, file) != 1) return true;
+    unsigned total = read_capture(file, observations, 8192, false);
+    fclose(file);
+    InfraredDecoder decoder;
+    infrared_decoder_init(&decoder);
+    decoder.jitter_allowance_q8 = allowance ? allowance : state[0];
+    decoder.floating_compensation_q8 = state[1];
+    decoder.floating_minimum = state[2];
+    for (unsigned i = 0; i < 64; i++) {
+        InfraredObservation quiet = {.end_cycle = observations[0].end_cycle - 626 * (64 - i), .duration = 560,
+                                      .sample_gap_cycles = 3, .signal_duration = 538, .floating_cycles = 452};
+        InfraredDecodedByte byte;
+        unsigned consumed;
+        infrared_decoder_consume(&decoder, &quiet, 1, &consumed, &byte);
+    }
+    infrared_decoder_rearm(&decoder);
+    unsigned at = 0, decoded = 0, damaged = 0;
+    while (at < total) {
+        InfraredDecodedByte byte;
+        unsigned consumed;
+        if (infrared_decoder_consume(&decoder, observations + at, total - at, &consumed, &byte)) {
+            if (byte.errors || decoded >= count || byte.value != expected[decoded]) damaged++;
+            decoded++;
+        }
+        at += consumed;
+    }
+    printf("%s: %u of %u bytes, %u errors\n", name, decoded, count, damaged);
+    return decoded != count || damaged;
+}
+
 int main(int argc, char **argv) {
     InfraredObservation observations[8192];
     unsigned total_failed = 0;
@@ -111,38 +149,10 @@ int main(int argc, char **argv) {
     printf("Split-pulse capture: %u of 2 bytes, %u errors\n", decoded, damaged);
     bool split_failed = decoded != 2 || damaged;
 
-    // The close-range DS capture holds its decoder state ahead of the samples.
-    file = fopen(argv[6], "rb");
-    if (!file) return 2;
-    uint32_t state[4];
-    if (fread(state, sizeof(state), 1, file) != 1) return 2;
-    count = read_capture(file, observations, 8192, false);
-    fclose(file);
-    infrared_decoder_init(&decoder);
-    decoder.jitter_allowance_q8 = state[0];
-    decoder.floating_compensation_q8 = state[1];
-    decoder.floating_minimum = state[2];
-    for (unsigned i = 0; i < 64; i++) {
-        InfraredObservation quiet = {.end_cycle = observations[0].end_cycle - 626 * (64 - i), .duration = 560,
-                                      .sample_gap_cycles = 3, .signal_duration = 538, .floating_cycles = 452};
-        InfraredDecodedByte byte;
-        unsigned consumed;
-        infrared_decoder_consume(&decoder, &quiet, 1, &consumed, &byte);
-    }
-    infrared_decoder_rearm(&decoder);
-    const unsigned close_expected[] = {0xfa, 0x01};
-    at = decoded = damaged = 0;
-    while (at < count) {
-        InfraredDecodedByte byte;
-        unsigned consumed;
-        if (infrared_decoder_consume(&decoder, observations + at, count - at, &consumed, &byte)) {
-            if (byte.errors || decoded >= 2 || byte.value != close_expected[decoded]) damaged++;
-            decoded++;
-        }
-        at += consumed;
-    }
-    printf("Close-range DS capture: %u of 2 bytes, %u errors\n", decoded, damaged);
-    return total_failed || split_failed || decoded != 2 || damaged ? 1 : 0;
+    bool close_failed = replay_state("Close-range DS capture", argv[6], 0, (const unsigned[]){0xfa, 0x01}, 2);
+    bool peer_failed = replay_state("Weak Stick-to-Stick capture", argv[7], 5 * 256,
+                                    (const unsigned[]){0xfa, 0x02, 0xf0, 0x91, 0xf3, 0xc0}, 6);
+    return total_failed || split_failed || close_failed || peer_failed ? 1 : 0;
 }
 ''')
     binary = temp / 'replay'
@@ -156,7 +166,8 @@ int main(int argc, char **argv) {
                     str(root / 'e2e/fixtures/gpio5-timed-quiet.bin'),
                     str(root / 'e2e/fixtures/gpio5-timed-bus-load.bin'),
                     str(root / 'e2e/fixtures/gpio5-post-transfer-quiet.bin'),
-                    str(root / 'e2e/fixtures/gpio5-ds-close-range.bin')], check=True)
+                    str(root / 'e2e/fixtures/gpio5-ds-close-range.bin'),
+                    str(root / 'e2e/fixtures/gpio5-stick-peer.bin')], check=True)
 
     channel = temp / 'optical-channel'
     subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
