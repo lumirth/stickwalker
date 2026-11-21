@@ -48,6 +48,8 @@ void pw_host_eeprom_read(uint16_t address, void *out, size_t length);
 bool pw_host_eeprom_write(uint16_t address, const void *bytes, size_t length);
 bool pw_host_commit(void);
 bool pw_host_communication(bool active);
+/* How the last connection ended, kept for diagnosis over USB. */
+void pw_host_link_report(uint8_t result, uint8_t phase, uint8_t last_command, uint16_t packets, uint16_t damaged);
 
 bool pw_host_infrared_open(void);
 void pw_host_infrared_detected(void);
