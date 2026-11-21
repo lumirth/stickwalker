@@ -8,6 +8,8 @@ python3 e2e/journeys.py \
   e2e/local/registered.eeprom e2e/local/course.eeprom
 ```
 
+Independent journeys run in parallel, one per CPU core by default (`--jobs N`).
+
 `src/peer.rs` plays the game's side of a send or return. It follows `pokewalker_ir.c` in the [pokeheartgold decompilation](https://github.com/ctrl-cheeb-del/pokeheartgold): the packet framing, the handshake, the walker identity checks, the 128-byte page transfers, LZ10-compressed course pages, and the 100 ms link timeout.
 
 Use `--output DIRECTORY` to keep the screens and packet traces. Add `--pair BEFORE TRACE PREDICTED` to replay a recorded pairing and compare the resulting save against the captured page writes. Flash timing defaults to typical values. Use `--timing maximum` for the datasheet’s worst-case program and erase times at −40 to 85 °C.
@@ -48,9 +50,9 @@ python3 e2e/connections.py .deps/idf-tools/tools/esp-rom-elfs/20241011/esp32s3_r
   build/firmware e2e/local/registered.eeprom e2e/local/course.eeprom --seed 1
 ```
 
-Each scenario runs against weak, slow-pad, and bright optical paths. Hot startup must accept the first reply at a 140 µs turnaround. Other scenarios use 380 µs and exercise delayed alignment, a damaged burst, or an absent peer. After a failed transfer, the next attempt must succeed in the same boot. Return starts from the flash produced by send. The runner reboots again to check the pairing and course after return.
+Hot startup runs on the weak, slow-pad, and bright optical paths and must accept the first reply at a 140 µs turnaround. The other stories use 380 µs, one path each: delayed alignment on weak, a damaged burst on slow-pad, and an absent peer on bright. After a failed transfer, the next attempt must succeed in the same boot. Return starts from the flash produced by send. After the first return, the runner cold-boots to check the pairing and course survive.
 
-Scenarios run in parallel, one per CPU core by default (`--jobs N`), and each result prints as it finishes. Use `--story hot|delayed|glitch|retry` and `--path weak|slow-pad|bright`, each repeatable, to select cases. The seed controls bus delays and optical noise. A failure preserves traces under `build/connection-failure-*` and prints the seed.
+Scenarios run in parallel, one per CPU core by default (`--jobs N`), and each result prints as it finishes. `--story hot|delayed|glitch|retry` and `--path weak|slow-pad|bright|nominal`, each repeatable, run every combination of the ones given. The seed controls bus delays and optical noise. A failure preserves traces under `build/connection-failure-*` and prints the seed.
 
 ## Buffered motion and pocket energy
 

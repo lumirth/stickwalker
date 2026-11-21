@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tempfile import TemporaryDirectory
 from fixtures import expedition
 
@@ -71,105 +72,135 @@ def run(args, output: Path) -> None:
         assert flags(eeprom) == 1 and eeprom[COURSE] == ready[COURSE]
         assert eeprom[PAIRING] == ready[PAIRING]
 
+    def stage(*journeys):
+        """Run independent journeys at once; the next stage starts when all pass."""
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = [pool.submit(journey) for journey in journeys]
+            for future in as_completed(futures):
+                future.result()
+        return [future.result() for future in futures]
+
     erased = output / "empty.eeprom"
     erased.write_bytes(b"\xff" * 65536)
-    fresh, _ = boot("first-boot", "first-boot", erased)
-    assert fresh[:8] == b"nintendo" and flags(fresh) == 0
-    identity = fresh[0x83:0xAB]
-    assert identity[-6:] == bytes.fromhex('020500000001')
-    assert identity == fresh[0x183:0x1AB] == fresh[STATUS + 16:STATUS + 56]
-    other, _ = boot("second-identity", "first-boot", erased, STICK_MAC="02:05:00:00:00:02")
-    assert other[0x83:0xAB] != identity
-    assert other[0x83:0xAB] == other[0x183:0x1AB] == other[STATUS + 16:STATUS + 56]
-    imported, _ = boot("imported-identity", "first-boot", args.empty, STICK_MAC="02:05:00:00:00:02")
-    assert imported[0x83:0xAB] == ready[0x83:0xAB]
-    assert imported[0x183:0x1AB] == ready[0x183:0x1AB]
-    assert imported[PAIRING] == ready[PAIRING]
 
-    sent, clock = send("send", carry=True, STICK_IR_PATH="weak-low-trip", STICK_POWER="expansion")
-    sent_course(sent)
+    def first_boot():
+        fresh, _ = boot("first-boot", "first-boot", erased)
+        assert fresh[:8] == b"nintendo" and flags(fresh) == 0
+        identity = fresh[0x83:0xAB]
+        assert identity[-6:] == bytes.fromhex('020500000001')
+        assert identity == fresh[0x183:0x1AB] == fresh[STATUS + 16:STATUS + 56]
+        return identity
+
+    def second_identity():
+        other, _ = boot("second-identity", "first-boot", erased, STICK_MAC="02:05:00:00:00:02")
+        assert other[0x83:0xAB] == other[0x183:0x1AB] == other[STATUS + 16:STATUS + 56]
+        return other[0x83:0xAB]
+
+    def imported_identity():
+        imported, _ = boot("imported-identity", "first-boot", args.empty, STICK_MAC="02:05:00:00:00:02")
+        assert imported[0x83:0xAB] == ready[0x83:0xAB]
+        assert imported[0x183:0x1AB] == ready[0x183:0x1AB]
+        assert imported[PAIRING] == ready[PAIRING]
+
+    def faulted(name, fault):
+        def journey():
+            recovered, _ = send(name, carry=name == "cut-during-publication", **fault)
+            previous_save(recovered)
+        return journey
+
+    def checked_send(name, **options):
+        def journey():
+            sent_course(send(name, **options)[0])
+        return journey
+
     sent_flash = output / "send/flash.bin"
-    walked, walked_clock = boot("pocket-walk", "pocket-walk", sent_flash, carry=True)
-    assert 150 <= steps(walked) - steps(sent) <= 230
-    assert walked[COURSE] == sent[COURSE]
-    assert int.from_bytes(walked_clock[:8], "little") > int.from_bytes(clock[:8], "little")
-    print(f"Pocket walk credited {steps(walked) - steps(sent)} steps", flush=True)
+    identity, other, _, (sent, clock), *_ = stage(
+        first_boot, second_identity, imported_identity,
+        lambda: send("send", carry=True, STICK_IR_PATH="weak-low-trip", STICK_POWER="expansion"),
+        faulted("cut-during-upload", {"STICK_TEAR_COMMIT": "upload"}),
+        faulted("cut-during-publication", {"STICK_TEAR_COMMIT": "publish"}),
+        faulted("corrupted-send", {"STICK_DROP_PULSE_IN_REPLY": "30"}),
+        checked_send("unplugged-send", STICK_UNPLUG_ON_SEND="1"),
+        checked_send("lost-commit-reply", STICK_LOSE_COMMIT_REPLY="1", STICK_IR_PATH="slow-pad", STICK_FAST_REPLY="1"),
+        checked_send("usb-insertion", STICK_PLUG_ON_SEND="1", STICK_POWER="battery", STICK_IR_PATH="bright"),
+    )
+    assert other != identity
+    sent_course(sent)
 
-    trainer = output / "trainer.eeprom"
-    trainer.write_bytes(walked)
-    returned, _ = boot("return", "return", output / "pocket-walk/flash.bin",
-                       STICK_PEER_EEPROM=str(trainer), STICK_POWER="battery", STICK_IR_PATH="weak")
-    assert flags(returned) == 1 and returned[PAIRING] == sent[PAIRING]
-    reply = (output / "return/walker.txt").read_text().splitlines()
-    rental = bytes(byte ^ 0xAA for byte in bytes.fromhex(reply[4]))
-    assert rental[0] == 0x0E and rental[8:24] == retail[COURSE][:16]
-    assert steps(returned) == steps(walked)
+    def pocket_walk():
+        walked, walked_clock = boot("pocket-walk", "pocket-walk", sent_flash, carry=True)
+        assert 150 <= steps(walked) - steps(sent) <= 230
+        assert walked[COURSE] == sent[COURSE]
+        assert int.from_bytes(walked_clock[:8], "little") > int.from_bytes(clock[:8], "little")
+        print(f"Pocket walk credited {steps(walked) - steps(sent)} steps", flush=True)
+        trainer = output / "trainer.eeprom"
+        trainer.write_bytes(walked)
+        returned, _ = boot("return", "return", output / "pocket-walk/flash.bin",
+                           STICK_PEER_EEPROM=str(trainer), STICK_POWER="battery", STICK_IR_PATH="weak")
+        assert flags(returned) == 1 and returned[PAIRING] == sent[PAIRING]
+        reply = (output / "return/walker.txt").read_text().splitlines()
+        rental = bytes(byte ^ 0xAA for byte in bytes.fromhex(reply[4]))
+        assert rental[0] == 0x0E and rental[8:24] == retail[COURSE][:16]
+        assert steps(returned) == steps(walked)
 
-    for name, fault in (
-        ("cut-during-upload", {"STICK_TEAR_COMMIT": "upload"}),
-        ("cut-during-publication", {"STICK_TEAR_COMMIT": "publish"}),
-        ("corrupted-send", {"STICK_DROP_PULSE_IN_REPLY": "30"}),
-    ):
-        recovered, _ = send(name, carry=name == "cut-during-publication", **fault)
-        previous_save(recovered)
+    def muted_input():
+        muted = bytearray(sent)
+        for at in (0x156, 0x256):
+            muted[at + 23] &= ~6
+            muted[at + 24] = (1 + sum(muted[at:at + 24])) & 255
+        muted_path = output / "muted.eeprom"
+        muted_path.write_bytes(muted)
+        boot("muted-input", "muted-input", muted_path)
 
-    unplugged, _ = send("unplugged-send", STICK_UNPLUG_ON_SEND="1")
-    sent_course(unplugged)
+    def plain(name):
+        return lambda: boot(name, name, sent_flash)
 
-    retry, _ = send("retry", output / "cut-during-publication/flash.bin", STICK_IR_PATH="wide-pad")
-    sent_course(retry)
-    committed, _ = send("lost-commit-reply", STICK_LOSE_COMMIT_REPLY="1", STICK_IR_PATH="slow-pad", STICK_FAST_REPLY="1")
-    sent_course(committed)
+    def depleted():
+        image, _ = boot("depleted", "depleted", sent_flash)
+        assert image[PAIRING] == sent[PAIRING] and image[COURSE] == sent[COURSE]
 
-    inserted, _ = send("usb-insertion", STICK_PLUG_ON_SEND="1", STICK_POWER="battery", STICK_IR_PATH="bright")
-    sent_course(inserted)
-    boot("connect-noise", "connect-noise", sent_flash)
-    boot("wake-audio", "wake-audio", sent_flash)
-    muted = bytearray(sent)
-    for at in (0x156, 0x256):
-        muted[at + 23] &= ~6
-        muted[at + 24] = (1 + sum(muted[at:at + 24])) & 255
-    muted_path = output / "muted.eeprom"
-    muted_path.write_bytes(muted)
-    boot("muted-input", "muted-input", muted_path)
+    def recovered(name):
+        def journey():
+            image, _ = boot(name, name, sent_flash)
+            assert flags(image) == 3 and image[COURSE] == sent[COURSE]
+            assert image[PAIRING] == sent[PAIRING] and steps(image) == steps(sent)
+        return journey
 
-    configured, _ = boot("controls-and-settings", "controls-and-settings", sent_flash)
-    assert steps(configured) > steps(sent)
-    boot("settings-focus", "settings-focus", sent_flash)
-    boot("stationary", "stationary", sent_flash)
-    boot("sleep-wake", "sleep-wake", sent_flash)
-    depleted, _ = boot("depleted", "depleted", sent_flash)
-    assert depleted[PAIRING] == sent[PAIRING] and depleted[COURSE] == sent[COURSE]
-    boot("low-battery-audio", "low-battery-audio", sent_flash)
-    boot("sound-and-colors", "sound-and-colors", sent_flash)
-    for name in ("power-recovery", "watchdog-loop", "usb-recovery"):
-        recovered, _ = boot(name, name, sent_flash)
-        assert flags(recovered) == 3 and recovered[COURSE] == sent[COURSE]
-        assert recovered[PAIRING] == sent[PAIRING] and steps(recovered) == steps(sent)
+    def gameplay():
+        # Start from a saved expedition with earned history; the separate pocket
+        # journey exercises the sensor path. Keep the retail course's nonzero gates.
+        gameplay_seed = output / "gameplay-seed.bin"
+        threshold = int.from_bytes(sent[0x8f00 + 130:0x8f00 + 132], "little")
+        assert threshold > 0
+        expedition(sent_flash, gameplay_seed, daily=threshold + 1500, hourly=2000,
+                   random_state=0x12345678)
+        played, _ = boot("gameplay", "gameplay", gameplay_seed, carry=True)
+        rebooted, _ = boot("inventory-reboot", "inventory", output / "gameplay/flash.bin", carry=True)
+        assert played[0xce8c:0xcecc] == rebooted[0xce8c:0xcecc]
+        trainer = output / "gameplay-trainer.eeprom"
+        trainer.write_bytes(played)
+        finished, _ = boot("expedition-return", "return", output / "gameplay/flash.bin",
+                           STICK_PEER_EEPROM=str(trainer))
+        assert flags(finished) == 1 and finished[PAIRING] == sent[PAIRING]
 
-    # Start from a saved expedition with earned history; the separate pocket
-    # journey exercises the sensor path. Keep the retail course's nonzero gates.
-    gameplay_seed = output / "gameplay-seed.bin"
-    threshold = int.from_bytes(sent[0x8f00 + 130:0x8f00 + 132], "little")
-    assert threshold > 0
-    expedition(sent_flash, gameplay_seed, daily=threshold + 1500, hourly=2000,
-               random_state=0x12345678)
-    played, _ = boot("gameplay", "gameplay", gameplay_seed, carry=True)
-    rebooted, _ = boot("inventory-reboot", "inventory", output / "gameplay/flash.bin", carry=True)
-    assert played[0xce8c:0xcecc] == rebooted[0xce8c:0xcecc]
-    trainer.write_bytes(played)
-    finished, _ = boot("expedition-return", "return", output / "gameplay/flash.bin",
-                       STICK_PEER_EEPROM=str(trainer))
-    assert flags(finished) == 1 and finished[PAIRING] == sent[PAIRING]
+    def peers():
+        first, second = output / "peer-a.bin", output / "peer-b.bin"
+        peer_identity = bytearray(sent[0x83:0xab])
+        peer_identity[-1] ^= 1
+        expedition(sent_flash, first, daily=4500, hourly=4000, random_state=0x12345678, midnight=True)
+        expedition(sent_flash, second, daily=3500, hourly=3000, random_state=0x71654321,
+                   identity=peer_identity, midnight=True)
+        subprocess.run([ROOT / "e2e/run", args.rom, args.firmware, first, "walkers", output / "peers", second],
+                       cwd=ROOT, env=os.environ | {"STICK_TIMING": args.timing}, check=True)
+        print("peers", flush=True)
 
-    first, second = output / "peer-a.bin", output / "peer-b.bin"
-    identity = bytearray(sent[0x83:0xab])
-    identity[-1] ^= 1
-    expedition(sent_flash, first, daily=4500, hourly=4000, random_state=0x12345678, midnight=True)
-    expedition(sent_flash, second, daily=3500, hourly=3000, random_state=0x71654321,
-               identity=identity, midnight=True)
-    subprocess.run([ROOT / "e2e/run", args.rom, args.firmware, first, "walkers", output / "peers", second],
-                   cwd=ROOT, env=os.environ | {"STICK_TIMING": args.timing}, check=True)
+    stage(
+        pocket_walk, gameplay, peers, muted_input, depleted,
+        checked_send("retry", seed=output / "cut-during-publication/flash.bin", STICK_IR_PATH="wide-pad"),
+        *(plain(name) for name in ("connect-noise", "wake-audio", "controls-and-settings", "settings-focus",
+                                   "stationary", "sleep-wake", "low-battery-audio", "sound-and-colors")),
+        *(recovered(name) for name in ("power-recovery", "watchdog-loop", "usb-recovery")),
+    )
 
     if args.pair:
         before, trace, prediction = args.pair
@@ -191,6 +222,8 @@ if __name__ == "__main__":
     parser.add_argument("--timing", choices=("typical", "maximum"), default="typical",
                         help="GD25Q64E program and erase timing profile")
     parser.add_argument("--output", type=Path, help="keep screenshots and output here")
+    parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1,
+                        help="journeys to simulate at once (default: one per CPU core)")
     args = parser.parse_args()
     if not __debug__:
         parser.error("Run the journeys with Python assertions enabled")

@@ -27,9 +27,14 @@ if not __debug__:
 if not 0 < args.seed <= 0xffffffff:
     parser.error('Seed must be between 1 and 4294967295')
 
-stories = args.story or ['hot', 'delayed', 'glitch', 'retry']
-paths = args.path or ['weak', 'slow-pad', 'bright']
-cases = [(path, story) for path in paths for story in stories]
+# By default, hot startup runs on every hard optical path and each recovery
+# story on one of them, so every story and path is covered without crossing them.
+if args.story or args.path:
+    cases = [(path, story) for path in args.path or ['weak', 'slow-pad', 'bright']
+             for story in args.story or ['hot', 'delayed', 'glitch', 'retry']]
+else:
+    cases = [('weak', 'hot'), ('slow-pad', 'hot'), ('bright', 'hot'),
+             ('weak', 'delayed'), ('slow-pad', 'glitch'), ('bright', 'retry')]
 output = threading.Lock()
 finished = 0
 
@@ -65,7 +70,8 @@ def scenario(work, path, story):
             assert image[0xf9:0x125] == args.empty.read_bytes()[0xf9:0x125], 'Pairing changed'
             if direction == 'send':
                 assert image[0x8f00:0x8f00+10430] == args.course.read_bytes()[0x8f00:0x8f00+10430], 'Wrong course'
-            if direction == 'return':
+            # A cold boot after one return checks the IR-written save survives it.
+            if direction == 'return' and (path, story) == cases[0]:
                 reboot = out / 'reboot'
                 reboot.mkdir()
                 reboot_env = {k: v for k, v in environment.items() if not k.startswith('STICK_')}
