@@ -438,8 +438,12 @@ impl Optics {
             return;
         }
         if self.startup_interference {
-            // Discovery interference stops when it hears the first Walker probe.
-            self.incoming.clear();
+            // The unpaired sender behind the hot-start traffic falls silent
+            // before the Walker's first probe: drop any byte it had not
+            // finished by then, so no fragment of it reaches the reply.
+            let byte = (10.0 * self.path.bit_cycles()) as u64;
+            let started = ended.saturating_sub((characters.len() as f64 * 10.0 * CYCLES_PER_BIT) as u64);
+            self.incoming.retain(|&(on, _)| on + byte <= started);
             self.startup_interference = false;
         }
         self.sent.push(wire.clone());
