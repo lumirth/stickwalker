@@ -729,6 +729,7 @@ mod tests {
                 millivolts: 4100,
                 settings: DeviceSettings::default(),
                 power: 1,
+                diagnostics: None,
             },
         };
         assert_eq!(state.port_label(&port), "Stick 1A20");

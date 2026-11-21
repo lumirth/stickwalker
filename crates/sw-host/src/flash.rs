@@ -509,6 +509,7 @@ mod tests {
                         version: "0.2.1".into(),
                         build: String::new(),
                         power: 0,
+                        diagnostics: None,
                         millivolts: 4000,
                         settings: Default::default(),
                     },

@@ -559,6 +559,42 @@ impl StickView {
         .detach();
     }
 
+    pub(super) fn show_diagnostics(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(info) = self.state.connection.info() else {
+            return;
+        };
+        let detail = match &info.diagnostics {
+            None => "This firmware keeps no diagnostics. Update the Stick to record them.".to_string(),
+            Some(diagnostics) => {
+                let mut lines = Vec::new();
+                if diagnostics.resets == 0 {
+                    lines.push("No unexpected restarts.".to_string());
+                } else {
+                    lines.push(format!("Unexpected restarts: {}", diagnostics.resets));
+                    for reset in &diagnostics.recent {
+                        lines.push(format!(
+                            "{} while {}, {} s after starting",
+                            reset.cause, reset.activity, reset.uptime_s
+                        ));
+                    }
+                }
+                lines.push(String::new());
+                lines.push(match &diagnostics.link {
+                    None => "No connection since the Stick last lost power.".to_string(),
+                    Some(link) => format!(
+                        "Last connection: {}. {} packets received, {} damaged. Last command 0x{:02X}.",
+                        link.outcome, link.packets, link.damaged, link.last_command
+                    ),
+                });
+                lines.join("\n")
+            }
+        };
+        let answer = w.prompt(PromptLevel::Info, "Diagnostics", Some(&detail), &["OK"], cx);
+        cx.spawn_in(w, async move |_, _| {
+            let _ = answer.await;
+        })
+        .detach();
+    }
     pub(super) fn reset(&mut self, erase: bool, w: &mut Window, cx: &mut Context<Self>) {
         self.clear_local_error(cx);
         let command = if erase {

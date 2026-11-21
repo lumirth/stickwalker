@@ -61,6 +61,9 @@ pub(crate) fn refresh_menus(cx: &mut App) {
                     .disabled(!state.access.can_write_save() || locked),
                 MenuItem::action("Erase and Install…", EraseInstall)
                     .disabled(!state.access.can_install() || locked || state.preparing_install),
+                MenuItem::separator(),
+                MenuItem::action("Diagnostics", ShowDiagnostics)
+                    .disabled(state.access != DeviceAccess::Ready),
             ],
         },
     ]);
@@ -104,6 +107,7 @@ pub fn forward_device_actions(root: Div, owner: AnyWindowHandle) -> Div {
             Box::new(CheckFirmware),
             Box::new(Install),
             Box::new(OpenPackage),
+            Box::new(ShowDiagnostics),
             Box::new(CheckAppUpdates),
         ],
     )

@@ -86,6 +86,81 @@ pub struct Info {
     pub millivolts: u16,
     pub settings: DeviceSettings,
     pub power: u8,
+    /// Recent abnormal resets and the last connection, when the firmware keeps them.
+    pub diagnostics: Option<Diagnostics>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostics {
+    /// Abnormal resets since the record began, of which up to four are listed.
+    pub resets: u8,
+    pub recent: Vec<Reset>,
+    pub link: Option<Link>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reset {
+    pub cause: &'static str,
+    pub activity: &'static str,
+    pub uptime_s: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub outcome: &'static str,
+    pub packets: u16,
+    pub damaged: u16,
+    pub last_command: u8,
+}
+
+impl Diagnostics {
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 42 || bytes[0] != 1 {
+            return None;
+        }
+        let resets = bytes[1];
+        let recent = (0..usize::from(resets.min(4)))
+            .map(|i| {
+                let at = 2 + i * 8;
+                Reset {
+                    cause: match bytes[at] {
+                        4 => "Crash",
+                        5 => "Interrupt watchdog",
+                        6 => "Task watchdog",
+                        9 => "Brownout",
+                        _ => "Watchdog",
+                    },
+                    activity: match bytes[at + 1] {
+                        1 => "starting up",
+                        2 => "playing",
+                        3 => "connecting over IR",
+                        4 => "saving",
+                        5 => "transferring over USB",
+                        6 => "asleep",
+                        _ => "unknown activity",
+                    },
+                    uptime_s: u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()),
+                }
+            })
+            .collect();
+        let link = bytes[34..42].iter().any(|b| *b != 0).then(|| Link {
+            outcome: match bytes[34] {
+                0 => "Succeeded",
+                1 => "No response",
+                2 => "Connection error",
+                3 => "Rejected",
+                4 => "No Pokémon",
+                5 => "Already met this walker",
+                6 => "Event already received",
+                7 => "Event not received",
+                _ => "Receive overflow",
+            },
+            packets: u16::from_le_bytes([bytes[38], bytes[39]]),
+            damaged: u16::from_le_bytes([bytes[40], bytes[41]]),
+            last_command: bytes[36],
+        });
+        Some(Self { resets, recent, link })
+    }
 }
 impl Info {
     pub fn battery_percent(&self) -> u32 {
@@ -141,6 +216,7 @@ impl Info {
         let millivolts = u16::from_le_bytes(take(2).try_into().unwrap());
         let power = take(1)[0];
         let settings = DeviceSettings::from_bytes(take(crate::settings::SETTINGS_SIZE))?;
+        let diagnostics = Diagnostics::parse(remaining);
         Ok(Self {
             version,
             build,
@@ -149,6 +225,7 @@ impl Info {
             millivolts,
             settings,
             power,
+            diagnostics,
         })
     }
 }

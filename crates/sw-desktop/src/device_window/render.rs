@@ -460,6 +460,7 @@ impl Render for StickView {
                 d
             })
             .on_action(cx.listener(|v, _: &ResetWalker, w, cx| v.reset(false, w, cx)))
+            .on_action(cx.listener(|v, _: &ShowDiagnostics, w, cx| v.show_diagnostics(w, cx)))
             .on_action(cx.listener(|v, _: &EraseInstall, w, cx| v.reset(true, w, cx)))
             .on_action(cx.listener(|v, _: &OpenPackage, w, cx| v.files(FileAction::Package, w, cx)))
             .on_action(cx.listener(|v, _: &CheckFirmware, _, cx| {

@@ -50,7 +50,8 @@ actions!(
         Install,
         ExportEeprom,
         ImportEeprom,
-        OpenPackage
+        OpenPackage,
+        ShowDiagnostics
     ]
 );
 #[derive(Default, PartialEq, Eq)]

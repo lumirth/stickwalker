@@ -64,6 +64,7 @@ impl StickView {
             millivolts: 4190,
             settings: DeviceSettings::default(),
             power: 1,
+            diagnostics: None,
         };
         let mut state = Presentation {
             ports: vec![port.clone()],
