@@ -135,6 +135,7 @@ void INFRARED_FAST_CODE infrared_decoder_rearm(InfraredDecoder *decoder)
     decoder->previous_end = 0;
     decoder->processed_cycle = 0;
     decoder->receiving_byte = false;
+    decoder->recovering = false;
     decoder->quiet_ready = false;
     decoder->pulse.active = false;
     decoder->delayed_head = 0;
@@ -200,11 +201,33 @@ static bool INFRARED_FAST_CODE finish_pulse(InfraredDecoder *decoder)
 
 static bool INFRARED_FAST_CODE __attribute__((noinline)) decode_observation(InfraredDecoder *decoder,
                                                    const InfraredObservation *observation,
-                                                   bool illuminated, InfraredDecodedByte *byte)
+                                                   bool illuminated, int32_t depth,
+                                                   InfraredDecodedByte *byte)
 {
     uint32_t release = observation->end_cycle - observation->duration;
+    /* A recovering diode's current only decays; a new flash deepens the
+     * measurement again by more than the measured noise. */
+    int32_t rise = depth - decoder->previous_depth;
+    decoder->previous_depth = depth;
+    // Recovery light is neither a flash nor evidence that the line was dark.
+    bool recovery = false;
+    if (decoder->recovering && !illuminated) {
+        decoder->recovering = false;
+    }
+    /* A flash that discharges the pin within the floating phase was lit then.
+     * Light whose possible onset no longer overlaps that flash's cannot be the
+     * same flash, and light that must have begun before the next bit cannot be
+     * the next flash: it is the diode recovering, however strong the flash. */
+    if (illuminated && decoder->pulse.active && decoder->pulse.saturated &&
+        later(release - INFRARED_RELEASE_LEAD_CYCLES - INFRARED_MAX_PULSE_CYCLES, decoder->pulse.latest) &&
+        later(decoder->pulse.earliest + MINIMUM_BIT_CYCLES - INFRARED_PULSE_JITTER_CYCLES,
+              observation->end_cycle - CAPTURE_TIMESTAMP_TRAIL_CYCLES + INFRARED_INPUT_JITTER_CYCLES)) {
+        illuminated = false;
+        recovery = true;
+        decoder->recovering = true;
+    }
     uint32_t crossing = observation->end_cycle - CAPTURE_TIMESTAMP_TRAIL_CYCLES;
-    if (!illuminated && observation->duration >= INFRARED_MIN_PULSE_CYCLES) {
+    if (!illuminated && !recovery && observation->duration >= INFRARED_MIN_PULSE_CYCLES) {
         decoder->quiet_bound = crossing - INFRARED_MIN_PULSE_CYCLES -
                                INFRARED_INPUT_JITTER_CYCLES;
         uint32_t from_release = release - INFRARED_RELEASE_LEAD_CYCLES;
@@ -256,22 +279,48 @@ static bool INFRARED_FAST_CODE __attribute__((noinline)) decode_observation(Infr
             return reject(decoder, crossing, INFRARED_ERROR_FRAMING, byte);
         }
         decoder->pulse.active = false;
+        // Recovery is light that continues straight on from a saturating flash.
+        decoder->recovering = decoder->pulse.saturated && (illuminated || decoder->recovering);
+    }
+    if (illuminated && !decoder->pulse.active && decoder->recovering) {
+        // Light that fades straight on from a saturating flash starts nothing.
+        if (rise <= 0) {
+            return completed;
+        }
+        decoder->recovering = false;
     }
     if (illuminated) {
         if (!decoder->pulse.active) {
             decoder->pulse.earliest = earliest;
             decoder->pulse.latest = latest;
+            decoder->pulse.saturated = false;
             decoder->pulse.active = true;
             decoder->pulse.separated = false;
         } else {
-            if (later(earliest, decoder->pulse.earliest)) {
+            /* A measurement that begins after a saturated one may hold only
+             * the diode's recovery, which can itself keep the pin saturated,
+             * so it cannot bound when the flash began. */
+            bool recovered = decoder->pulse.saturated &&
+                             later(release, decoder->pulse.saturated_crossing);
+            if (!recovered && later(earliest, decoder->pulse.earliest)) {
                 decoder->pulse.earliest = earliest;
             }
             if (later(decoder->pulse.latest, latest)) {
                 decoder->pulse.latest = latest;
             }
         }
-    } else if (decoder->pulse.active &&
+        /* Bright room light alone can end the floating phase. A saturated
+         * measurement marks a flash only while the background's own signal
+         * outlasts the floating phase, which calibration measured unless the
+         * line ended it every time. */
+        bool line_saturated = !decoder->floating_minimum ||
+                              decoder->background_lower / BACKGROUND_SCALE + CAPTURE_TIMESTAMP_TRAIL_CYCLES <=
+                              (int32_t)decoder->floating_minimum;
+        if (!observation->floating_cycles && !line_saturated && !decoder->pulse.saturated) {
+            decoder->pulse.saturated = true;
+            decoder->pulse.saturated_crossing = crossing;
+        }
+    } else if (decoder->pulse.active && !recovery &&
                observation->duration >= INFRARED_MIN_PULSE_CYCLES) {
         /* A full background measurement separates two flashes even when
          * their conservative onset intervals overlap. Short noisy samples
@@ -405,6 +454,7 @@ resolve_prior_block(InfraredDecoder *decoder, uint32_t future_key, int32_t newes
         }
         int32_t ceiling = initial_lower + (int32_t)(release - initial_cycle);
         if (prior->preceding_lower > ceiling) prior->preceding_lower = ceiling;
+        prior->depth = prior->preceding_lower - measured_upper;
         if (prior->preceding_lower > measured_upper + input_variation) {
             quiet_count = 0;
             all_quiet = false;
@@ -507,7 +557,8 @@ static inline __attribute__((always_inline)) bool observe(InfraredDecoder *decod
         decoder->delayed_head = (decoder->delayed_head + retired) % INFRARED_LOOKAHEAD_OBSERVATIONS;
         decoder->ready_count -= retired;
         decoder->processed_cycle = ready.end_cycle;
-        if (decode_observation(decoder, &ready, quiet_count == 0, byte)) {
+        if (decode_observation(decoder, &ready, quiet_count == 0,
+                               decoder->delayed[last].depth, byte)) {
             return true;
         }
     }

@@ -36,12 +36,16 @@ typedef struct {
 typedef struct {
     InfraredObservation observation;
     int32_t preceding_lower;
+    // How far the observation falls below the background.
+    int32_t depth;
     uint8_t quiet_count;
 } InfraredDelayedObservation;
 
 typedef struct {
     uint32_t earliest;
     uint32_t latest;
+    uint32_t saturated_crossing;
+    bool saturated;
     bool active;
     bool separated;
 } InfraredPulse;
@@ -59,6 +63,9 @@ typedef struct {
     unsigned sample_count;
     bool background_ready;
     bool receiving_byte;
+    // After a saturating flash, light that only fades is the diode recovering.
+    bool recovering;
+    int32_t previous_depth;
     bool quiet_ready;
     uint32_t quiet_bound;
     InfraredPulse pulse;

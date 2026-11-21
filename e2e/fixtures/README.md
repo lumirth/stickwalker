@@ -95,3 +95,15 @@ that a factory/foreign filesystem is installable without being called a damaged 
 `public-nvs.bin.zlib` contains the 20 KiB Arduino NVS partition from the physical 2026-11-14 preflight flash capture. It includes superseded control entries and the final display preference.
 
 `public-littlefs-pair.bin.zlib` is a synthetic LittleFS 2.1 volume made with littlefs-python 0.19. Its two PWE1 checkpoints have sequences 7 and 8 and carry their sequence at EEPROM offset 0x100. Migration tests damage each payload in turn.
+
+## Saturating DS flashes at close range
+
+`gpio5-ds-close-range.bin` holds 320 observations from a physical send with the
+DS almost touching the Stick on 2026-11-20, copied into RAM at the first
+damaged byte. It starts with the decoder's state at that moment, four
+little-endian `u32` values: noise allowance (Q8), floating compensation (Q8),
+the calibrated minimum floating time, and padding. Each record is then a
+12-byte `InfraredObservation`. Each flash saturates the pin for two readings
+and the diode's recovery shortens the next reading by about 90 cycles and the
+one after by about 10. The first two bytes of the packet are `fa 01`; the third
+was the one the released decoder rejected.
